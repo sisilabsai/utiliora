@@ -620,6 +620,18 @@ function downloadCsv(filename: string, headers: string[], rows: string[][]): voi
   URL.revokeObjectURL(url);
 }
 
+function downloadTextFile(filename: string, content: string, mime = "text/plain;charset=utf-8;"): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
 function CalculatorTool({ id }: { id: CalculatorId }) {
   const fields = calculatorFields[id];
   const defaultValues = useMemo(() => Object.fromEntries(fields.map((field) => [field.name, field.defaultValue])), [fields]);
@@ -2557,55 +2569,252 @@ function TextTool({ id }: { id: TextToolId }) {
 }
 
 function UuidGeneratorTool() {
-  const [uuids, setUuids] = useState<string[]>([]);
-  const generate = () => {
-    const next = crypto.randomUUID();
-    setUuids((current) => [next, ...current].slice(0, 10));
-    trackEvent("tool_generate_uuid");
-  };
+  const [count, setCount] = useState("5");
+  const [uppercase, setUppercase] = useState(false);
+  const [stripHyphens, setStripHyphens] = useState(false);
+  const [uuids, setUuids] = useState<string[]>(() =>
+    Array.from({ length: 5 }, () => crypto.randomUUID()),
+  );
+  const [status, setStatus] = useState("");
+
+  const buildUuid = useCallback(() => {
+    let next = crypto.randomUUID();
+    if (stripHyphens) next = next.replace(/-/g, "");
+    if (uppercase) next = next.toUpperCase();
+    return next;
+  }, [stripHyphens, uppercase]);
+
+  const generateBatch = useCallback(() => {
+    const targetCount = Math.max(1, Math.min(100, Math.round(Number(count) || 1)));
+    const nextBatch = Array.from({ length: targetCount }, () => buildUuid());
+    setUuids(nextBatch);
+    setStatus(`Generated ${targetCount} UUID${targetCount === 1 ? "" : "s"}.`);
+    trackEvent("tool_generate_uuid", { count: targetCount, uppercase, stripHyphens });
+  }, [buildUuid, count, stripHyphens, uppercase]);
 
   return (
     <section className="tool-surface">
-      <h2>UUID generator</h2>
-      <button className="action-button" type="button" onClick={generate}>
-        Generate UUID v4
-      </button>
+      <ToolHeading
+        icon={Hash}
+        title="UUID generator"
+        subtitle="Generate batch UUID v4 values, customize format, and export directly for dev workflows."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Batch size</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            step={1}
+            value={count}
+            onChange={(event) => setCount(event.target.value)}
+          />
+          <small className="supporting-text">Generate 1 to 100 UUIDs at once.</small>
+        </label>
+      </div>
+      <div className="button-row">
+        <label className="checkbox">
+          <input type="checkbox" checked={uppercase} onChange={(event) => setUppercase(event.target.checked)} />
+          Uppercase
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={stripHyphens}
+            onChange={(event) => setStripHyphens(event.target.checked)}
+          />
+          Remove hyphens
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generateBatch}>
+          Generate batch
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(uuids.join("\n"));
+            setStatus(ok ? "UUID list copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy all
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("uuids.txt", uuids.join("\n"))}
+        >
+          <Download size={15} />
+          TXT
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       <ul className="mono-list">
-        {uuids.map((uuid) => (
-          <li key={uuid}>{uuid}</li>
+        {uuids.map((uuid, index) => (
+          <li key={`${uuid}-${index}`}>
+            <div className="panel-head">
+              <span>{uuid}</span>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={async () => {
+                  const ok = await copyTextToClipboard(uuid);
+                  setStatus(ok ? `UUID ${index + 1} copied.` : "Unable to copy.");
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          </li>
         ))}
       </ul>
     </section>
   );
 }
 
+function extractQueryParams(value: string): Array<{ key: string; value: string }> {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  try {
+    const params = new URL(trimmed).searchParams;
+    return [...params.entries()].map(([key, paramValue]) => ({ key, value: paramValue }));
+  } catch {
+    try {
+      const normalized = trimmed.startsWith("?") ? trimmed.slice(1) : trimmed;
+      if (!normalized.includes("=")) return [];
+      const params = new URLSearchParams(normalized);
+      return [...params.entries()].map(([key, paramValue]) => ({ key, value: paramValue }));
+    } catch {
+      return [];
+    }
+  }
+}
+
 function UrlEncoderDecoderTool() {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
+  const [mode, setMode] = useState<"component" | "uri">("component");
+  const [decodePlusAsSpace, setDecodePlusAsSpace] = useState(true);
+  const [status, setStatus] = useState("");
+  const queryRows = useMemo(() => extractQueryParams(output), [output]);
+
+  const encode = () => {
+    const next = mode === "uri" ? encodeURI(input) : encodeURIComponent(input);
+    setOutput(next);
+    setStatus("Encoded successfully.");
+    trackEvent("tool_url_transform", { action: "encode", mode });
+  };
+
+  const decode = () => {
+    const source = decodePlusAsSpace ? input.replace(/\+/g, "%20") : input;
+    try {
+      const next = mode === "uri" ? decodeURI(source) : decodeURIComponent(source);
+      setOutput(next);
+      setStatus("Decoded successfully.");
+      trackEvent("tool_url_transform", { action: "decode", mode });
+    } catch {
+      setStatus("Unable to decode input. Verify escaped characters.");
+    }
+  };
 
   return (
     <section className="tool-surface">
-      <h2>URL encode/decode</h2>
+      <ToolHeading
+        icon={Link2}
+        title="URL encode/decode"
+        subtitle="Encode URL components safely, decode quickly, and inspect parsed query parameters."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Mode</span>
+          <select value={mode} onChange={(event) => setMode(event.target.value as "component" | "uri")}>
+            <option value="component">URL component (encodeURIComponent)</option>
+            <option value="uri">Full URI (encodeURI)</option>
+          </select>
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={decodePlusAsSpace}
+            onChange={(event) => setDecodePlusAsSpace(event.target.checked)}
+          />
+          Treat + as spaces on decode
+        </label>
+      </div>
       <label className="field">
         <span>Input</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={5} />
       </label>
       <div className="button-row">
-        <button className="action-button" type="button" onClick={() => setOutput(encodeURIComponent(input))}>
+        <button className="action-button" type="button" onClick={encode}>
           Encode
+        </button>
+        <button className="action-button secondary" type="button" onClick={decode}>
+          Decode
         </button>
         <button
           className="action-button secondary"
           type="button"
-          onClick={() => setOutput(decodeURIComponent(input))}
+          onClick={() => {
+            setInput(output);
+            setOutput(input);
+            setStatus("Swapped input and output.");
+          }}
         >
-          Decode
+          <RefreshCw size={15} />
+          Swap
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setStatus(ok ? "Output copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
         </button>
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       <label className="field">
         <span>Output</span>
         <textarea value={output} readOnly rows={5} />
       </label>
+      <ResultList
+        rows={[
+          { label: "Input length", value: formatNumericValue(input.length) },
+          { label: "Output length", value: formatNumericValue(output.length) },
+          { label: "Query parameters found", value: formatNumericValue(queryRows.length) },
+        ]}
+      />
+      {queryRows.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Parsed query parameters</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queryRows.map((row, index) => (
+                  <tr key={`${row.key}-${index}`}>
+                    <td>{row.key}</td>
+                    <td>{row.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2613,32 +2822,116 @@ function UrlEncoderDecoderTool() {
 function TimestampConverterTool() {
   const [unixInput, setUnixInput] = useState(Math.floor(Date.now() / 1000).toString());
   const [dateInput, setDateInput] = useState(new Date().toISOString().slice(0, 16));
+  const [status, setStatus] = useState("");
 
-  const parsedUnix = Number(unixInput);
-  const unixDate = Number.isFinite(parsedUnix) ? new Date(parsedUnix * 1000) : null;
+  const parsedUnix = Number(unixInput.trim());
+  const unixMs = Number.isFinite(parsedUnix) ? (Math.abs(parsedUnix) >= 1e12 ? parsedUnix : parsedUnix * 1000) : NaN;
+  const unixDate = Number.isFinite(unixMs) ? new Date(unixMs) : null;
   const parsedDate = new Date(dateInput);
-  const dateToUnix = Number.isNaN(parsedDate.getTime()) ? null : Math.floor(parsedDate.getTime() / 1000);
+  const dateValid = !Number.isNaN(parsedDate.getTime());
+  const unixFromDateSeconds = dateValid ? Math.floor(parsedDate.getTime() / 1000) : null;
+  const unixFromDateMilliseconds = dateValid ? parsedDate.getTime() : null;
+
+  const relativeTime = useMemo(() => {
+    if (!Number.isFinite(unixMs)) return "Invalid timestamp";
+    const derivedDate = new Date(unixMs);
+    if (Number.isNaN(derivedDate.getTime())) return "Invalid timestamp";
+    const deltaSeconds = Math.round((derivedDate.getTime() - Date.now()) / 1000);
+    const absolute = Math.abs(deltaSeconds);
+    const suffix = deltaSeconds >= 0 ? "from now" : "ago";
+    if (absolute < 60) return `${absolute} seconds ${suffix}`;
+    if (absolute < 3600) return `${Math.round(absolute / 60)} minutes ${suffix}`;
+    if (absolute < 86_400) return `${Math.round(absolute / 3600)} hours ${suffix}`;
+    return `${Math.round(absolute / 86_400)} days ${suffix}`;
+  }, [unixMs]);
 
   return (
     <section className="tool-surface">
-      <h2>Timestamp converter</h2>
+      <ToolHeading
+        icon={Tags}
+        title="Timestamp converter"
+        subtitle="Convert Unix seconds/milliseconds to readable time formats and back in one view."
+      />
       <div className="field-grid">
         <label className="field">
-          <span>Unix timestamp (seconds)</span>
+          <span>Unix timestamp (seconds or milliseconds)</span>
           <input type="text" value={unixInput} onChange={(event) => setUnixInput(event.target.value)} />
         </label>
         <label className="field">
-          <span>Date and time</span>
+          <span>Date and time (local)</span>
           <input type="datetime-local" value={dateInput} onChange={(event) => setDateInput(event.target.value)} />
         </label>
       </div>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const now = new Date();
+            setUnixInput(Math.floor(now.getTime() / 1000).toString());
+            setDateInput(now.toISOString().slice(0, 16));
+            setStatus("Loaded current time.");
+          }}
+        >
+          Use now
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (!unixDate) return;
+            setDateInput(unixDate.toISOString().slice(0, 16));
+            setStatus("Applied Unix value to date field.");
+          }}
+          disabled={!unixDate}
+        >
+          Unix to date field
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (unixFromDateSeconds === null) return;
+            setUnixInput(unixFromDateSeconds.toString());
+            setStatus("Applied date value to Unix field.");
+          }}
+          disabled={unixFromDateSeconds === null}
+        >
+          Date to Unix field
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       <ResultList
         rows={[
           {
             label: "Unix -> UTC",
             value: unixDate && !Number.isNaN(unixDate.getTime()) ? unixDate.toUTCString() : "Invalid timestamp",
           },
-          { label: "Date -> Unix", value: dateToUnix ? dateToUnix.toString() : "Invalid date" },
+          {
+            label: "Unix input interpreted as",
+            value: Number.isFinite(parsedUnix)
+              ? Math.abs(parsedUnix) >= 1e12
+                ? "Milliseconds"
+                : "Seconds"
+              : "Invalid",
+          },
+          {
+            label: "Unix -> Local",
+            value:
+              unixDate && !Number.isNaN(unixDate.getTime())
+                ? unixDate.toLocaleString("en-US", { hour12: false })
+                : "Invalid timestamp",
+          },
+          {
+            label: "Unix -> ISO 8601",
+            value: unixDate && !Number.isNaN(unixDate.getTime()) ? unixDate.toISOString() : "Invalid timestamp",
+          },
+          { label: "Unix -> Relative", value: relativeTime },
+          { label: "Date -> Unix seconds", value: unixFromDateSeconds !== null ? unixFromDateSeconds.toString() : "Invalid date" },
+          {
+            label: "Date -> Unix milliseconds",
+            value: unixFromDateMilliseconds !== null ? unixFromDateMilliseconds.toString() : "Invalid date",
+          },
         ]}
       />
     </section>
@@ -2647,74 +2940,590 @@ function TimestampConverterTool() {
 
 function MarkdownToHtmlTool() {
   const [markdown, setMarkdown] = useState("# Heading\n\nWrite **bold** text, *italic* text, and - list items.");
+  const [status, setStatus] = useState("");
   const html = useMemo(() => markdownToHtml(markdown), [markdown]);
+  const htmlDocument = useMemo(
+    () =>
+      `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Markdown Output</title>
+</head>
+<body>
+${html}
+</body>
+</html>`,
+    [html],
+  );
+
   return (
     <section className="tool-surface">
-      <h2>Markdown to HTML</h2>
+      <ToolHeading
+        icon={Braces}
+        title="Markdown to HTML"
+        subtitle="Convert markdown instantly with preview, raw HTML output, and export-ready HTML documents."
+      />
       <div className="split-panel">
         <label className="field">
           <span>Markdown input</span>
-          <textarea value={markdown} onChange={(event) => setMarkdown(event.target.value)} rows={12} />
+          <textarea value={markdown} onChange={(event) => setMarkdown(event.target.value)} rows={14} />
         </label>
         <div className="preview">
-          <h3>HTML preview</h3>
+          <h3>Rendered preview</h3>
           <div className="preview-box" dangerouslySetInnerHTML={{ __html: html }} />
         </div>
       </div>
-    </section>
-  );
-}
-
-function UserAgentCheckerTool() {
-  const [agent, setAgent] = useState<string>("Loading...");
-  useEffect(() => {
-    setAgent(navigator.userAgent);
-  }, []);
-
-  return (
-    <section className="tool-surface">
-      <h2>User agent details</h2>
+      <label className="field">
+        <span>HTML output</span>
+        <textarea value={html} readOnly rows={10} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(html);
+            setStatus(ok ? "HTML copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy HTML
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("markdown-output.html", htmlDocument, "text/html;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Download HTML
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       <ResultList
         rows={[
-          { label: "User Agent", value: agent },
-          { label: "Platform", value: typeof navigator !== "undefined" ? navigator.platform : "Unknown" },
-          { label: "Language", value: typeof navigator !== "undefined" ? navigator.language : "Unknown" },
+          { label: "Markdown characters", value: formatNumericValue(markdown.length) },
+          { label: "Markdown words", value: formatNumericValue(countWords(markdown)) },
+          { label: "Generated HTML size", value: `${formatNumericValue(html.length)} chars` },
         ]}
       />
     </section>
   );
 }
 
-function IpAddressCheckerTool() {
-  const [ip, setIp] = useState("Not loaded yet");
-  const [loading, setLoading] = useState(false);
+interface ParsedUserAgentDetails {
+  browser: string;
+  browserVersion: string;
+  os: string;
+  engine: string;
+  deviceType: string;
+}
 
-  const loadIp = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch("https://api64.ipify.org?format=json");
-      const payload = (await response.json()) as { ip: string };
-      setIp(payload.ip ?? "Unavailable");
-      trackEvent("tool_check_ip");
-    } catch {
-      setIp("Failed to fetch IP. Check network connectivity.");
-    } finally {
-      setLoading(false);
+function parseUserAgentDetails(userAgent: string): ParsedUserAgentDetails {
+  const ua = userAgent.trim();
+  const browserChecks: Array<{ name: string; pattern: RegExp }> = [
+    { name: "Edge", pattern: /Edg\/([\d.]+)/i },
+    { name: "Opera", pattern: /OPR\/([\d.]+)/i },
+    { name: "Chrome", pattern: /Chrome\/([\d.]+)/i },
+    { name: "Firefox", pattern: /Firefox\/([\d.]+)/i },
+    { name: "Safari", pattern: /Version\/([\d.]+).*Safari/i },
+    { name: "Internet Explorer", pattern: /(?:MSIE\s|rv:)([\d.]+)/i },
+  ];
+
+  let browser = "Unknown";
+  let browserVersion = "Unknown";
+  for (const check of browserChecks) {
+    const match = ua.match(check.pattern);
+    if (match) {
+      browser = check.name;
+      browserVersion = match[1] ?? "Unknown";
+      break;
     }
-  };
+  }
+
+  let os = "Unknown";
+  if (/Windows NT/i.test(ua)) os = "Windows";
+  else if (/Android/i.test(ua)) os = "Android";
+  else if (/iPhone|iPad|iPod/i.test(ua)) os = "iOS";
+  else if (/Mac OS X/i.test(ua)) os = "macOS";
+  else if (/CrOS/i.test(ua)) os = "ChromeOS";
+  else if (/Linux/i.test(ua)) os = "Linux";
+
+  let engine = "Unknown";
+  if (/AppleWebKit/i.test(ua) && /Chrome|Chromium|Edg|OPR/i.test(ua)) engine = "Blink";
+  else if (/AppleWebKit/i.test(ua)) engine = "WebKit";
+  else if (/Gecko\/\d/i.test(ua) && /Firefox/i.test(ua)) engine = "Gecko";
+  else if (/Trident/i.test(ua)) engine = "Trident";
+
+  let deviceType = "Desktop";
+  if (/bot|crawler|spider|slurp/i.test(ua)) deviceType = "Bot";
+  else if (/tablet|ipad/i.test(ua)) deviceType = "Tablet";
+  else if (/mobile|iphone|android/i.test(ua)) deviceType = "Mobile";
+
+  return { browser, browserVersion, os, engine, deviceType };
+}
+
+function UserAgentCheckerTool() {
+  const [agentInput, setAgentInput] = useState("");
+  const [status, setStatus] = useState("");
+  const [environment, setEnvironment] = useState<{
+    platform: string;
+    language: string;
+    languages: string;
+    cookieEnabled: string;
+    online: string;
+    hardwareConcurrency: string;
+    deviceMemory: string;
+    maxTouchPoints: string;
+  }>({
+    platform: "Unknown",
+    language: "Unknown",
+    languages: "Unknown",
+    cookieEnabled: "Unknown",
+    online: "Unknown",
+    hardwareConcurrency: "Unknown",
+    deviceMemory: "Unknown",
+    maxTouchPoints: "Unknown",
+  });
+
+  useEffect(() => {
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    setAgentInput(nav.userAgent);
+    setEnvironment({
+      platform: nav.platform || "Unknown",
+      language: nav.language || "Unknown",
+      languages: nav.languages?.join(", ") || "Unknown",
+      cookieEnabled: String(nav.cookieEnabled),
+      online: String(nav.onLine),
+      hardwareConcurrency: nav.hardwareConcurrency ? nav.hardwareConcurrency.toString() : "Unknown",
+      deviceMemory: nav.deviceMemory ? `${nav.deviceMemory} GB` : "Unknown",
+      maxTouchPoints: nav.maxTouchPoints ? nav.maxTouchPoints.toString() : "0",
+    });
+  }, []);
+
+  const parsed = useMemo(() => parseUserAgentDetails(agentInput), [agentInput]);
+  const payload = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          userAgent: agentInput,
+          ...parsed,
+          ...environment,
+        },
+        null,
+        2,
+      ),
+    [agentInput, environment, parsed],
+  );
 
   return (
     <section className="tool-surface">
-      <h2>Public IP checker</h2>
-      <button className="action-button" type="button" onClick={loadIp} disabled={loading}>
-        {loading ? "Checking..." : "Check IP"}
-      </button>
-      <div className="result-row">
-        <span>Public IP</span>
-        <strong>{ip}</strong>
+      <ToolHeading
+        icon={Search}
+        title="User agent checker"
+        subtitle="Inspect browser, engine, OS, and device context for debugging analytics and compatibility."
+      />
+      <label className="field">
+        <span>User agent string</span>
+        <textarea value={agentInput} onChange={(event) => setAgentInput(event.target.value)} rows={5} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setAgentInput(navigator.userAgent);
+            setStatus("Loaded current browser user agent.");
+          }}
+        >
+          Load current UA
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(payload);
+            setStatus(ok ? "Details copied as JSON." : "Unable to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy JSON
+        </button>
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Browser", value: `${parsed.browser} ${parsed.browserVersion}`.trim() },
+          { label: "Engine", value: parsed.engine },
+          { label: "Operating system", value: parsed.os },
+          { label: "Device type", value: parsed.deviceType },
+          { label: "Platform", value: environment.platform },
+          { label: "Language", value: environment.language },
+          { label: "Languages", value: environment.languages },
+          { label: "CPU threads", value: environment.hardwareConcurrency },
+          { label: "Device memory", value: environment.deviceMemory },
+          { label: "Touch points", value: environment.maxTouchPoints },
+          { label: "Cookie enabled", value: environment.cookieEnabled },
+          { label: "Online status", value: environment.online },
+        ]}
+      />
     </section>
   );
+}
+
+interface IpLookupPayload {
+  ok: boolean;
+  ip?: string;
+  source?: string;
+  forwardedFor?: string;
+  error?: string;
+  checkedAt?: string;
+}
+
+function IpAddressCheckerTool() {
+  const [data, setData] = useState<IpLookupPayload>({ ok: false, ip: "Not loaded yet" });
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const [connection, setConnection] = useState<{
+    effectiveType: string;
+    downlink: string;
+    rtt: string;
+    saveData: string;
+  }>({
+    effectiveType: "Unknown",
+    downlink: "Unknown",
+    rtt: "Unknown",
+    saveData: "Unknown",
+  });
+
+  const loadIp = useCallback(async () => {
+    setLoading(true);
+    setStatus("Checking IP...");
+    try {
+      const response = await fetch("/api/ip-address", { cache: "no-store" });
+      const payload = (await response.json()) as IpLookupPayload;
+      setData(payload);
+      setStatus(payload.ok ? "IP details loaded." : payload.error ?? "Unable to fetch IP.");
+      trackEvent("tool_check_ip", { success: payload.ok });
+    } catch {
+      setStatus("Request failed. Check network connectivity.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const nav = navigator as Navigator & {
+      connection?: { effectiveType?: string; downlink?: number; rtt?: number; saveData?: boolean };
+    };
+    const info = nav.connection;
+    if (info) {
+      setConnection({
+        effectiveType: info.effectiveType ?? "Unknown",
+        downlink: Number.isFinite(info.downlink) ? `${info.downlink} Mbps` : "Unknown",
+        rtt: Number.isFinite(info.rtt) ? `${info.rtt} ms` : "Unknown",
+        saveData: typeof info.saveData === "boolean" ? String(info.saveData) : "Unknown",
+      });
+    }
+    void loadIp();
+  }, [loadIp]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Share2}
+        title="Public IP checker"
+        subtitle="Fetch current public IP with request source context and local network condition indicators."
+      />
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void loadIp()} disabled={loading}>
+          {loading ? "Checking..." : "Refresh IP"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(data.ip ?? "");
+            setStatus(ok ? "IP copied." : "No IP available to copy.");
+          }}
+          disabled={!data.ip}
+        >
+          <Copy size={15} />
+          Copy IP
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Public IP", value: data.ip ?? "Unavailable" },
+          { label: "Source", value: data.source ?? "Unknown" },
+          { label: "Forwarded chain", value: data.forwardedFor ?? "Unavailable" },
+          { label: "Checked at", value: data.checkedAt ?? "Unavailable" },
+          { label: "Connection type", value: connection.effectiveType },
+          { label: "Downlink", value: connection.downlink },
+          { label: "Round-trip time", value: connection.rtt },
+          { label: "Data saver", value: connection.saveData },
+        ]}
+      />
+      <p className="supporting-text">
+        IP data is used for this check only and is not stored server-side by this tool.
+      </p>
+    </section>
+  );
+}
+
+interface CronParts {
+  minute: string;
+  hour: string;
+  dayOfMonth: string;
+  month: string;
+  dayOfWeek: string;
+}
+
+interface CronPreset {
+  label: string;
+  values: CronParts;
+}
+
+const CRON_PRESETS: CronPreset[] = [
+  { label: "Every minute", values: { minute: "*", hour: "*", dayOfMonth: "*", month: "*", dayOfWeek: "*" } },
+  { label: "Every 15 minutes", values: { minute: "*/15", hour: "*", dayOfMonth: "*", month: "*", dayOfWeek: "*" } },
+  { label: "Daily at 09:00", values: { minute: "0", hour: "9", dayOfMonth: "*", month: "*", dayOfWeek: "*" } },
+  { label: "Weekdays 09:00", values: { minute: "0", hour: "9", dayOfMonth: "*", month: "*", dayOfWeek: "1-5" } },
+  { label: "Monthly at midnight", values: { minute: "0", hour: "0", dayOfMonth: "1", month: "*", dayOfWeek: "*" } },
+];
+
+const DAY_NAME_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function normalizeCronField(field: string): string {
+  return field.trim() || "*";
+}
+
+function parseCronNumericToken(
+  token: string,
+  min: number,
+  max: number,
+  allowDayOfWeekSeven = false,
+): number | null {
+  const parsed = Number.parseInt(token, 10);
+  if (!Number.isInteger(parsed)) return null;
+  if (allowDayOfWeekSeven && parsed === 7) return 0;
+  if (parsed < min || parsed > max) return null;
+  return parsed;
+}
+
+function parseCronRange(
+  token: string,
+  min: number,
+  max: number,
+  allowDayOfWeekSeven = false,
+): { start: number; end: number } | null {
+  const [rawStart, rawEnd] = token.split("-");
+  if (!rawStart || !rawEnd) return null;
+  const start = parseCronNumericToken(rawStart, min, max, allowDayOfWeekSeven);
+  const end = parseCronNumericToken(rawEnd, min, max, allowDayOfWeekSeven);
+  if (start === null || end === null || start > end) return null;
+  return { start, end };
+}
+
+function doesCronPartMatch(
+  part: string,
+  value: number,
+  min: number,
+  max: number,
+  allowDayOfWeekSeven = false,
+): boolean {
+  const clean = part.trim();
+  if (!clean) return false;
+  if (clean === "*") return true;
+
+  if (clean.includes("/")) {
+    const [base, stepToken] = clean.split("/");
+    const step = Number.parseInt(stepToken, 10);
+    if (!Number.isInteger(step) || step <= 0) return false;
+
+    let start = min;
+    let end = max;
+
+    if (base !== "*") {
+      if (base.includes("-")) {
+        const range = parseCronRange(base, min, max, allowDayOfWeekSeven);
+        if (!range) return false;
+        start = range.start;
+        end = range.end;
+      } else {
+        const numericBase = parseCronNumericToken(base, min, max, allowDayOfWeekSeven);
+        if (numericBase === null) return false;
+        start = numericBase;
+        end = max;
+      }
+    }
+
+    if (value < start || value > end) return false;
+    return (value - start) % step === 0;
+  }
+
+  if (clean.includes("-")) {
+    const range = parseCronRange(clean, min, max, allowDayOfWeekSeven);
+    if (!range) return false;
+    return value >= range.start && value <= range.end;
+  }
+
+  const direct = parseCronNumericToken(clean, min, max, allowDayOfWeekSeven);
+  return direct !== null && value === direct;
+}
+
+function matchesCronField(
+  field: string,
+  value: number,
+  min: number,
+  max: number,
+  allowDayOfWeekSeven = false,
+): boolean {
+  const normalized = normalizeCronField(field);
+  if (normalized === "*") return true;
+  return normalized.split(",").some((part) => doesCronPartMatch(part, value, min, max, allowDayOfWeekSeven));
+}
+
+function validateCronField(
+  label: string,
+  field: string,
+  min: number,
+  max: number,
+  allowDayOfWeekSeven = false,
+): string | null {
+  const normalized = normalizeCronField(field);
+  if (!/^[0-9*\/,\-]+$/.test(normalized)) {
+    return `${label} supports digits, '*', ',', '-', '/'.`;
+  }
+
+  const parts = normalized.split(",");
+  for (const partRaw of parts) {
+    const part = partRaw.trim();
+    if (!part) return `${label} contains an empty token.`;
+    if (part === "*") continue;
+
+    if (part.includes("/")) {
+      const [base, stepToken] = part.split("/");
+      const step = Number.parseInt(stepToken, 10);
+      if (!Number.isInteger(step) || step <= 0) {
+        return `${label} step value must be a positive integer.`;
+      }
+      if (base !== "*") {
+        if (base.includes("-")) {
+          if (!parseCronRange(base, min, max, allowDayOfWeekSeven)) return `${label} range '${base}' is invalid.`;
+        } else if (parseCronNumericToken(base, min, max, allowDayOfWeekSeven) === null) {
+          return `${label} value '${base}' is out of range.`;
+        }
+      }
+      continue;
+    }
+
+    if (part.includes("-")) {
+      if (!parseCronRange(part, min, max, allowDayOfWeekSeven)) return `${label} range '${part}' is invalid.`;
+      continue;
+    }
+
+    if (parseCronNumericToken(part, min, max, allowDayOfWeekSeven) === null) {
+      return `${label} value '${part}' is out of range (${min}-${max}${allowDayOfWeekSeven ? ", Sunday can be 7" : ""}).`;
+    }
+  }
+
+  return null;
+}
+
+function cronMatchesDate(parts: CronParts, date: Date): boolean {
+  const minuteMatch = matchesCronField(parts.minute, date.getMinutes(), 0, 59);
+  const hourMatch = matchesCronField(parts.hour, date.getHours(), 0, 23);
+  const monthMatch = matchesCronField(parts.month, date.getMonth() + 1, 1, 12);
+  const domMatch = matchesCronField(parts.dayOfMonth, date.getDate(), 1, 31);
+  const dowMatch = matchesCronField(parts.dayOfWeek, date.getDay(), 0, 6, true);
+  const domAny = normalizeCronField(parts.dayOfMonth) === "*";
+  const dowAny = normalizeCronField(parts.dayOfWeek) === "*";
+  const dayMatch = domAny && dowAny ? true : domAny ? dowMatch : dowAny ? domMatch : domMatch || dowMatch;
+
+  return minuteMatch && hourMatch && monthMatch && dayMatch;
+}
+
+function getNextCronRunDates(parts: CronParts, count = 5): Date[] {
+  const output: Date[] = [];
+  const now = new Date();
+  const cursor = new Date(now);
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+
+  const maxIterations = 525_600 * 3;
+  for (let index = 0; index < maxIterations && output.length < count; index += 1) {
+    if (cronMatchesDate(parts, cursor)) {
+      output.push(new Date(cursor));
+    }
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+
+  return output;
+}
+
+function summarizeCronExpression(parts: CronParts): string {
+  const minute = normalizeCronField(parts.minute);
+  const hour = normalizeCronField(parts.hour);
+  const dom = normalizeCronField(parts.dayOfMonth);
+  const month = normalizeCronField(parts.month);
+  const dow = normalizeCronField(parts.dayOfWeek);
+
+  if (minute === "*" && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    return "Runs every minute.";
+  }
+
+  const stepMinuteMatch = minute.match(/^\*\/(\d+)$/);
+  if (stepMinuteMatch && hour === "*" && dom === "*" && month === "*" && dow === "*") {
+    return `Runs every ${stepMinuteMatch[1]} minutes.`;
+  }
+
+  const minuteValue = Number.parseInt(minute, 10);
+  const hourValue = Number.parseInt(hour, 10);
+  if (
+    Number.isInteger(minuteValue) &&
+    minuteValue >= 0 &&
+    minuteValue <= 59 &&
+    hour === "*" &&
+    dom === "*" &&
+    month === "*" &&
+    dow === "*"
+  ) {
+    return `Runs at minute ${minuteValue} of every hour.`;
+  }
+
+  if (
+    Number.isInteger(minuteValue) &&
+    Number.isInteger(hourValue) &&
+    minuteValue >= 0 &&
+    minuteValue <= 59 &&
+    hourValue >= 0 &&
+    hourValue <= 23 &&
+    dom === "*" &&
+    month === "*" &&
+    dow === "*"
+  ) {
+    return `Runs daily at ${hourValue.toString().padStart(2, "0")}:${minuteValue.toString().padStart(2, "0")} (local time).`;
+  }
+
+  if (
+    Number.isInteger(minuteValue) &&
+    Number.isInteger(hourValue) &&
+    minuteValue >= 0 &&
+    minuteValue <= 59 &&
+    hourValue >= 0 &&
+    hourValue <= 23 &&
+    dom === "*" &&
+    month === "*" &&
+    /^\d$/.test(dow)
+  ) {
+    const dayIndex = Number.parseInt(dow, 10) % 7;
+    return `Runs every ${DAY_NAME_SHORT[dayIndex]} at ${hourValue.toString().padStart(2, "0")}:${minuteValue.toString().padStart(2, "0")} (local time).`;
+  }
+
+  return "Custom schedule: review generated run previews below.";
 }
 
 function CronGeneratorTool() {
@@ -2723,84 +3532,437 @@ function CronGeneratorTool() {
   const [dayOfMonth, setDayOfMonth] = useState("*");
   const [month, setMonth] = useState("*");
   const [dayOfWeek, setDayOfWeek] = useState("*");
-  const cron = `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek}`;
+  const [status, setStatus] = useState("");
+
+  const cronParts = useMemo(
+    () => ({
+      minute: normalizeCronField(minute),
+      hour: normalizeCronField(hour),
+      dayOfMonth: normalizeCronField(dayOfMonth),
+      month: normalizeCronField(month),
+      dayOfWeek: normalizeCronField(dayOfWeek),
+    }),
+    [dayOfMonth, dayOfWeek, hour, minute, month],
+  );
+
+  const cron = `${cronParts.minute} ${cronParts.hour} ${cronParts.dayOfMonth} ${cronParts.month} ${cronParts.dayOfWeek}`;
+  const validationErrors = useMemo(
+    () =>
+      [
+        validateCronField("Minute", cronParts.minute, 0, 59),
+        validateCronField("Hour", cronParts.hour, 0, 23),
+        validateCronField("Day of month", cronParts.dayOfMonth, 1, 31),
+        validateCronField("Month", cronParts.month, 1, 12),
+        validateCronField("Day of week", cronParts.dayOfWeek, 0, 6, true),
+      ].filter((error): error is string => Boolean(error)),
+    [cronParts.dayOfMonth, cronParts.dayOfWeek, cronParts.hour, cronParts.minute, cronParts.month],
+  );
+  const summary = useMemo(
+    () => (validationErrors.length === 0 ? summarizeCronExpression(cronParts) : "Fix field errors to generate schedule preview."),
+    [cronParts, validationErrors.length],
+  );
+  const nextRuns = useMemo(
+    () => (validationErrors.length === 0 ? getNextCronRunDates(cronParts, 5) : []),
+    [cronParts, validationErrors.length],
+  );
 
   return (
     <section className="tool-surface">
-      <h2>Cron expression generator</h2>
+      <ToolHeading
+        icon={RefreshCw}
+        title="Cron expression generator"
+        subtitle="Build cron jobs with validation, natural-language summary, and next-run simulation."
+      />
+      <div className="preset-row">
+        <span className="supporting-text">Presets:</span>
+        {CRON_PRESETS.map((preset) => (
+          <button
+            key={preset.label}
+            className="chip-button"
+            type="button"
+            onClick={() => {
+              setMinute(preset.values.minute);
+              setHour(preset.values.hour);
+              setDayOfMonth(preset.values.dayOfMonth);
+              setMonth(preset.values.month);
+              setDayOfWeek(preset.values.dayOfWeek);
+              setStatus(`Applied preset: ${preset.label}`);
+            }}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
       <div className="field-grid">
         <label className="field">
-          <span>Minute</span>
+          <span>Minute (0-59)</span>
           <input value={minute} onChange={(event) => setMinute(event.target.value)} />
         </label>
         <label className="field">
-          <span>Hour</span>
+          <span>Hour (0-23)</span>
           <input value={hour} onChange={(event) => setHour(event.target.value)} />
         </label>
         <label className="field">
-          <span>Day of month</span>
+          <span>Day of month (1-31)</span>
           <input value={dayOfMonth} onChange={(event) => setDayOfMonth(event.target.value)} />
         </label>
         <label className="field">
-          <span>Month</span>
+          <span>Month (1-12)</span>
           <input value={month} onChange={(event) => setMonth(event.target.value)} />
         </label>
         <label className="field">
-          <span>Day of week</span>
+          <span>Day of week (0-6, 7=Sun)</span>
           <input value={dayOfWeek} onChange={(event) => setDayOfWeek(event.target.value)} />
         </label>
       </div>
-      <div className="result-row">
-        <span>Cron expression</span>
-        <strong>{cron}</strong>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(cron);
+            setStatus(ok ? "Cron expression copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy expression
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setMinute("0");
+            setHour("*");
+            setDayOfMonth("*");
+            setMonth("*");
+            setDayOfWeek("*");
+            setStatus("Reset cron fields to defaults.");
+          }}
+        >
+          <Trash2 size={15} />
+          Reset
+        </button>
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Cron expression", value: cron },
+          { label: "Schedule summary", value: summary },
+          { label: "Timezone", value: Intl.DateTimeFormat().resolvedOptions().timeZone || "Local" },
+        ]}
+      />
+      {validationErrors.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Field validation</h3>
+          <ul className="plain-list">
+            {validationErrors.map((error) => (
+              <li key={error} className="error-text">
+                {error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {validationErrors.length === 0 && nextRuns.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Next run preview</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Local Time</th>
+                  <th>UTC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nextRuns.map((run, index) => (
+                  <tr key={`${run.toISOString()}-${index}`}>
+                    <td>{index + 1}</td>
+                    <td>{run.toLocaleString("en-US", { hour12: false })}</td>
+                    <td>{run.toUTCString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function HttpStatusCheckerTool() {
-  const [url, setUrl] = useState("https://example.com");
-  const [status, setStatus] = useState("No result yet");
-  const [loading, setLoading] = useState(false);
+interface HttpStatusCheckResult {
+  url: string;
+  method: "HEAD" | "GET";
+  ok: boolean;
+  status?: number;
+  statusText?: string;
+  timingMs?: number;
+  finalUrl?: string;
+  redirected?: boolean;
+  contentType?: string;
+  contentLength?: string;
+  error?: string;
+  checkedAt: number;
+}
 
-  const check = async () => {
-    setLoading(true);
-    setStatus("Checking...");
+interface HttpStatusHistoryEntry {
+  id: string;
+  url: string;
+  method: "HEAD" | "GET";
+  statusLabel: string;
+  checkedAt: number;
+}
+
+const HTTP_STATUS_EXAMPLES = ["https://example.com", "https://utiliora.com", "https://vercel.com"];
+
+function getStatusTone(status?: number, error?: string): "ok" | "warn" | "bad" | "info" {
+  if (error) return "bad";
+  if (status === undefined) return "info";
+  if (status >= 200 && status < 300) return "ok";
+  if (status >= 300 && status < 400) return "info";
+  if (status >= 400 && status < 500) return "warn";
+  return "bad";
+}
+
+function HttpStatusCheckerTool() {
+  const historyStorageKey = "utiliora-http-status-history-v1";
+  const [urlInput, setUrlInput] = useState("https://example.com");
+  const [method, setMethod] = useState<"HEAD" | "GET">("HEAD");
+  const [results, setResults] = useState<HttpStatusCheckResult[]>([]);
+  const [history, setHistory] = useState<HttpStatusHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("Enter one URL per line to run checks.");
+
+  useEffect(() => {
     try {
-      const response = await fetch(`/api/http-status?url=${encodeURIComponent(url)}`);
-      const payload = (await response.json()) as {
-        ok: boolean;
-        status?: number;
-        statusText?: string;
-        error?: string;
-        timingMs?: number;
-      };
-      if (!payload.ok) {
-        setStatus(payload.error ?? "Unable to fetch URL");
-      } else {
-        setStatus(`${payload.status} ${payload.statusText ?? ""} (${payload.timingMs} ms)`.trim());
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as HttpStatusHistoryEntry[];
+      if (Array.isArray(parsed)) {
+        setHistory(parsed.slice(0, 30));
       }
-      trackEvent("tool_http_check", { success: payload.ok });
     } catch {
-      setStatus("Request failed.");
-    } finally {
-      setLoading(false);
+      // Ignore malformed storage.
     }
-  };
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 30)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  const runChecks = useCallback(
+    async (overrideTargets?: string[]) => {
+      const targets = (overrideTargets ?? urlInput.split(/\r?\n/g))
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const deduped = Array.from(new Set(targets)).slice(0, 10);
+
+      if (deduped.length === 0) {
+        setStatusMessage("Enter at least one valid URL.");
+        return;
+      }
+
+      setLoading(true);
+      setStatusMessage(`Checking ${deduped.length} URL${deduped.length === 1 ? "" : "s"}...`);
+
+      const nextResults = await Promise.all(
+        deduped.map(async (targetUrl): Promise<HttpStatusCheckResult> => {
+          try {
+            const response = await fetch(
+              `/api/http-status?url=${encodeURIComponent(targetUrl)}&method=${encodeURIComponent(method)}`,
+              { cache: "no-store" },
+            );
+            const payload = (await response.json()) as {
+              ok: boolean;
+              status?: number;
+              statusText?: string;
+              error?: string;
+              timingMs?: number;
+              finalUrl?: string;
+              redirected?: boolean;
+              contentType?: string;
+              contentLength?: string;
+            };
+            return {
+              url: targetUrl,
+              method,
+              ok: payload.ok,
+              status: payload.status,
+              statusText: payload.statusText,
+              error: payload.error,
+              timingMs: payload.timingMs,
+              finalUrl: payload.finalUrl,
+              redirected: payload.redirected,
+              contentType: payload.contentType,
+              contentLength: payload.contentLength,
+              checkedAt: Date.now(),
+            };
+          } catch {
+            return {
+              url: targetUrl,
+              method,
+              ok: false,
+              error: "Request failed before receiving a response.",
+              checkedAt: Date.now(),
+            };
+          }
+        }),
+      );
+
+      setResults(nextResults);
+      setLoading(false);
+
+      const successes = nextResults.filter((result) => result.ok).length;
+      setStatusMessage(`Completed ${nextResults.length} checks. ${successes} succeeded, ${nextResults.length - successes} failed.`);
+      trackEvent("tool_http_check", { count: nextResults.length, method, successes });
+
+      const historyRows = nextResults.map((result) => ({
+        id: `${result.checkedAt}-${result.url}-${Math.random().toString(36).slice(2, 7)}`,
+        url: result.url,
+        method: result.method,
+        statusLabel: result.ok
+          ? `${result.status ?? ""} ${result.statusText ?? ""}`.trim()
+          : result.error ?? "Failed",
+        checkedAt: result.checkedAt,
+      }));
+      setHistory((current) => [...historyRows, ...current].slice(0, 30));
+    },
+    [method, urlInput],
+  );
 
   return (
     <section className="tool-surface">
-      <h2>HTTP status checker</h2>
+      <ToolHeading
+        icon={Link2}
+        title="HTTP status checker"
+        subtitle="Run batch URL checks with response timing, redirect insight, and reusable check history."
+      />
       <label className="field">
-        <span>URL</span>
-        <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} />
+        <span>URLs (one per line)</span>
+        <textarea value={urlInput} onChange={(event) => setUrlInput(event.target.value)} rows={5} />
       </label>
-      <button className="action-button" type="button" onClick={check} disabled={loading}>
-        {loading ? "Checking..." : "Check status"}
-      </button>
-      <div className="result-row">
-        <span>Result</span>
-        <strong>{status}</strong>
+      <div className="field-grid">
+        <label className="field">
+          <span>Method</span>
+          <select value={method} onChange={(event) => setMethod(event.target.value as "HEAD" | "GET")}>
+            <option value="HEAD">HEAD (faster)</option>
+            <option value="GET">GET</option>
+          </select>
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void runChecks()} disabled={loading}>
+          {loading ? "Checking..." : "Check URLs"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => setUrlInput(HTTP_STATUS_EXAMPLES.join("\n"))}
+        >
+          Load examples
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "http-status-results.csv",
+              ["URL", "Method", "Status", "Timing (ms)", "Final URL", "Content-Type", "Error"],
+              results.map((result) => [
+                result.url,
+                result.method,
+                result.status ? `${result.status} ${result.statusText ?? ""}`.trim() : "",
+                result.timingMs?.toString() ?? "",
+                result.finalUrl ?? "",
+                result.contentType ?? "",
+                result.error ?? "",
+              ]),
+            )
+          }
+          disabled={results.length === 0}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+      </div>
+      <p className="supporting-text">{statusMessage}</p>
+      {results.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Check results</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>URL</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                  <th>Final URL</th>
+                  <th>Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((result) => (
+                  <tr key={`${result.url}-${result.checkedAt}`}>
+                    <td>{result.url}</td>
+                    <td>
+                      <span className={`status-badge ${getStatusTone(result.status, result.error)}`}>
+                        {result.ok
+                          ? `${result.status ?? ""} ${result.statusText ?? ""}`.trim()
+                          : result.error ?? "Failed"}
+                      </span>
+                    </td>
+                    <td>{result.timingMs ? `${result.timingMs} ms` : "-"}</td>
+                    <td>{result.finalUrl ?? "-"}</td>
+                    <td>{result.contentType ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent checks</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No history yet. Run checks to save recent endpoints.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((item) => (
+              <li key={item.id}>
+                <div className="history-line">
+                  <strong>{item.url}</strong>
+                  <span className="supporting-text">
+                    {item.method} | {item.statusLabel} | {new Date(item.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setMethod(item.method);
+                      setUrlInput(item.url);
+                      void runChecks([item.url]);
+                    }}
+                  >
+                    Re-run
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );

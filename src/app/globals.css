@@ -616,6 +616,41 @@ textarea {
   flex-wrap: wrap;
 }
 
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.status-badge.ok {
+  border-color: #2b8a3e;
+  color: #2b8a3e;
+  background: color-mix(in srgb, #2b8a3e 12%, var(--surface) 88%);
+}
+
+.status-badge.info {
+  border-color: #1f5b99;
+  color: #1f5b99;
+  background: color-mix(in srgb, #1f5b99 12%, var(--surface) 88%);
+}
+
+.status-badge.warn {
+  border-color: #946200;
+  color: #946200;
+  background: color-mix(in srgb, #946200 12%, var(--surface) 88%);
+}
+
+.status-badge.bad {
+  border-color: #9b1f1f;
+  color: #9b1f1f;
+  background: color-mix(in srgb, #9b1f1f 12%, var(--surface) 88%);
+}
+
 .limit-meter-wrap {
   margin-top: 0.35rem;
 }
