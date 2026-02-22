@@ -1,0 +1,670 @@
+import { getCategory } from "@/lib/categories";
+import type { ToolDefinition, ToolFaq, ToolCategorySlug } from "@/lib/types";
+
+function baseFaq(title: string): ToolFaq[] {
+  return [
+    {
+      question: `Is ${title} free to use?`,
+      answer: `${title} is available for free and works directly in your browser.`,
+    },
+    {
+      question: `Does ${title} store my input data?`,
+      answer:
+        "Inputs are processed client-side whenever possible. Server-side checks are only used for network diagnostics and are not stored.",
+    },
+    {
+      question: `Can I use ${title} on mobile?`,
+      answer: "Yes. The interface is responsive and optimized for phones, tablets, and desktop devices.",
+    },
+  ];
+}
+
+const calculators: ToolDefinition[] = [
+  {
+    slug: "loan-emi-calculator",
+    category: "calculators",
+    title: "Loan EMI Calculator",
+    summary: "Calculate monthly loan installments, total interest, and total repayment.",
+    description:
+      "Estimate monthly EMI for personal, home, or business loans with accurate principal, tenure, and interest inputs.",
+    keywords: ["loan emi calculator", "monthly emi", "loan repayment calculator"],
+    engine: { kind: "calculator", id: "loan-emi-calculator" },
+    faq: baseFaq("Loan EMI Calculator"),
+  },
+  {
+    slug: "compound-interest-calculator",
+    category: "calculators",
+    title: "Compound Interest Calculator",
+    summary: "Forecast investment growth with compounding frequency and annual return.",
+    description:
+      "Model long-term savings outcomes by adjusting initial principal, rate, years, and compounding periods.",
+    keywords: ["compound interest", "investment growth calculator", "future value"],
+    engine: { kind: "calculator", id: "compound-interest-calculator" },
+    faq: baseFaq("Compound Interest Calculator"),
+  },
+  {
+    slug: "simple-interest-calculator",
+    category: "calculators",
+    title: "Simple Interest Calculator",
+    summary: "Compute total simple interest and maturity amount in seconds.",
+    description: "Quickly calculate simple interest based on principal, annual rate, and time period.",
+    keywords: ["simple interest calculator", "interest formula"],
+    engine: { kind: "calculator", id: "simple-interest-calculator" },
+    faq: baseFaq("Simple Interest Calculator"),
+  },
+  {
+    slug: "roi-calculator",
+    category: "calculators",
+    title: "ROI Calculator",
+    summary: "Measure return on investment and net profit for any campaign or project.",
+    description: "Compare invested capital against returns and track profitability with a clean ROI output.",
+    keywords: ["roi calculator", "return on investment", "profitability calculator"],
+    engine: { kind: "calculator", id: "roi-calculator" },
+    faq: baseFaq("ROI Calculator"),
+  },
+  {
+    slug: "profit-margin-calculator",
+    category: "calculators",
+    title: "Profit Margin Calculator",
+    summary: "Calculate margin and markup based on cost and selling price.",
+    description: "Use this tool to set pricing with clear profit, margin percentage, and markup visibility.",
+    keywords: ["profit margin calculator", "markup calculator", "pricing calculator"],
+    engine: { kind: "calculator", id: "profit-margin-calculator" },
+    faq: baseFaq("Profit Margin Calculator"),
+  },
+  {
+    slug: "vat-calculator",
+    category: "calculators",
+    title: "VAT Calculator",
+    summary: "Add VAT to base prices and instantly view tax-inclusive totals.",
+    description: "Useful for invoicing, e-commerce pricing, and tax estimation in VAT-enabled regions.",
+    keywords: ["vat calculator", "value added tax", "tax inclusive"],
+    engine: { kind: "calculator", id: "vat-calculator" },
+    faq: baseFaq("VAT Calculator"),
+  },
+  {
+    slug: "bmi-calculator",
+    category: "calculators",
+    title: "BMI Calculator",
+    summary: "Calculate Body Mass Index and receive weight category guidance.",
+    description: "Enter weight and height to compute BMI with a standard health category interpretation.",
+    keywords: ["bmi calculator", "body mass index", "weight category"],
+    engine: { kind: "calculator", id: "bmi-calculator" },
+    faq: baseFaq("BMI Calculator"),
+  },
+  {
+    slug: "calorie-needs-calculator",
+    category: "calculators",
+    title: "Calorie Needs Calculator",
+    summary: "Estimate BMR and maintenance calories by age, weight, and activity level.",
+    description: "Plan nutrition targets using a practical calorie estimator based on activity and body metrics.",
+    keywords: ["calorie calculator", "bmr calculator", "maintenance calories"],
+    engine: { kind: "calculator", id: "calorie-needs-calculator" },
+    faq: baseFaq("Calorie Needs Calculator"),
+  },
+  {
+    slug: "water-intake-calculator",
+    category: "calculators",
+    title: "Water Intake Calculator",
+    summary: "Estimate daily hydration needs using body weight and activity.",
+    description: "Get a daily water target in ml and liters to support health and performance habits.",
+    keywords: ["water intake calculator", "hydration calculator", "daily water needs"],
+    engine: { kind: "calculator", id: "water-intake-calculator" },
+    faq: baseFaq("Water Intake Calculator"),
+  },
+  {
+    slug: "savings-goal-calculator",
+    category: "calculators",
+    title: "Savings Goal Calculator",
+    summary: "Find the monthly amount needed to hit your future savings target.",
+    description:
+      "Set a target amount, timeline, and expected return to compute the monthly contribution needed.",
+    keywords: ["savings goal calculator", "monthly savings", "financial planning"],
+    engine: { kind: "calculator", id: "savings-goal-calculator" },
+    faq: baseFaq("Savings Goal Calculator"),
+  },
+  {
+    slug: "break-even-calculator",
+    category: "calculators",
+    title: "Break-even Calculator",
+    summary: "Calculate units and revenue required to break even.",
+    description:
+      "Use fixed costs, variable costs, and pricing to understand when your business becomes profitable.",
+    keywords: ["break-even calculator", "break even point", "business calculator"],
+    engine: { kind: "calculator", id: "break-even-calculator" },
+    faq: baseFaq("Break-even Calculator"),
+  },
+  {
+    slug: "freelance-rate-calculator",
+    category: "calculators",
+    title: "Freelance Rate Calculator",
+    summary: "Determine a sustainable hourly rate from income goals and billable hours.",
+    description: "Set realistic pricing for freelance services based on expenses, profit target, and capacity.",
+    keywords: ["freelance rate calculator", "hourly pricing", "consulting rate"],
+    engine: { kind: "calculator", id: "freelance-rate-calculator" },
+    faq: baseFaq("Freelance Rate Calculator"),
+  },
+];
+
+const converterDefinitions: ToolDefinition[] = [
+  {
+    slug: "length-converter",
+    category: "converters",
+    title: "Length Converter",
+    summary: "Convert meters, kilometers, feet, miles, and inches.",
+    description: "Convert length units instantly with high precision output.",
+    keywords: ["length converter", "meter to feet", "mile to kilometer"],
+    engine: { kind: "unit-converter", quantity: "length" },
+    faq: baseFaq("Length Converter"),
+  },
+  {
+    slug: "weight-converter",
+    category: "converters",
+    title: "Weight Converter",
+    summary: "Convert kilograms, grams, pounds, and ounces.",
+    description: "Quick weight unit transformations for health, cooking, and logistics.",
+    keywords: ["weight converter", "kg to lbs", "grams to ounces"],
+    engine: { kind: "unit-converter", quantity: "weight" },
+    faq: baseFaq("Weight Converter"),
+  },
+  {
+    slug: "temperature-converter",
+    category: "converters",
+    title: "Temperature Converter",
+    summary: "Convert Celsius, Fahrenheit, and Kelvin.",
+    description: "Instant temperature conversion with correct scale formulas.",
+    keywords: ["temperature converter", "celsius to fahrenheit", "kelvin conversion"],
+    engine: { kind: "unit-converter", quantity: "temperature" },
+    faq: baseFaq("Temperature Converter"),
+  },
+  {
+    slug: "area-converter",
+    category: "converters",
+    title: "Area Converter",
+    summary: "Convert area between square meters, acres, hectares, and more.",
+    description: "Useful for real estate, agriculture, and construction planning.",
+    keywords: ["area converter", "acre to sqm", "hectare conversion"],
+    engine: { kind: "unit-converter", quantity: "area" },
+    faq: baseFaq("Area Converter"),
+  },
+  {
+    slug: "volume-converter",
+    category: "converters",
+    title: "Volume Converter",
+    summary: "Convert liters, gallons, milliliters, cups, and cubic meters.",
+    description: "Reliable volume conversions for kitchen, lab, and engineering tasks.",
+    keywords: ["volume converter", "liter to gallon", "ml conversion"],
+    engine: { kind: "unit-converter", quantity: "volume" },
+    faq: baseFaq("Volume Converter"),
+  },
+  {
+    slug: "speed-converter",
+    category: "converters",
+    title: "Speed Converter",
+    summary: "Convert mph, kph, knots, and meters per second.",
+    description: "Compare speed values across transportation and physics units.",
+    keywords: ["speed converter", "mph to kph", "knot converter"],
+    engine: { kind: "unit-converter", quantity: "speed" },
+    faq: baseFaq("Speed Converter"),
+  },
+  {
+    slug: "time-converter",
+    category: "converters",
+    title: "Time Converter",
+    summary: "Convert seconds, minutes, hours, days, and weeks.",
+    description: "Fast conversions for scheduling, productivity, and engineering calculations.",
+    keywords: ["time converter", "minutes to hours", "seconds converter"],
+    engine: { kind: "unit-converter", quantity: "time" },
+    faq: baseFaq("Time Converter"),
+  },
+  {
+    slug: "data-storage-converter",
+    category: "converters",
+    title: "Data Storage Converter",
+    summary: "Convert bytes, KB, MB, GB, and TB.",
+    description: "Accurate binary-based storage conversion for files and infrastructure planning.",
+    keywords: ["storage converter", "mb to gb", "byte converter"],
+    engine: { kind: "unit-converter", quantity: "data-storage" },
+    faq: baseFaq("Data Storage Converter"),
+  },
+  {
+    slug: "pressure-converter",
+    category: "converters",
+    title: "Pressure Converter",
+    summary: "Convert Pa, kPa, bar, atm, and PSI values.",
+    description: "Pressure conversion tool for automotive, industrial, and scientific use.",
+    keywords: ["pressure converter", "psi to bar", "atm converter"],
+    engine: { kind: "unit-converter", quantity: "pressure" },
+    faq: baseFaq("Pressure Converter"),
+  },
+  {
+    slug: "energy-converter",
+    category: "converters",
+    title: "Energy Converter",
+    summary: "Convert joules, kilojoules, calories, BTU, and kWh.",
+    description: "Convert energy units for appliance, nutrition, and scientific calculations.",
+    keywords: ["energy converter", "joule to calorie", "kwh converter"],
+    engine: { kind: "unit-converter", quantity: "energy" },
+    faq: baseFaq("Energy Converter"),
+  },
+  {
+    slug: "binary-decimal-converter",
+    category: "converters",
+    title: "Binary-Decimal Converter",
+    summary: "Convert between binary and decimal formats.",
+    description: "Switch between base-2 and base-10 formats for development workflows.",
+    keywords: ["binary to decimal", "decimal to binary", "number base converter"],
+    engine: { kind: "number-converter", mode: "binary-decimal" },
+    faq: baseFaq("Binary-Decimal Converter"),
+  },
+  {
+    slug: "decimal-hex-converter",
+    category: "converters",
+    title: "Decimal-Hex Converter",
+    summary: "Convert decimal numbers to hexadecimal and back.",
+    description: "Useful for programming, color values, and systems work.",
+    keywords: ["decimal to hex", "hex to decimal", "hex converter"],
+    engine: { kind: "number-converter", mode: "decimal-hex" },
+    faq: baseFaq("Decimal-Hex Converter"),
+  },
+  {
+    slug: "roman-numeral-converter",
+    category: "converters",
+    title: "Roman Numeral Converter",
+    summary: "Convert integers to Roman numerals and Roman numerals to integers.",
+    description: "Clean conversion for education, publishing, and formatting needs.",
+    keywords: ["roman numeral converter", "number to roman", "roman to number"],
+    engine: { kind: "number-converter", mode: "roman" },
+    faq: baseFaq("Roman Numeral Converter"),
+  },
+  {
+    slug: "number-to-words-converter",
+    category: "converters",
+    title: "Number to Words Converter",
+    summary: "Spell out whole numbers in plain English text.",
+    description: "Convert numbers into readable words for checks, invoices, and documents.",
+    keywords: ["number to words", "spell number", "numeric to text"],
+    engine: { kind: "number-converter", mode: "number-to-words" },
+    faq: baseFaq("Number to Words Converter"),
+  },
+];
+
+const seoTools: ToolDefinition[] = [
+  {
+    slug: "word-counter",
+    category: "seo-tools",
+    title: "Word Counter",
+    summary: "Count words, sentences, and reading length instantly.",
+    description: "Analyze text length for SEO writing, blogs, ads, and product descriptions.",
+    keywords: ["word counter", "count words online", "seo word count"],
+    engine: { kind: "text-tool", id: "word-counter" },
+    faq: baseFaq("Word Counter"),
+  },
+  {
+    slug: "character-counter",
+    category: "seo-tools",
+    title: "Character Counter",
+    summary: "Count characters with or without spaces.",
+    description: "Perfect for social posts, metadata limits, and form field constraints.",
+    keywords: ["character counter", "count characters", "meta description length"],
+    engine: { kind: "text-tool", id: "character-counter" },
+    faq: baseFaq("Character Counter"),
+  },
+  {
+    slug: "keyword-density-checker",
+    category: "seo-tools",
+    title: "Keyword Density Checker",
+    summary: "Find top terms and keyword density from any content block.",
+    description: "Check lexical frequency to optimize content naturally without overstuffing.",
+    keywords: ["keyword density checker", "seo keyword analysis", "content optimization"],
+    engine: { kind: "text-tool", id: "keyword-density-checker" },
+    faq: baseFaq("Keyword Density Checker"),
+  },
+  {
+    slug: "slug-generator",
+    category: "seo-tools",
+    title: "Slug Generator",
+    summary: "Generate clean URL slugs from titles and headlines.",
+    description: "Create search-friendly URLs by normalizing case, spacing, and punctuation.",
+    keywords: ["slug generator", "url slug tool", "seo url builder"],
+    engine: { kind: "text-tool", id: "slug-generator" },
+    faq: baseFaq("Slug Generator"),
+  },
+  {
+    slug: "meta-tag-generator",
+    category: "seo-tools",
+    title: "Meta Tag Generator",
+    summary: "Generate HTML title and meta description tags.",
+    description: "Create foundational SEO tags for pages and landing content quickly.",
+    keywords: ["meta tag generator", "seo title generator", "meta description tool"],
+    engine: { kind: "text-tool", id: "meta-tag-generator" },
+    faq: baseFaq("Meta Tag Generator"),
+  },
+  {
+    slug: "open-graph-generator",
+    category: "seo-tools",
+    title: "Open Graph Generator",
+    summary: "Create Open Graph social preview meta tags.",
+    description: "Generate OG tags for better link previews on social platforms.",
+    keywords: ["open graph generator", "og tags", "social meta tags"],
+    engine: { kind: "text-tool", id: "open-graph-generator" },
+    faq: baseFaq("Open Graph Generator"),
+  },
+  {
+    slug: "json-formatter",
+    category: "seo-tools",
+    title: "JSON Formatter",
+    summary: "Validate and format JSON with readable indentation.",
+    description: "Paste raw JSON and output prettified structure for debugging and publishing.",
+    keywords: ["json formatter", "json pretty print", "json validator"],
+    engine: { kind: "text-tool", id: "json-formatter" },
+    faq: baseFaq("JSON Formatter"),
+  },
+  {
+    slug: "css-minifier",
+    category: "seo-tools",
+    title: "CSS Minifier",
+    summary: "Minify CSS for faster loading and reduced file size.",
+    description: "Compress style sheets by removing comments and extra whitespace.",
+    keywords: ["css minifier", "compress css", "optimize css"],
+    engine: { kind: "text-tool", id: "css-minifier" },
+    faq: baseFaq("CSS Minifier"),
+  },
+  {
+    slug: "js-minifier",
+    category: "seo-tools",
+    title: "JS Minifier",
+    summary: "Reduce JavaScript payload size with instant minification.",
+    description: "Quickly trim comments and unnecessary spaces for lighter script output.",
+    keywords: ["js minifier", "javascript compressor", "minify js"],
+    engine: { kind: "text-tool", id: "js-minifier" },
+    faq: baseFaq("JS Minifier"),
+  },
+  {
+    slug: "base64-encoder-decoder",
+    category: "seo-tools",
+    title: "Base64 Encoder/Decoder",
+    summary: "Encode text to Base64 and decode Base64 strings.",
+    description: "Fast conversion utility for data handling and transfer formats.",
+    keywords: ["base64 encoder", "base64 decoder", "text encode decode"],
+    engine: { kind: "text-tool", id: "base64-encoder-decoder" },
+    faq: baseFaq("Base64 Encoder/Decoder"),
+  },
+  {
+    slug: "password-generator",
+    category: "seo-tools",
+    title: "Password Generator",
+    summary: "Create strong random passwords with custom length and symbols.",
+    description: "Generate secure passwords for personal, team, and business account security.",
+    keywords: ["password generator", "strong password", "random password"],
+    engine: { kind: "text-tool", id: "password-generator" },
+    faq: baseFaq("Password Generator"),
+  },
+  {
+    slug: "lorem-ipsum-generator",
+    category: "seo-tools",
+    title: "Lorem Ipsum Generator",
+    summary: "Generate clean placeholder text paragraphs for design and drafts.",
+    description: "Produce quick Lorem Ipsum content for prototypes and publishing layouts.",
+    keywords: ["lorem ipsum generator", "placeholder text", "dummy text"],
+    engine: { kind: "text-tool", id: "lorem-ipsum-generator" },
+    faq: baseFaq("Lorem Ipsum Generator"),
+  },
+];
+
+const imageTools: ToolDefinition[] = [
+  {
+    slug: "qr-code-generator",
+    category: "image-tools",
+    title: "QR Code Generator",
+    summary: "Generate QR codes for links, text, or contact information.",
+    description: "Create scannable QR codes with instant download for print and digital use.",
+    keywords: ["qr code generator", "qr maker", "generate qr code"],
+    engine: { kind: "image-tool", id: "qr-code-generator" },
+    faq: baseFaq("QR Code Generator"),
+  },
+  {
+    slug: "color-picker",
+    category: "image-tools",
+    title: "Color Picker",
+    summary: "Pick colors and get instant HEX values.",
+    description: "Simple browser-native color picker for designers and front-end teams.",
+    keywords: ["color picker", "hex color tool", "select color"],
+    engine: { kind: "image-tool", id: "color-picker" },
+    faq: baseFaq("Color Picker"),
+  },
+  {
+    slug: "hex-rgb-converter",
+    category: "image-tools",
+    title: "HEX-RGB Converter",
+    summary: "Convert colors between HEX and RGB formats.",
+    description: "Convert brand colors across CSS and design tool conventions.",
+    keywords: ["hex to rgb", "rgb to hex", "color converter"],
+    engine: { kind: "image-tool", id: "hex-rgb-converter" },
+    faq: baseFaq("HEX-RGB Converter"),
+  },
+  {
+    slug: "image-resizer",
+    category: "image-tools",
+    title: "Image Resizer",
+    summary: "Resize images by width while preserving aspect ratio.",
+    description: "Client-side image resizing with downloadable output and no server upload required.",
+    keywords: ["image resizer", "resize photo online", "client-side image resize"],
+    engine: { kind: "image-tool", id: "image-resizer" },
+    faq: baseFaq("Image Resizer"),
+    affiliate: {
+      label: "Canva Pro",
+      description: "Need advanced editing templates and collaborative design workflows?",
+      url: "https://www.canva.com/",
+    },
+  },
+  {
+    slug: "image-compressor",
+    category: "image-tools",
+    title: "Image Compressor",
+    summary: "Compress image files client-side using quality controls.",
+    description: "Reduce image size for faster websites, better SEO, and improved upload speeds.",
+    keywords: ["image compressor", "compress image online", "reduce image size"],
+    engine: { kind: "image-tool", id: "image-compressor" },
+    faq: baseFaq("Image Compressor"),
+  },
+  {
+    slug: "jpg-to-png-converter",
+    category: "image-tools",
+    title: "JPG to PNG Converter",
+    summary: "Convert JPG files to PNG format in-browser.",
+    description: "Quick conversion workflow for assets requiring PNG output.",
+    keywords: ["jpg to png", "image format converter", "convert jpeg png"],
+    engine: { kind: "image-tool", id: "jpg-to-png" },
+    faq: baseFaq("JPG to PNG Converter"),
+  },
+  {
+    slug: "png-to-webp-converter",
+    category: "image-tools",
+    title: "PNG to WebP Converter",
+    summary: "Convert PNG images to lightweight WebP format.",
+    description: "Optimize images for performance and SEO by reducing transfer size with WebP.",
+    keywords: ["png to webp", "convert webp", "image optimization"],
+    engine: { kind: "image-tool", id: "png-to-webp" },
+    faq: baseFaq("PNG to WebP Converter"),
+  },
+];
+
+const developerTools: ToolDefinition[] = [
+  {
+    slug: "uuid-generator",
+    category: "developer-tools",
+    title: "UUID Generator",
+    summary: "Generate secure UUID v4 identifiers instantly.",
+    description: "Create unique IDs for database keys, event tracking, and distributed systems.",
+    keywords: ["uuid generator", "uuid v4", "unique id generator"],
+    engine: { kind: "developer-tool", id: "uuid-generator" },
+    faq: baseFaq("UUID Generator"),
+  },
+  {
+    slug: "url-encoder-decoder",
+    category: "developer-tools",
+    title: "URL Encoder/Decoder",
+    summary: "Encode and decode URL-safe strings.",
+    description: "Convert URL components safely for APIs, redirects, and query parameter handling.",
+    keywords: ["url encoder", "url decoder", "encode uri"],
+    engine: { kind: "developer-tool", id: "url-encoder-decoder" },
+    faq: baseFaq("URL Encoder/Decoder"),
+  },
+  {
+    slug: "timestamp-converter",
+    category: "developer-tools",
+    title: "Timestamp Converter",
+    summary: "Convert Unix timestamps to human-readable date and back.",
+    description: "Debug logs and API payloads with quick time conversion.",
+    keywords: ["timestamp converter", "unix time converter", "epoch converter"],
+    engine: { kind: "developer-tool", id: "timestamp-converter" },
+    faq: baseFaq("Timestamp Converter"),
+  },
+  {
+    slug: "markdown-to-html",
+    category: "developer-tools",
+    title: "Markdown to HTML",
+    summary: "Convert Markdown syntax into HTML output.",
+    description: "Write markdown and preview HTML for docs, CMS entries, and blog workflows.",
+    keywords: ["markdown to html", "markdown converter", "md parser"],
+    engine: { kind: "developer-tool", id: "markdown-to-html" },
+    faq: baseFaq("Markdown to HTML"),
+  },
+  {
+    slug: "user-agent-checker",
+    category: "developer-tools",
+    title: "User Agent Checker",
+    summary: "Inspect your browser user agent string and platform details.",
+    description: "Helpful for debugging browser compatibility and analytics filtering.",
+    keywords: ["user agent checker", "browser user agent", "ua string"],
+    engine: { kind: "developer-tool", id: "user-agent-checker" },
+    faq: baseFaq("User Agent Checker"),
+  },
+  {
+    slug: "ip-address-checker",
+    category: "developer-tools",
+    title: "IP Address Checker",
+    summary: "View your current public IP address quickly.",
+    description: "Fetch public IP details for debugging network and deployment conditions.",
+    keywords: ["ip checker", "what is my ip", "public ip address"],
+    engine: { kind: "developer-tool", id: "ip-address-checker" },
+    faq: baseFaq("IP Address Checker"),
+  },
+  {
+    slug: "cron-expression-generator",
+    category: "developer-tools",
+    title: "Cron Expression Generator",
+    summary: "Build cron schedules with guided field inputs.",
+    description: "Generate cron strings for Linux jobs, workflow automation, and server tasks.",
+    keywords: ["cron generator", "cron expression", "schedule builder"],
+    engine: { kind: "developer-tool", id: "cron-expression-generator" },
+    faq: baseFaq("Cron Expression Generator"),
+  },
+  {
+    slug: "http-status-checker",
+    category: "developer-tools",
+    title: "HTTP Status Checker",
+    summary: "Check response status codes for any URL.",
+    description: "Validate endpoint accessibility and monitor basic HTTP health from the browser.",
+    keywords: ["http status checker", "url status code", "website status"],
+    engine: { kind: "developer-tool", id: "http-status-checker" },
+    faq: baseFaq("HTTP Status Checker"),
+  },
+];
+
+const productivityTools: ToolDefinition[] = [
+  {
+    slug: "pomodoro-timer",
+    category: "productivity-tools",
+    title: "Pomodoro Timer",
+    summary: "Focus timer with start, pause, reset, and custom session lengths.",
+    description: "Use structured focus sessions to improve deep work and time discipline.",
+    keywords: ["pomodoro timer", "focus timer", "productivity timer"],
+    engine: { kind: "productivity-tool", id: "pomodoro-timer" },
+    faq: baseFaq("Pomodoro Timer"),
+  },
+  {
+    slug: "simple-todo-list",
+    category: "productivity-tools",
+    title: "Simple To-do List",
+    summary: "Track daily tasks with local persistent storage.",
+    description: "A lightweight to-do manager for quick capture and completion tracking.",
+    keywords: ["todo list", "task list", "simple todo app"],
+    engine: { kind: "productivity-tool", id: "simple-todo-list" },
+    faq: baseFaq("Simple To-do List"),
+  },
+  {
+    slug: "notes-pad",
+    category: "productivity-tools",
+    title: "Notes Pad",
+    summary: "Fast note taking with autosave to browser storage.",
+    description: "Keep temporary notes, snippets, and ideas in a clean distraction-free editor.",
+    keywords: ["notes pad", "online notes", "quick note app"],
+    engine: { kind: "productivity-tool", id: "notes-pad" },
+    faq: baseFaq("Notes Pad"),
+  },
+];
+
+export const TOOLS: ToolDefinition[] = [
+  ...calculators,
+  ...converterDefinitions,
+  ...seoTools,
+  ...imageTools,
+  ...developerTools,
+  ...productivityTools,
+];
+
+const byCategory = new Map<ToolCategorySlug, ToolDefinition[]>();
+const byCompositeKey = new Map<string, ToolDefinition>();
+
+for (const tool of TOOLS) {
+  const list = byCategory.get(tool.category) ?? [];
+  list.push(tool);
+  byCategory.set(tool.category, list);
+  byCompositeKey.set(`${tool.category}/${tool.slug}`, tool);
+}
+
+for (const [key, tools] of byCategory.entries()) {
+  byCategory.set(
+    key,
+    tools.sort((a, b) => a.title.localeCompare(b.title)),
+  );
+}
+
+export function getAllTools(): ToolDefinition[] {
+  return [...TOOLS].sort((a, b) => a.title.localeCompare(b.title));
+}
+
+export function getToolsByCategory(category: string): ToolDefinition[] {
+  return [...(byCategory.get(category as ToolCategorySlug) ?? [])];
+}
+
+export function getToolByCategoryAndSlug(category: string, slug: string): ToolDefinition | null {
+  const found = byCompositeKey.get(`${category}/${slug}`) ?? null;
+  if (!found) return null;
+  return found;
+}
+
+export function getRelatedTools(tool: ToolDefinition, limit = 4): ToolDefinition[] {
+  const sameCategory = getToolsByCategory(tool.category).filter((candidate) => candidate.slug !== tool.slug);
+  if (sameCategory.length >= limit) return sameCategory.slice(0, limit);
+
+  const extra = getAllTools().filter(
+    (candidate) => candidate.slug !== tool.slug && candidate.category !== tool.category,
+  );
+
+  return [...sameCategory, ...extra].slice(0, limit);
+}
+
+export function searchTools(query: string): ToolDefinition[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return getAllTools();
+  return getAllTools().filter((tool) => {
+    const category = getCategory(tool.category)?.title ?? "";
+    const haystack = `${tool.title} ${tool.summary} ${tool.description} ${category} ${tool.keywords.join(" ")}`
+      .toLowerCase()
+      .trim();
+    return haystack.includes(normalized);
+  });
+}
