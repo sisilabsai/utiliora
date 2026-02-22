@@ -105,7 +105,9 @@ export type ImageToolId =
 export type ProductivityToolId =
   | "pomodoro-timer"
   | "simple-todo-list"
-  | "notes-pad";
+  | "notes-pad"
+  | "resume-builder"
+  | "invoice-generator";
 
 export type ToolEngine =
   | { kind: "calculator"; id: CalculatorId }

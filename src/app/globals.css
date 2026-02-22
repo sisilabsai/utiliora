@@ -941,6 +941,144 @@ textarea {
   gap: 0.45rem;
 }
 
+.todo-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.resume-editor {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.resume-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 0.7rem;
+  margin-top: 0.7rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.resume-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.resume-preview h3 {
+  margin: 0;
+}
+
+.resume-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.resume-header h4 {
+  margin: 0;
+  font-size: 1.18rem;
+}
+
+.resume-header p {
+  margin: 0.25rem 0 0;
+}
+
+.resume-section {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.resume-section h5 {
+  margin: 0;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+}
+
+.resume-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.resume-entry p {
+  margin: 0;
+}
+
+.resume-entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.invoice-editor {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.invoice-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.invoice-preview h3,
+.invoice-preview h4 {
+  margin: 0;
+}
+
+.invoice-identity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.7rem;
+}
+
+.invoice-identity-grid .mini-panel {
+  margin-top: 0;
+}
+
+.invoice-identity-grid p {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.invoice-totals {
+  margin-top: 0;
+}
+
+.invoice-totals p {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  margin: 0.2rem 0;
+}
+
+.invoice-total-final {
+  border-top: 1px solid var(--border);
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  font-size: 1.05rem;
+}
+
 .done {
   text-decoration: line-through;
   color: var(--text-soft);

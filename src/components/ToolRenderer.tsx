@@ -4,14 +4,20 @@ import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Binary,
+  Briefcase,
   Calculator,
   Braces,
   Code2,
   Copy,
   Download,
+  FileText,
+  GraduationCap,
   Hash,
   Link2,
+  Plus,
+  Printer,
   RefreshCw,
+  Receipt,
   Search,
   Share2,
   Sparkles,
@@ -630,6 +636,68 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain;
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+}
+
+function formatCurrencyWithCode(value: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(value);
+  } catch {
+    return `${formatNumericValue(value)} ${currency}`;
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function openPrintWindow(title: string, bodyHtml: string, extraCss = ""): boolean {
+  const printWindow = window.open("", "_blank", "noopener,noreferrer,width=1024,height=768");
+  if (!printWindow) return false;
+
+  const markup = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #13161a;
+      background: #fff;
+      line-height: 1.45;
+    }
+    h1, h2, h3 { margin: 0 0 8px; }
+    p { margin: 0 0 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #d3dbe5; padding: 8px; text-align: left; }
+    th { background: #f4f6f8; }
+    .muted { color: #5d6a78; }
+    @media print {
+      body { padding: 0; }
+    }
+    ${extraCss}
+  </style>
+</head>
+<body>${bodyHtml}</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(markup);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 300);
+  return true;
 }
 
 function CalculatorTool({ id }: { id: CalculatorId }) {
@@ -4634,27 +4702,173 @@ function ImageTool({ id }: { id: ImageToolId }) {
 }
 
 function PomodoroTool() {
-  const [minutes, setMinutes] = useState(25);
-  const [secondsLeft, setSecondsLeft] = useState(minutes * 60);
+  type PomodoroMode = "focus" | "short-break" | "long-break";
+  type PomodoroStats = { dateKey: string; completedFocusSessions: number; focusMinutes: number };
+
+  const settingsKey = "utiliora-pomodoro-settings-v2";
+  const statsKey = "utiliora-pomodoro-stats-v2";
+  const todayKey = new Date().toISOString().slice(0, 10);
+
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [shortBreakMinutes, setShortBreakMinutes] = useState(5);
+  const [longBreakMinutes, setLongBreakMinutes] = useState(15);
+  const [sessionsBeforeLongBreak, setSessionsBeforeLongBreak] = useState(4);
+  const [autoStartBreaks, setAutoStartBreaks] = useState(false);
+  const [autoStartFocus, setAutoStartFocus] = useState(false);
+  const [mode, setMode] = useState<PomodoroMode>("focus");
+  const [secondsLeft, setSecondsLeft] = useState(25 * 60);
   const [running, setRunning] = useState(false);
+  const [completedFocusInCycle, setCompletedFocusInCycle] = useState(0);
+  const [currentTask, setCurrentTask] = useState("");
+  const [status, setStatus] = useState("Ready to focus.");
+  const [stats, setStats] = useState<PomodoroStats>({
+    dateKey: todayKey,
+    completedFocusSessions: 0,
+    focusMinutes: 0,
+  });
+
+  const durationForMode = useCallback(
+    (targetMode: PomodoroMode): number => {
+      if (targetMode === "focus") return focusMinutes;
+      if (targetMode === "short-break") return shortBreakMinutes;
+      return longBreakMinutes;
+    },
+    [focusMinutes, longBreakMinutes, shortBreakMinutes],
+  );
+
+  const totalPhaseSeconds = useMemo(() => Math.max(1, durationForMode(mode) * 60), [durationForMode, mode]);
+  const progressPercent = Math.min(100, Math.max(0, ((totalPhaseSeconds - secondsLeft) / totalPhaseSeconds) * 100));
 
   useEffect(() => {
-    setSecondsLeft(minutes * 60);
-  }, [minutes]);
+    try {
+      const rawSettings = localStorage.getItem(settingsKey);
+      if (rawSettings) {
+        const parsed = JSON.parse(rawSettings) as {
+          focusMinutes?: number;
+          shortBreakMinutes?: number;
+          longBreakMinutes?: number;
+          sessionsBeforeLongBreak?: number;
+          autoStartBreaks?: boolean;
+          autoStartFocus?: boolean;
+        };
+        setFocusMinutes(Math.max(10, Math.min(90, Math.round(parsed.focusMinutes ?? 25))));
+        setShortBreakMinutes(Math.max(3, Math.min(30, Math.round(parsed.shortBreakMinutes ?? 5))));
+        setLongBreakMinutes(Math.max(10, Math.min(45, Math.round(parsed.longBreakMinutes ?? 15))));
+        setSessionsBeforeLongBreak(Math.max(2, Math.min(8, Math.round(parsed.sessionsBeforeLongBreak ?? 4))));
+        setAutoStartBreaks(Boolean(parsed.autoStartBreaks));
+        setAutoStartFocus(Boolean(parsed.autoStartFocus));
+      }
+      const rawStats = localStorage.getItem(statsKey);
+      if (rawStats) {
+        const parsedStats = JSON.parse(rawStats) as PomodoroStats;
+        setStats(
+          parsedStats.dateKey === todayKey
+            ? parsedStats
+            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0 },
+        );
+      }
+    } catch {
+      // Ignore malformed local data.
+    }
+  }, [statsKey, settingsKey, todayKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        settingsKey,
+        JSON.stringify({
+          focusMinutes,
+          shortBreakMinutes,
+          longBreakMinutes,
+          sessionsBeforeLongBreak,
+          autoStartBreaks,
+          autoStartFocus,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    autoStartBreaks,
+    autoStartFocus,
+    focusMinutes,
+    longBreakMinutes,
+    sessionsBeforeLongBreak,
+    settingsKey,
+    shortBreakMinutes,
+  ]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(statsKey, JSON.stringify(stats));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [stats, statsKey]);
+
+  useEffect(() => {
+    if (running) return;
+    setSecondsLeft(durationForMode(mode) * 60);
+  }, [durationForMode, mode, running]);
 
   useEffect(() => {
     if (!running) return;
-    const interval = setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current <= 1) {
-          setRunning(false);
-          return 0;
-        }
-        return current - 1;
+    if (secondsLeft <= 0) return;
+    const timer = window.setTimeout(() => setSecondsLeft((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [running, secondsLeft]);
+
+  const completePhase = useCallback(() => {
+    setRunning(false);
+    if (mode === "focus") {
+      const nextCount = completedFocusInCycle + 1;
+      const nextMode: PomodoroMode = nextCount % sessionsBeforeLongBreak === 0 ? "long-break" : "short-break";
+      const focusMinutesCompleted = durationForMode("focus");
+      setCompletedFocusInCycle(nextCount);
+      setMode(nextMode);
+      setSecondsLeft(durationForMode(nextMode) * 60);
+      setRunning(autoStartBreaks);
+      setStatus(
+        nextMode === "long-break"
+          ? "Focus complete. Long break started."
+          : "Focus complete. Short break started.",
+      );
+      setStats((current) => {
+        const safeCurrent =
+          current.dateKey === todayKey
+            ? current
+            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0 };
+        return {
+          ...safeCurrent,
+          completedFocusSessions: safeCurrent.completedFocusSessions + 1,
+          focusMinutes: safeCurrent.focusMinutes + focusMinutesCompleted,
+        };
       });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [running]);
+    } else {
+      setMode("focus");
+      setSecondsLeft(durationForMode("focus") * 60);
+      setRunning(autoStartFocus);
+      setStatus("Break complete. Back to focus.");
+    }
+  }, [
+    autoStartBreaks,
+    autoStartFocus,
+    completedFocusInCycle,
+    durationForMode,
+    mode,
+    sessionsBeforeLongBreak,
+    todayKey,
+  ]);
+
+  useEffect(() => {
+    if (running && secondsLeft === 0) {
+      completePhase();
+      trackEvent("pomodoro_phase_complete", { mode });
+    }
+  }, [completePhase, mode, running, secondsLeft]);
+
+  const modeLabel =
+    mode === "focus" ? "Focus" : mode === "short-break" ? "Short Break" : "Long Break";
 
   const mm = Math.floor(secondsLeft / 60)
     .toString()
@@ -4663,20 +4877,131 @@ function PomodoroTool() {
 
   return (
     <section className="tool-surface">
-      <h2>Pomodoro timer</h2>
+      <ToolHeading
+        icon={RefreshCw}
+        title="Pomodoro timer"
+        subtitle="Cycle focus and break sessions with auto transitions, daily stats, and preset workflows."
+      />
+      <div className="preset-row">
+        <span className="supporting-text">Presets:</span>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setFocusMinutes(25);
+            setShortBreakMinutes(5);
+            setLongBreakMinutes(15);
+            setSessionsBeforeLongBreak(4);
+            setStatus("Applied classic Pomodoro preset.");
+          }}
+        >
+          Classic 25/5
+        </button>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setFocusMinutes(50);
+            setShortBreakMinutes(10);
+            setLongBreakMinutes(20);
+            setSessionsBeforeLongBreak(3);
+            setStatus("Applied deep work preset.");
+          }}
+        >
+          Deep Work 50/10
+        </button>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Focus (minutes)</span>
+          <input
+            type="number"
+            min={10}
+            max={90}
+            value={focusMinutes}
+            onChange={(event) => setFocusMinutes(Math.max(10, Math.min(90, Number(event.target.value) || 25)))}
+          />
+        </label>
+        <label className="field">
+          <span>Short break (minutes)</span>
+          <input
+            type="number"
+            min={3}
+            max={30}
+            value={shortBreakMinutes}
+            onChange={(event) =>
+              setShortBreakMinutes(Math.max(3, Math.min(30, Number(event.target.value) || 5)))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Long break (minutes)</span>
+          <input
+            type="number"
+            min={10}
+            max={45}
+            value={longBreakMinutes}
+            onChange={(event) =>
+              setLongBreakMinutes(Math.max(10, Math.min(45, Number(event.target.value) || 15)))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Sessions before long break</span>
+          <input
+            type="number"
+            min={2}
+            max={8}
+            value={sessionsBeforeLongBreak}
+            onChange={(event) =>
+              setSessionsBeforeLongBreak(Math.max(2, Math.min(8, Number(event.target.value) || 4)))
+            }
+          />
+        </label>
+      </div>
       <label className="field">
-        <span>Focus session length (minutes)</span>
+        <span>Current focus task</span>
         <input
-          type="number"
-          min={5}
-          max={90}
-          value={minutes}
-          onChange={(event) => setMinutes(Number(event.target.value))}
+          type="text"
+          value={currentTask}
+          placeholder="What are you focusing on now?"
+          onChange={(event) => setCurrentTask(event.target.value)}
         />
       </label>
+      <div className="button-row">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={autoStartBreaks}
+            onChange={(event) => setAutoStartBreaks(event.target.checked)}
+          />
+          Auto-start breaks
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={autoStartFocus}
+            onChange={(event) => setAutoStartFocus(event.target.checked)}
+          />
+          Auto-start focus
+        </label>
+      </div>
       <div className="timer-value" aria-live="polite">
         {mm}:{ss}
       </div>
+      <div className="progress-panel" aria-hidden>
+        <div className="progress-track">
+          <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+        </div>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Current phase", value: modeLabel },
+          { label: "Task", value: currentTask.trim() || "No task set" },
+          { label: "Completed focus sessions today", value: formatNumericValue(stats.completedFocusSessions) },
+          { label: "Focused minutes today", value: formatNumericValue(stats.focusMinutes) },
+        ]}
+      />
       <div className="button-row">
         <button className="action-button" type="button" onClick={() => setRunning(true)}>
           Start
@@ -4688,61 +5013,250 @@ function PomodoroTool() {
           className="action-button secondary"
           type="button"
           onClick={() => {
+            completePhase();
+            setStatus("Skipped current phase.");
+          }}
+        >
+          Skip phase
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
             setRunning(false);
-            setSecondsLeft(minutes * 60);
+            setMode("focus");
+            setSecondsLeft(durationForMode("focus") * 60);
+            setStatus("Timer reset to focus phase.");
           }}
         >
           Reset
         </button>
       </div>
+      <p className="supporting-text">{status}</p>
     </section>
   );
 }
+
+type TodoPriority = "high" | "medium" | "low";
+type TodoFilter = "all" | "active" | "completed" | "overdue";
+const TODO_PRIORITY_WEIGHT: Record<TodoPriority, number> = { high: 3, medium: 2, low: 1 };
 
 interface TodoItem {
   id: string;
   text: string;
   done: boolean;
+  priority: TodoPriority;
+  dueDate: string;
+  createdAt: number;
+  completedAt?: number;
 }
 
 function TodoListTool() {
+  const storageKey = "utiliora-todos-v2";
   const [value, setValue] = useState("");
+  const [priority, setPriority] = useState<TodoPriority>("medium");
+  const [dueDate, setDueDate] = useState("");
   const [items, setItems] = useState<TodoItem[]>([]);
+  const [filter, setFilter] = useState<TodoFilter>("all");
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
 
-  useEffect(() => {
-    const stored = localStorage.getItem("utiliora-todos");
-    if (stored) setItems(JSON.parse(stored) as TodoItem[]);
+  const isOverdue = useCallback((item: TodoItem) => {
+    if (!item.dueDate || item.done) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(item.dueDate);
+    due.setHours(0, 0, 0, 0);
+    return due.getTime() < today.getTime();
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("utiliora-todos", JSON.stringify(items));
-  }, [items]);
+    try {
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        const parsed = JSON.parse(stored) as TodoItem[];
+        if (Array.isArray(parsed)) setItems(parsed);
+      }
+    } catch {
+      // Ignore malformed stored tasks.
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(items));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [items, storageKey]);
+
+  const filteredItems = useMemo(() => {
+    const searchTerm = search.trim().toLowerCase();
+    return items
+      .filter((item) => {
+        if (filter === "active" && item.done) return false;
+        if (filter === "completed" && !item.done) return false;
+        if (filter === "overdue" && !isOverdue(item)) return false;
+        if (!searchTerm) return true;
+        return item.text.toLowerCase().includes(searchTerm);
+      })
+      .sort((left, right) => {
+        if (left.done !== right.done) return left.done ? 1 : -1;
+        if (TODO_PRIORITY_WEIGHT[left.priority] !== TODO_PRIORITY_WEIGHT[right.priority]) {
+          return TODO_PRIORITY_WEIGHT[right.priority] - TODO_PRIORITY_WEIGHT[left.priority];
+        }
+        if (left.dueDate && right.dueDate) return left.dueDate.localeCompare(right.dueDate);
+        if (left.dueDate) return -1;
+        if (right.dueDate) return 1;
+        return right.createdAt - left.createdAt;
+      });
+  }, [filter, isOverdue, items, search]);
+
+  const stats = useMemo(() => {
+    const completed = items.filter((item) => item.done).length;
+    const active = items.length - completed;
+    const overdue = items.filter((item) => isOverdue(item)).length;
+    return { completed, active, overdue, total: items.length };
+  }, [isOverdue, items]);
+
+  const addTask = () => {
+    const text = value.trim();
+    if (!text) {
+      setStatus("Enter a task before adding.");
+      return;
+    }
+    const nextItem: TodoItem = {
+      id: crypto.randomUUID(),
+      text,
+      done: false,
+      priority,
+      dueDate,
+      createdAt: Date.now(),
+    };
+    setItems((current) => [nextItem, ...current]);
+    setValue("");
+    setDueDate("");
+    setPriority("medium");
+    setStatus("Task added.");
+    trackEvent("todo_add", { priority: nextItem.priority, hasDueDate: Boolean(nextItem.dueDate) });
+  };
 
   return (
     <section className="tool-surface">
-      <h2>Simple to-do list</h2>
+      <ToolHeading
+        icon={Tags}
+        title="Simple to-do list"
+        subtitle="Manage daily work with priority, due dates, filters, and reliable local persistence."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Task</span>
+          <input
+            type="text"
+            value={value}
+            placeholder="Add a task..."
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addTask();
+              }
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Priority</span>
+          <select value={priority} onChange={(event) => setPriority(event.target.value as TodoPriority)}>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Due date</span>
+          <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
+        </label>
+      </div>
       <div className="button-row">
-        <input
-          type="text"
-          value={value}
-          placeholder="Add a task..."
-          onChange={(event) => setValue(event.target.value)}
-        />
+        <button className="action-button" type="button" onClick={addTask}>
+          Add task
+        </button>
         <button
-          className="action-button"
+          className="action-button secondary"
           type="button"
           onClick={() => {
-            const text = value.trim();
-            if (!text) return;
-            setItems((current) => [{ id: crypto.randomUUID(), text, done: false }, ...current]);
-            setValue("");
+            setItems((current) => current.map((item) => ({ ...item, done: true, completedAt: Date.now() })));
+            setStatus("Marked all tasks as completed.");
           }}
+          disabled={items.length === 0}
         >
-          Add
+          Complete all
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const before = items.length;
+            setItems((current) => current.filter((item) => !item.done));
+            setStatus(before ? "Cleared completed tasks." : "No completed tasks to clear.");
+          }}
+          disabled={items.every((item) => !item.done)}
+        >
+          Clear completed
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "todo-list.csv",
+              ["Task", "Priority", "Due Date", "Done", "Created At"],
+              items.map((item) => [
+                item.text,
+                item.priority,
+                item.dueDate,
+                item.done ? "yes" : "no",
+                new Date(item.createdAt).toISOString(),
+              ]),
+            )
+          }
+          disabled={items.length === 0}
+        >
+          <Download size={15} />
+          CSV
         </button>
       </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Filter</span>
+          <select value={filter} onChange={(event) => setFilter(event.target.value as TodoFilter)}>
+            <option value="all">All</option>
+            <option value="active">Active</option>
+            <option value="completed">Completed</option>
+            <option value="overdue">Overdue</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Search</span>
+          <input
+            type="text"
+            value={search}
+            placeholder="Search tasks..."
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Total tasks", value: formatNumericValue(stats.total) },
+          { label: "Active tasks", value: formatNumericValue(stats.active) },
+          { label: "Completed tasks", value: formatNumericValue(stats.completed) },
+          { label: "Overdue tasks", value: formatNumericValue(stats.overdue) },
+        ]}
+      />
       <ul className="todo-list">
-        {items.map((item) => (
+        {filteredItems.map((item) => (
           <li key={item.id}>
             <label>
               <input
@@ -4751,48 +5265,1660 @@ function TodoListTool() {
                 onChange={(event) =>
                   setItems((current) =>
                     current.map((candidate) =>
-                      candidate.id === item.id ? { ...candidate, done: event.target.checked } : candidate,
+                      candidate.id === item.id
+                        ? {
+                            ...candidate,
+                            done: event.target.checked,
+                            completedAt: event.target.checked ? Date.now() : undefined,
+                          }
+                        : candidate,
                     ),
                   )
                 }
               />
               <span className={item.done ? "done" : ""}>{item.text}</span>
             </label>
-            <button
-              className="icon-button"
-              type="button"
-              aria-label={`Delete task ${item.text}`}
-              onClick={() => setItems((current) => current.filter((candidate) => candidate.id !== item.id))}
-            >
-              Delete
-            </button>
+            <div className="todo-meta">
+              <span className={`status-badge ${item.priority === "high" ? "bad" : item.priority === "medium" ? "warn" : "info"}`}>
+                {item.priority}
+              </span>
+              {item.dueDate ? (
+                <span className={`status-badge ${isOverdue(item) ? "bad" : "ok"}`}>
+                  due {item.dueDate}
+                </span>
+              ) : null}
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={`Delete task ${item.text}`}
+                onClick={() => setItems((current) => current.filter((candidate) => candidate.id !== item.id))}
+              >
+                Delete
+              </button>
+            </div>
           </li>
         ))}
       </ul>
+      {filteredItems.length === 0 ? <p className="supporting-text">No tasks for this view.</p> : null}
     </section>
   );
 }
 
+interface NoteItem {
+  id: string;
+  title: string;
+  content: string;
+  updatedAt: number;
+}
+
 function NotesPadTool() {
-  const [note, setNote] = useState("");
+  const storageKey = "utiliora-notes-v2";
+  const defaultNote: NoteItem = {
+    id: crypto.randomUUID(),
+    title: "Untitled note",
+    content: "",
+    updatedAt: Date.now(),
+  };
+
+  const [notes, setNotes] = useState<NoteItem[]>([defaultNote]);
+  const [activeId, setActiveId] = useState(defaultNote.id);
+  const [search, setSearch] = useState("");
+  const [previewMode, setPreviewMode] = useState(false);
+  const [status, setStatus] = useState("");
 
   useEffect(() => {
-    const stored = localStorage.getItem("utiliora-notes");
-    if (stored) setNote(stored);
-  }, []);
+    try {
+      const stored = localStorage.getItem(storageKey);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as NoteItem[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      setNotes(parsed);
+      setActiveId(parsed[0].id);
+    } catch {
+      // Ignore malformed notes.
+    }
+  }, [storageKey]);
 
   useEffect(() => {
-    localStorage.setItem("utiliora-notes", note);
-  }, [note]);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(notes));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [notes, storageKey]);
+
+  const activeNote = useMemo(
+    () => notes.find((note) => note.id === activeId) ?? notes[0] ?? null,
+    [activeId, notes],
+  );
+
+  const filteredNotes = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return notes;
+    return notes.filter(
+      (note) =>
+        note.title.toLowerCase().includes(needle) || note.content.toLowerCase().includes(needle),
+    );
+  }, [notes, search]);
+
+  const updateActiveNote = (patch: Partial<NoteItem>) => {
+    if (!activeNote) return;
+    setNotes((current) =>
+      current.map((note) =>
+        note.id === activeNote.id ? { ...note, ...patch, updatedAt: Date.now() } : note,
+      ),
+    );
+  };
+
+  const activeWordCount = countWords(activeNote?.content ?? "");
+  const activeCharCount = activeNote?.content.length ?? 0;
+  const renderedPreview = useMemo(
+    () => markdownToHtml(activeNote?.content ?? ""),
+    [activeNote?.content],
+  );
 
   return (
     <section className="tool-surface">
-      <h2>Notes pad</h2>
-      <label className="field">
-        <span>Your notes (autosaved locally)</span>
-        <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={16} />
-      </label>
-      <p className="supporting-text">Notes are stored in your browser only.</p>
+      <ToolHeading
+        icon={Type}
+        title="Notes pad"
+        subtitle="Organize multiple notes with autosave, search, markdown preview, and quick export."
+      />
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => {
+            const created: NoteItem = {
+              id: crypto.randomUUID(),
+              title: `New note ${notes.length + 1}`,
+              content: "",
+              updatedAt: Date.now(),
+            };
+            setNotes((current) => [created, ...current]);
+            setActiveId(created.id);
+            setStatus("Created a new note.");
+          }}
+        >
+          New note
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (!activeNote) return;
+            const duplicate: NoteItem = {
+              ...activeNote,
+              id: crypto.randomUUID(),
+              title: `${activeNote.title} (copy)`,
+              updatedAt: Date.now(),
+            };
+            setNotes((current) => [duplicate, ...current]);
+            setActiveId(duplicate.id);
+            setStatus("Duplicated active note.");
+          }}
+          disabled={!activeNote}
+        >
+          Duplicate
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (!activeNote) return;
+            setNotes((current) => {
+              const next = current.filter((note) => note.id !== activeNote.id);
+              if (next.length === 0) {
+                const replacement: NoteItem = {
+                  id: crypto.randomUUID(),
+                  title: "Untitled note",
+                  content: "",
+                  updatedAt: Date.now(),
+                };
+                setActiveId(replacement.id);
+                setStatus("Deleted note and created a new empty note.");
+                return [replacement];
+              }
+              setActiveId(next[0].id);
+              setStatus("Deleted note.");
+              return next;
+            });
+          }}
+          disabled={!activeNote}
+        >
+          Delete
+        </button>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Search notes</span>
+          <input
+            type="text"
+            value={search}
+            placeholder="Search title or content..."
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={previewMode}
+            onChange={(event) => setPreviewMode(event.target.checked)}
+          />
+          Markdown preview
+        </label>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <div className="split-panel">
+        <div className="mini-panel">
+          <h3>Notes</h3>
+          <ul className="plain-list">
+            {filteredNotes.map((note) => (
+              <li key={note.id}>
+                <button
+                  className="chip-button"
+                  type="button"
+                  onClick={() => setActiveId(note.id)}
+                  aria-pressed={note.id === activeId}
+                >
+                  {note.title}
+                </button>
+                <p className="supporting-text">{new Date(note.updatedAt).toLocaleString("en-US")}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          {activeNote ? (
+            <>
+              <label className="field">
+                <span>Note title</span>
+                <input
+                  type="text"
+                  value={activeNote.title}
+                  onChange={(event) => updateActiveNote({ title: event.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>Your note (autosaved locally)</span>
+                <textarea
+                  value={activeNote.content}
+                  onChange={(event) => updateActiveNote({ content: event.target.value })}
+                  rows={16}
+                />
+              </label>
+            </>
+          ) : (
+            <p className="supporting-text">Select a note to begin editing.</p>
+          )}
+        </div>
+      </div>
+      {previewMode && activeNote ? (
+        <div className="preview">
+          <h3>Preview</h3>
+          <div className="preview-box" dangerouslySetInnerHTML={{ __html: renderedPreview }} />
+        </div>
+      ) : null}
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(activeNote?.content ?? "");
+            setStatus(ok ? "Note content copied." : "Nothing to copy.");
+          }}
+          disabled={!activeNote}
+        >
+          <Copy size={15} />
+          Copy note
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              `${(activeNote?.title || "note").replace(/[^\w.-]+/g, "-").toLowerCase()}.md`,
+              activeNote?.content ?? "",
+            )
+          }
+          disabled={!activeNote}
+        >
+          <Download size={15} />
+          Export .md
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Total notes", value: formatNumericValue(notes.length) },
+          { label: "Words in active note", value: formatNumericValue(activeWordCount) },
+          { label: "Characters in active note", value: formatNumericValue(activeCharCount) },
+        ]}
+      />
+      <p className="supporting-text">Notes stay in your browser only unless you export them.</p>
+    </section>
+  );
+}
+
+type ResumeTemplate = "modern" | "minimal" | "compact";
+
+interface ResumePersonalInfo {
+  fullName: string;
+  headline: string;
+  email: string;
+  phone: string;
+  location: string;
+  website: string;
+  summary: string;
+}
+
+interface ResumeExperience {
+  id: string;
+  role: string;
+  company: string;
+  location: string;
+  startDate: string;
+  endDate: string;
+  current: boolean;
+  highlights: string;
+}
+
+interface ResumeEducation {
+  id: string;
+  school: string;
+  degree: string;
+  field: string;
+  startDate: string;
+  endDate: string;
+  details: string;
+}
+
+interface ResumeLink {
+  id: string;
+  label: string;
+  url: string;
+}
+
+interface ResumeData {
+  template: ResumeTemplate;
+  personal: ResumePersonalInfo;
+  skills: string[];
+  experience: ResumeExperience[];
+  education: ResumeEducation[];
+  links: ResumeLink[];
+}
+
+function createDefaultResumeData(): ResumeData {
+  return {
+    template: "modern",
+    personal: {
+      fullName: "",
+      headline: "",
+      email: "",
+      phone: "",
+      location: "",
+      website: "",
+      summary: "",
+    },
+    skills: [],
+    experience: [
+      {
+        id: crypto.randomUUID(),
+        role: "",
+        company: "",
+        location: "",
+        startDate: "",
+        endDate: "",
+        current: false,
+        highlights: "",
+      },
+    ],
+    education: [
+      {
+        id: crypto.randomUUID(),
+        school: "",
+        degree: "",
+        field: "",
+        startDate: "",
+        endDate: "",
+        details: "",
+      },
+    ],
+    links: [{ id: crypto.randomUUID(), label: "Portfolio", url: "" }],
+  };
+}
+
+function sanitizeResumeData(raw: unknown): ResumeData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<ResumeData>;
+  const defaults = createDefaultResumeData();
+  const template: ResumeTemplate =
+    candidate.template === "minimal" || candidate.template === "compact" || candidate.template === "modern"
+      ? candidate.template
+      : defaults.template;
+
+  const personalCandidate = (candidate.personal ?? {}) as Partial<ResumePersonalInfo>;
+  const personal: ResumePersonalInfo = {
+    fullName: typeof personalCandidate.fullName === "string" ? personalCandidate.fullName : defaults.personal.fullName,
+    headline: typeof personalCandidate.headline === "string" ? personalCandidate.headline : defaults.personal.headline,
+    email: typeof personalCandidate.email === "string" ? personalCandidate.email : defaults.personal.email,
+    phone: typeof personalCandidate.phone === "string" ? personalCandidate.phone : defaults.personal.phone,
+    location: typeof personalCandidate.location === "string" ? personalCandidate.location : defaults.personal.location,
+    website: typeof personalCandidate.website === "string" ? personalCandidate.website : defaults.personal.website,
+    summary: typeof personalCandidate.summary === "string" ? personalCandidate.summary : defaults.personal.summary,
+  };
+
+  const skills = Array.isArray(candidate.skills)
+    ? candidate.skills
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 50)
+    : defaults.skills;
+
+  const experienceSource = Array.isArray(candidate.experience) ? (candidate.experience as unknown[]) : [];
+  const experience = experienceSource
+    .filter((item) => Boolean(item) && typeof item === "object")
+    .map((item) => {
+          const entry = item as Partial<ResumeExperience>;
+          return {
+            id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+            role: typeof entry.role === "string" ? entry.role : "",
+            company: typeof entry.company === "string" ? entry.company : "",
+            location: typeof entry.location === "string" ? entry.location : "",
+            startDate: typeof entry.startDate === "string" ? entry.startDate : "",
+            endDate: typeof entry.endDate === "string" ? entry.endDate : "",
+            current: Boolean(entry.current),
+            highlights: typeof entry.highlights === "string" ? entry.highlights : "",
+          };
+        })
+    .slice(0, 12);
+
+  const educationSource = Array.isArray(candidate.education) ? (candidate.education as unknown[]) : [];
+  const education = educationSource
+    .filter((item) => Boolean(item) && typeof item === "object")
+    .map((item) => {
+          const entry = item as Partial<ResumeEducation>;
+          return {
+            id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+            school: typeof entry.school === "string" ? entry.school : "",
+            degree: typeof entry.degree === "string" ? entry.degree : "",
+            field: typeof entry.field === "string" ? entry.field : "",
+            startDate: typeof entry.startDate === "string" ? entry.startDate : "",
+            endDate: typeof entry.endDate === "string" ? entry.endDate : "",
+            details: typeof entry.details === "string" ? entry.details : "",
+          };
+        })
+    .slice(0, 8);
+
+  const linksSource = Array.isArray(candidate.links) ? (candidate.links as unknown[]) : [];
+  const links = linksSource
+    .filter((item) => Boolean(item) && typeof item === "object")
+    .map((item) => {
+          const entry = item as Partial<ResumeLink>;
+          return {
+            id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+            label: typeof entry.label === "string" ? entry.label : "",
+            url: typeof entry.url === "string" ? entry.url : "",
+          };
+        })
+    .slice(0, 12);
+
+  return {
+    template,
+    personal,
+    skills,
+    experience: experience.length ? experience : defaults.experience,
+    education: education.length ? education : defaults.education,
+    links,
+  };
+}
+
+function formatMonthLabel(value: string): string {
+  if (!value) return "";
+  const trimmed = value.trim();
+  const isoMonthPattern = /^\d{4}-\d{2}$/;
+  const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+  const normalized = isoMonthPattern.test(trimmed) ? `${trimmed}-01` : isoDatePattern.test(trimmed) ? trimmed : "";
+  if (!normalized) return trimmed;
+  const date = new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return trimmed;
+  return date.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+function formatDateRange(startDate: string, endDate: string, current: boolean): string {
+  const startLabel = formatMonthLabel(startDate) || "Start";
+  const endLabel = current ? "Present" : formatMonthLabel(endDate) || "End";
+  return `${startLabel} - ${endLabel}`;
+}
+
+function extractImportantKeywords(text: string): string[] {
+  const matches = text.toLowerCase().match(/[a-z0-9][a-z0-9+#./-]{2,}/g) ?? [];
+  const stopWords = new Set([
+    "about",
+    "after",
+    "again",
+    "been",
+    "below",
+    "being",
+    "both",
+    "each",
+    "from",
+    "have",
+    "into",
+    "just",
+    "more",
+    "only",
+    "over",
+    "such",
+    "that",
+    "their",
+    "there",
+    "these",
+    "they",
+    "this",
+    "with",
+    "your",
+  ]);
+  const counts = new Map<string, number>();
+  for (const item of matches) {
+    if (stopWords.has(item)) continue;
+    counts.set(item, (counts.get(item) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([keyword]) => keyword);
+}
+
+function buildResumePlainText(resume: ResumeData): string {
+  return [
+    resume.personal.fullName,
+    resume.personal.headline,
+    resume.personal.summary,
+    resume.skills.join(" "),
+    resume.experience
+      .map((item) => `${item.role} ${item.company} ${item.location} ${item.highlights}`)
+      .join(" "),
+    resume.education.map((item) => `${item.school} ${item.degree} ${item.field} ${item.details}`).join(" "),
+    resume.links.map((item) => `${item.label} ${item.url}`).join(" "),
+  ]
+    .join(" ")
+    .trim();
+}
+
+function buildResumePrintHtml(resume: ResumeData): string {
+  const skillHtml = resume.skills.map((skill) => `<span class="pill">${escapeHtml(skill)}</span>`).join("");
+  const linksHtml = resume.links
+    .filter((item) => item.label.trim() || item.url.trim())
+    .map(
+      (item) => `<li><strong>${escapeHtml(item.label || "Link")}:</strong> ${escapeHtml(item.url || "-")}</li>`,
+    )
+    .join("");
+  const experienceHtml = resume.experience
+    .filter((item) => item.role.trim() || item.company.trim() || item.highlights.trim())
+    .map((item) => {
+      const bulletHtml = item.highlights
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => `<li>${escapeHtml(line)}</li>`)
+        .join("");
+      return `<article class="entry">
+  <div class="entry-head">
+    <h3>${escapeHtml(item.role || "Role")}</h3>
+    <p>${escapeHtml(item.company || "Company")}</p>
+  </div>
+  <p class="muted">${escapeHtml(formatDateRange(item.startDate, item.endDate, item.current))}${
+    item.location ? ` | ${escapeHtml(item.location)}` : ""
+  }</p>
+  ${bulletHtml ? `<ul>${bulletHtml}</ul>` : ""}
+</article>`;
+    })
+    .join("");
+  const educationHtml = resume.education
+    .filter((item) => item.school.trim() || item.degree.trim() || item.field.trim() || item.details.trim())
+    .map((item) => {
+      const heading = [item.degree, item.field].filter(Boolean).join(", ");
+      return `<article class="entry">
+  <div class="entry-head">
+    <h3>${escapeHtml(item.school || "School")}</h3>
+    <p>${escapeHtml(heading || "Program")}</p>
+  </div>
+  <p class="muted">${escapeHtml(formatDateRange(item.startDate, item.endDate, false))}</p>
+  ${item.details ? `<p>${escapeHtml(item.details)}</p>` : ""}
+</article>`;
+    })
+    .join("");
+
+  return `<main class="resume-doc resume-template-${resume.template}">
+<header class="resume-header">
+  <h1>${escapeHtml(resume.personal.fullName || "Your Name")}</h1>
+  <p class="resume-headline">${escapeHtml(resume.personal.headline || "Professional headline")}</p>
+  <p class="muted">${escapeHtml(
+    [resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
+      .filter(Boolean)
+      .join(" | "),
+  )}</p>
+</header>
+${resume.personal.summary ? `<section><h2>Profile</h2><p>${escapeHtml(resume.personal.summary)}</p></section>` : ""}
+${skillHtml ? `<section><h2>Skills</h2><div class="pill-row">${skillHtml}</div></section>` : ""}
+${experienceHtml ? `<section><h2>Experience</h2>${experienceHtml}</section>` : ""}
+${educationHtml ? `<section><h2>Education</h2>${educationHtml}</section>` : ""}
+${linksHtml ? `<section><h2>Links</h2><ul>${linksHtml}</ul></section>` : ""}
+</main>`;
+}
+
+function ResumeBuilderTool() {
+  const storageKey = "utiliora-resume-builder-v1";
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const [resume, setResume] = useState<ResumeData>(() => createDefaultResumeData());
+  const [skillDraft, setSkillDraft] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(storageKey);
+      if (!stored) return;
+      const sanitized = sanitizeResumeData(JSON.parse(stored));
+      if (sanitized) setResume(sanitized);
+    } catch {
+      // Ignore malformed resume data.
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(resume));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [resume, storageKey]);
+
+  const updatePersonal = <K extends keyof ResumePersonalInfo>(field: K, value: ResumePersonalInfo[K]) => {
+    setResume((current) => ({ ...current, personal: { ...current.personal, [field]: value } }));
+  };
+
+  const updateExperience = (id: string, patch: Partial<ResumeExperience>) => {
+    setResume((current) => ({
+      ...current,
+      experience: current.experience.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const updateEducation = (id: string, patch: Partial<ResumeEducation>) => {
+    setResume((current) => ({
+      ...current,
+      education: current.education.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const updateLink = (id: string, patch: Partial<ResumeLink>) => {
+    setResume((current) => ({
+      ...current,
+      links: current.links.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const resumeKeywords = useMemo(() => extractImportantKeywords(buildResumePlainText(resume)), [resume]);
+  const jobKeywords = useMemo(() => extractImportantKeywords(jobDescription).slice(0, 35), [jobDescription]);
+  const matchedKeywords = useMemo(() => {
+    const resumeSet = new Set(resumeKeywords);
+    return jobKeywords.filter((item) => resumeSet.has(item));
+  }, [jobKeywords, resumeKeywords]);
+  const coveragePercent = jobKeywords.length ? (matchedKeywords.length / jobKeywords.length) * 100 : 0;
+
+  const printResume = () => {
+    const opened = openPrintWindow(
+      `${resume.personal.fullName || "Resume"} - Utiliora`,
+      buildResumePrintHtml(resume),
+      `
+      .resume-doc { max-width: 900px; margin: 0 auto; display: grid; gap: 14px; }
+      .resume-header { border-bottom: 1px solid #d3dbe5; padding-bottom: 10px; }
+      .resume-header h1 { margin: 0; font-size: 28px; }
+      .resume-headline { margin: 4px 0 0; font-weight: 600; }
+      h2 { font-size: 16px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .entry { margin-bottom: 10px; }
+      .entry-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+      .entry-head h3 { margin: 0; font-size: 15px; }
+      .entry-head p { margin: 0; font-weight: 600; }
+      .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .pill { border: 1px solid #d3dbe5; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+      ul { margin: 6px 0 0; padding-left: 18px; }
+      .resume-template-compact .entry-head { display: block; }
+      .resume-template-minimal h2 { text-transform: none; letter-spacing: 0; }
+      `,
+    );
+    if (!opened) {
+      setStatus("Enable popups to print or save PDF.");
+      return;
+    }
+    setStatus("Opened print view. Choose Save as PDF.");
+    trackEvent("resume_print_open", { template: resume.template });
+  };
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Resume builder"
+        subtitle="Build modern resumes with templates, ATS keyword matching, and print-ready output."
+      />
+      <div className="button-row">
+        <span className="supporting-text">Template:</span>
+        {[
+          { id: "modern", label: "Modern" },
+          { id: "minimal", label: "Minimal" },
+          { id: "compact", label: "Compact" },
+        ].map((option) => (
+          <button
+            key={option.id}
+            className="chip-button"
+            type="button"
+            onClick={() => setResume((current) => ({ ...current, template: option.id as ResumeTemplate }))}
+            aria-pressed={resume.template === option.id}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("resume-data.json", JSON.stringify(resume, null, 2), "application/json;charset=utf-8;");
+            setStatus("Resume JSON exported.");
+          }}
+        >
+          <Download size={15} />
+          Export JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
+          <Plus size={15} />
+          Import JSON
+        </button>
+        <button className="action-button" type="button" onClick={printResume}>
+          <Printer size={15} />
+          Print / PDF
+        </button>
+      </div>
+      <input
+        ref={importRef}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          try {
+            const raw = await file.text();
+            const sanitized = sanitizeResumeData(JSON.parse(raw));
+            if (!sanitized) throw new Error("Invalid format");
+            setResume(sanitized);
+            setStatus("Imported resume JSON.");
+          } catch {
+            setStatus("Could not import this JSON file.");
+          } finally {
+            event.target.value = "";
+          }
+        }}
+      />
+      <div className="split-panel">
+        <div className="resume-editor">
+          <div className="field-grid">
+            <label className="field">
+              <span>Full name</span>
+              <input type="text" value={resume.personal.fullName} onChange={(event) => updatePersonal("fullName", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Professional title</span>
+              <input type="text" value={resume.personal.headline} onChange={(event) => updatePersonal("headline", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Email</span>
+              <input type="email" value={resume.personal.email} onChange={(event) => updatePersonal("email", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Phone</span>
+              <input type="text" value={resume.personal.phone} onChange={(event) => updatePersonal("phone", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Location</span>
+              <input type="text" value={resume.personal.location} onChange={(event) => updatePersonal("location", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Website</span>
+              <input type="url" value={resume.personal.website} onChange={(event) => updatePersonal("website", event.target.value)} />
+            </label>
+          </div>
+          <label className="field">
+            <span>Summary</span>
+            <textarea rows={4} value={resume.personal.summary} onChange={(event) => updatePersonal("summary", event.target.value)} />
+          </label>
+          <div className="mini-panel">
+            <h3>Skills</h3>
+            <div className="button-row">
+              <label className="field" style={{ flex: "1 1 240px" }}>
+                <span>Add skills (comma separated)</span>
+                <input
+                  type="text"
+                  value={skillDraft}
+                  onChange={(event) => setSkillDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      const tokens = skillDraft.split(",").map((item) => item.trim()).filter(Boolean);
+                      if (!tokens.length) return;
+                      setResume((current) => ({
+                        ...current,
+                        skills: [...new Set([...current.skills, ...tokens])].slice(0, 50),
+                      }));
+                      setSkillDraft("");
+                    }
+                  }}
+                />
+              </label>
+              <button
+                className="action-button"
+                type="button"
+                onClick={() => {
+                  const tokens = skillDraft.split(",").map((item) => item.trim()).filter(Boolean);
+                  if (!tokens.length) return;
+                  setResume((current) => ({
+                    ...current,
+                    skills: [...new Set([...current.skills, ...tokens])].slice(0, 50),
+                  }));
+                  setSkillDraft("");
+                }}
+              >
+                Add skill
+              </button>
+            </div>
+            <div className="chip-list">
+              {resume.skills.map((skill) => (
+                <button
+                  key={skill}
+                  className="chip-button"
+                  type="button"
+                  onClick={() => setResume((current) => ({ ...current, skills: current.skills.filter((item) => item !== skill) }))}
+                >
+                  {skill} x
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3 className="mini-heading">
+                <Briefcase size={16} />
+                Experience
+              </h3>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() =>
+                  setResume((current) => ({
+                    ...current,
+                    experience: [
+                      ...current.experience,
+                      {
+                        id: crypto.randomUUID(),
+                        role: "",
+                        company: "",
+                        location: "",
+                        startDate: "",
+                        endDate: "",
+                        current: false,
+                        highlights: "",
+                      },
+                    ],
+                  }))
+                }
+              >
+                <Plus size={15} />
+                Add role
+              </button>
+            </div>
+            {resume.experience.map((item) => (
+              <article key={item.id} className="resume-row">
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Role</span>
+                    <input type="text" value={item.role} onChange={(event) => updateExperience(item.id, { role: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Company</span>
+                    <input type="text" value={item.company} onChange={(event) => updateExperience(item.id, { company: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Location</span>
+                    <input type="text" value={item.location} onChange={(event) => updateExperience(item.id, { location: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Start</span>
+                    <input type="month" value={item.startDate} onChange={(event) => updateExperience(item.id, { startDate: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>End</span>
+                    <input
+                      type="month"
+                      value={item.endDate}
+                      disabled={item.current}
+                      onChange={(event) => updateExperience(item.id, { endDate: event.target.value, current: false })}
+                    />
+                  </label>
+                  <label className="checkbox">
+                    <input type="checkbox" checked={item.current} onChange={(event) => updateExperience(item.id, { current: event.target.checked, endDate: event.target.checked ? "" : item.endDate })} />
+                    Current role
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Highlights (one bullet per line)</span>
+                  <textarea rows={4} value={item.highlights} onChange={(event) => updateExperience(item.id, { highlights: event.target.value })} />
+                </label>
+                <button
+                  className="icon-button"
+                  type="button"
+                  disabled={resume.experience.length <= 1}
+                  onClick={() =>
+                    setResume((current) => ({
+                      ...current,
+                      experience:
+                        current.experience.length > 1
+                          ? current.experience.filter((entry) => entry.id !== item.id)
+                          : current.experience,
+                    }))
+                  }
+                >
+                  <Trash2 size={14} />
+                  Remove role
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3 className="mini-heading">
+                <GraduationCap size={16} />
+                Education
+              </h3>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() =>
+                  setResume((current) => ({
+                    ...current,
+                    education: [
+                      ...current.education,
+                      {
+                        id: crypto.randomUUID(),
+                        school: "",
+                        degree: "",
+                        field: "",
+                        startDate: "",
+                        endDate: "",
+                        details: "",
+                      },
+                    ],
+                  }))
+                }
+              >
+                <Plus size={15} />
+                Add school
+              </button>
+            </div>
+            {resume.education.map((item) => (
+              <article key={item.id} className="resume-row">
+                <div className="field-grid">
+                  <label className="field">
+                    <span>School</span>
+                    <input type="text" value={item.school} onChange={(event) => updateEducation(item.id, { school: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Degree</span>
+                    <input type="text" value={item.degree} onChange={(event) => updateEducation(item.id, { degree: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Field</span>
+                    <input type="text" value={item.field} onChange={(event) => updateEducation(item.id, { field: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Start</span>
+                    <input type="month" value={item.startDate} onChange={(event) => updateEducation(item.id, { startDate: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>End</span>
+                    <input type="month" value={item.endDate} onChange={(event) => updateEducation(item.id, { endDate: event.target.value })} />
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Details</span>
+                  <textarea rows={3} value={item.details} onChange={(event) => updateEducation(item.id, { details: event.target.value })} />
+                </label>
+                <button
+                  className="icon-button"
+                  type="button"
+                  disabled={resume.education.length <= 1}
+                  onClick={() =>
+                    setResume((current) => ({
+                      ...current,
+                      education:
+                        current.education.length > 1
+                          ? current.education.filter((entry) => entry.id !== item.id)
+                          : current.education,
+                    }))
+                  }
+                >
+                  <Trash2 size={14} />
+                  Remove school
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3>Links</h3>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() =>
+                  setResume((current) => ({
+                    ...current,
+                    links: [...current.links, { id: crypto.randomUUID(), label: "", url: "" }],
+                  }))
+                }
+              >
+                <Plus size={15} />
+                Add link
+              </button>
+            </div>
+            {resume.links.map((item) => (
+              <article key={item.id} className="resume-row">
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Label</span>
+                    <input type="text" value={item.label} onChange={(event) => updateLink(item.id, { label: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>URL</span>
+                    <input type="url" value={item.url} onChange={(event) => updateLink(item.id, { url: event.target.value })} />
+                  </label>
+                </div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() =>
+                    setResume((current) => ({
+                      ...current,
+                      links: current.links.filter((entry) => entry.id !== item.id),
+                    }))
+                  }
+                >
+                  <Trash2 size={14} />
+                  Remove link
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="mini-panel">
+            <h3>ATS keyword check</h3>
+            <label className="field">
+              <span>Paste target job description</span>
+              <textarea rows={5} value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} />
+            </label>
+            <ResultList
+              rows={[
+                { label: "Target keywords", value: formatNumericValue(jobKeywords.length) },
+                { label: "Matched keywords", value: formatNumericValue(matchedKeywords.length) },
+                { label: "Coverage", value: `${coveragePercent.toFixed(1)}%` },
+              ]}
+            />
+          </div>
+        </div>
+        <aside className={`resume-preview resume-template-${resume.template}`}>
+          <h3>Live preview</h3>
+          <header className="resume-header">
+            <h4>{resume.personal.fullName || "Your Name"}</h4>
+            <p>{resume.personal.headline || "Professional headline"}</p>
+            <p className="supporting-text">
+              {[resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
+                .filter(Boolean)
+                .join(" | ") || "Contact details"}
+            </p>
+          </header>
+          {resume.personal.summary ? (
+            <section className="resume-section">
+              <h5>Summary</h5>
+              <p>{resume.personal.summary}</p>
+            </section>
+          ) : null}
+          {resume.skills.length ? (
+            <section className="resume-section">
+              <h5>Skills</h5>
+              <div className="chip-list">
+                {resume.skills.map((item) => (
+                  <span key={item} className="chip">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <section className="resume-section">
+            <h5>Experience</h5>
+            {resume.experience
+              .filter((item) => item.role || item.company || item.highlights)
+              .map((item) => (
+                <article key={item.id} className="resume-entry">
+                  <div className="resume-entry-head">
+                    <strong>{item.role || "Role"}</strong>
+                    <span>{item.company || "Company"}</span>
+                  </div>
+                  <p className="supporting-text">
+                    {formatDateRange(item.startDate, item.endDate, item.current)}
+                    {item.location ? ` | ${item.location}` : ""}
+                  </p>
+                  <ul className="plain-list">
+                    {item.highlights
+                      .split(/\r?\n/)
+                      .map((line) => line.trim())
+                      .filter(Boolean)
+                      .map((line, index) => (
+                        <li key={`${item.id}-${index}`}>{line}</li>
+                      ))}
+                  </ul>
+                </article>
+              ))}
+          </section>
+          <section className="resume-section">
+            <h5>Education</h5>
+            {resume.education
+              .filter((item) => item.school || item.degree || item.field || item.details)
+              .map((item) => (
+                <article key={item.id} className="resume-entry">
+                  <div className="resume-entry-head">
+                    <strong>{item.school || "School"}</strong>
+                    <span>{[item.degree, item.field].filter(Boolean).join(", ") || "Program"}</span>
+                  </div>
+                  <p className="supporting-text">{formatDateRange(item.startDate, item.endDate, false)}</p>
+                  {item.details ? <p>{item.details}</p> : null}
+                </article>
+              ))}
+          </section>
+          {resume.links.some((item) => item.label || item.url) ? (
+            <section className="resume-section">
+              <h5>Links</h5>
+              <ul className="plain-list">
+                {resume.links
+                  .filter((item) => item.label || item.url)
+                  .map((item) => (
+                    <li key={item.id}>
+                      <strong>{item.label || "Link"}:</strong> {item.url || "-"}
+                    </li>
+                  ))}
+              </ul>
+            </section>
+          ) : null}
+          <ResultList
+            rows={[
+              {
+                label: "Filled sections",
+                value: formatNumericValue(
+                  [
+                    resume.personal.summary.trim() ? 1 : 0,
+                    resume.skills.length ? 1 : 0,
+                    resume.experience.some((item) => item.role || item.company || item.highlights) ? 1 : 0,
+                    resume.education.some((item) => item.school || item.degree || item.field || item.details) ? 1 : 0,
+                    resume.links.some((item) => item.label || item.url) ? 1 : 0,
+                  ].reduce((sum, item) => sum + item, 0),
+                ),
+              },
+              { label: "Skills", value: formatNumericValue(resume.skills.length) },
+              {
+                label: "ATS match",
+                value: jobKeywords.length ? `${coveragePercent.toFixed(1)}%` : "Add target role",
+              },
+            ]}
+          />
+        </aside>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+    </section>
+  );
+}
+
+interface InvoiceLineItem {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+}
+
+interface InvoiceData {
+  invoiceNumber: string;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  businessName: string;
+  businessEmail: string;
+  businessAddress: string;
+  clientName: string;
+  clientEmail: string;
+  clientAddress: string;
+  taxPercent: string;
+  discountType: "percent" | "fixed";
+  discountValue: string;
+  shipping: string;
+  notes: string;
+  paymentTerms: string;
+  items: InvoiceLineItem[];
+}
+
+function createDefaultInvoiceData(): InvoiceData {
+  const today = new Date();
+  const due = new Date(today);
+  due.setDate(due.getDate() + 14);
+  const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
+  return {
+    invoiceNumber: `INV-${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`,
+    issueDate: toIsoDate(today),
+    dueDate: toIsoDate(due),
+    currency: "USD",
+    businessName: "",
+    businessEmail: "",
+    businessAddress: "",
+    clientName: "",
+    clientEmail: "",
+    clientAddress: "",
+    taxPercent: "0",
+    discountType: "percent",
+    discountValue: "0",
+    shipping: "0",
+    notes: "",
+    paymentTerms: "Payment due within 14 days.",
+    items: [{ id: crypto.randomUUID(), description: "Service work", quantity: "1", unitPrice: "0" }],
+  };
+}
+
+function sanitizeInvoiceData(raw: unknown): InvoiceData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<InvoiceData>;
+  const defaults = createDefaultInvoiceData();
+  const itemCandidates = Array.isArray(candidate.items) ? (candidate.items as unknown[]) : [];
+  const items = itemCandidates
+    .filter((item) => Boolean(item) && typeof item === "object")
+    .map((item) => {
+      const entry = item as Partial<InvoiceLineItem>;
+      return {
+        id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+        description: typeof entry.description === "string" ? entry.description : "",
+        quantity: typeof entry.quantity === "string" ? entry.quantity : "1",
+        unitPrice: typeof entry.unitPrice === "string" ? entry.unitPrice : "0",
+      };
+    })
+    .slice(0, 40);
+  return {
+    invoiceNumber: typeof candidate.invoiceNumber === "string" ? candidate.invoiceNumber : defaults.invoiceNumber,
+    issueDate: typeof candidate.issueDate === "string" ? candidate.issueDate : defaults.issueDate,
+    dueDate: typeof candidate.dueDate === "string" ? candidate.dueDate : defaults.dueDate,
+    currency: typeof candidate.currency === "string" && candidate.currency ? candidate.currency : defaults.currency,
+    businessName: typeof candidate.businessName === "string" ? candidate.businessName : defaults.businessName,
+    businessEmail: typeof candidate.businessEmail === "string" ? candidate.businessEmail : defaults.businessEmail,
+    businessAddress: typeof candidate.businessAddress === "string" ? candidate.businessAddress : defaults.businessAddress,
+    clientName: typeof candidate.clientName === "string" ? candidate.clientName : defaults.clientName,
+    clientEmail: typeof candidate.clientEmail === "string" ? candidate.clientEmail : defaults.clientEmail,
+    clientAddress: typeof candidate.clientAddress === "string" ? candidate.clientAddress : defaults.clientAddress,
+    taxPercent: typeof candidate.taxPercent === "string" ? candidate.taxPercent : defaults.taxPercent,
+    discountType: candidate.discountType === "fixed" ? "fixed" : "percent",
+    discountValue: typeof candidate.discountValue === "string" ? candidate.discountValue : defaults.discountValue,
+    shipping: typeof candidate.shipping === "string" ? candidate.shipping : defaults.shipping,
+    notes: typeof candidate.notes === "string" ? candidate.notes : defaults.notes,
+    paymentTerms: typeof candidate.paymentTerms === "string" ? candidate.paymentTerms : defaults.paymentTerms,
+    items: items.length ? items : defaults.items,
+  };
+}
+
+function InvoiceGeneratorTool() {
+  const storageKey = "utiliora-invoice-generator-v1";
+  const [invoice, setInvoice] = useState<InvoiceData>(() => createDefaultInvoiceData());
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(storageKey);
+      if (!stored) return;
+      const sanitized = sanitizeInvoiceData(JSON.parse(stored));
+      if (sanitized) setInvoice(sanitized);
+    } catch {
+      // Ignore malformed invoice data.
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(invoice));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [invoice, storageKey]);
+
+  const updateInvoice = <K extends keyof InvoiceData>(key: K, value: InvoiceData[K]) => {
+    setInvoice((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateItem = (id: string, patch: Partial<InvoiceLineItem>) => {
+    setInvoice((current) => ({
+      ...current,
+      items: current.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const financials = useMemo(() => {
+    const subtotal = invoice.items.reduce((sum, item) => {
+      const quantity = Math.max(0, safeNumberValue(item.quantity));
+      const unitPrice = Math.max(0, safeNumberValue(item.unitPrice));
+      return sum + quantity * unitPrice;
+    }, 0);
+    const shipping = Math.max(0, safeNumberValue(invoice.shipping));
+    const discountValue = Math.max(0, safeNumberValue(invoice.discountValue));
+    const discount =
+      invoice.discountType === "percent"
+        ? (subtotal * Math.min(100, discountValue)) / 100
+        : Math.min(discountValue, subtotal);
+    const taxableBase = Math.max(0, subtotal - discount + shipping);
+    const tax = (taxableBase * Math.max(0, safeNumberValue(invoice.taxPercent))) / 100;
+    const total = taxableBase + tax;
+    return { subtotal, shipping, discount, taxableBase, tax, total };
+  }, [invoice.discountType, invoice.discountValue, invoice.items, invoice.shipping, invoice.taxPercent]);
+
+  const dueStatus = useMemo(() => {
+    if (!invoice.dueDate) return "No due date";
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(invoice.dueDate);
+    due.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((due.getTime() - today.getTime()) / 86400000);
+    if (diffDays < 0) return `Overdue by ${Math.abs(diffDays)} day${Math.abs(diffDays) === 1 ? "" : "s"}`;
+    if (diffDays === 0) return "Due today";
+    return `Due in ${diffDays} day${diffDays === 1 ? "" : "s"}`;
+  }, [invoice.dueDate]);
+
+  const printInvoice = () => {
+    const rowsHtml = invoice.items
+      .map((item) => {
+        const quantity = Math.max(0, safeNumberValue(item.quantity));
+        const unitPrice = Math.max(0, safeNumberValue(item.unitPrice));
+        const lineTotal = quantity * unitPrice;
+        return `<tr>
+  <td>${escapeHtml(item.description || "-")}</td>
+  <td>${formatNumericValue(quantity)}</td>
+  <td>${escapeHtml(formatCurrencyWithCode(unitPrice, invoice.currency))}</td>
+  <td>${escapeHtml(formatCurrencyWithCode(lineTotal, invoice.currency))}</td>
+</tr>`;
+      })
+      .join("");
+    const bodyHtml = `<main class="invoice-doc">
+<header>
+  <h1>Invoice ${escapeHtml(invoice.invoiceNumber || "")}</h1>
+  <p class="muted">Issue: ${escapeHtml(invoice.issueDate || "-")} | Due: ${escapeHtml(invoice.dueDate || "-")}</p>
+</header>
+<section class="cols">
+  <article><h2>From</h2><p>${escapeHtml(invoice.businessName || "-")}</p><p>${escapeHtml(invoice.businessEmail || "-")}</p><p>${escapeHtml(invoice.businessAddress || "-")}</p></article>
+  <article><h2>Bill To</h2><p>${escapeHtml(invoice.clientName || "-")}</p><p>${escapeHtml(invoice.clientEmail || "-")}</p><p>${escapeHtml(invoice.clientAddress || "-")}</p></article>
+</section>
+<table>
+  <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Total</th></tr></thead>
+  <tbody>${rowsHtml}</tbody>
+</table>
+<section class="totals">
+  <p><span>Subtotal</span><strong>${escapeHtml(formatCurrencyWithCode(financials.subtotal, invoice.currency))}</strong></p>
+  <p><span>Discount</span><strong>${escapeHtml(formatCurrencyWithCode(financials.discount, invoice.currency))}</strong></p>
+  <p><span>Shipping</span><strong>${escapeHtml(formatCurrencyWithCode(financials.shipping, invoice.currency))}</strong></p>
+  <p><span>Tax</span><strong>${escapeHtml(formatCurrencyWithCode(financials.tax, invoice.currency))}</strong></p>
+  <p class="grand"><span>Amount Due</span><strong>${escapeHtml(formatCurrencyWithCode(financials.total, invoice.currency))}</strong></p>
+</section>
+${invoice.paymentTerms ? `<p><strong>Terms:</strong> ${escapeHtml(invoice.paymentTerms)}</p>` : ""}
+${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` : ""}
+</main>`;
+    const opened = openPrintWindow(
+      `Invoice ${invoice.invoiceNumber || ""}`,
+      bodyHtml,
+      `
+      .invoice-doc { max-width: 960px; margin: 0 auto; display: grid; gap: 14px; }
+      .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .totals { margin-left: auto; max-width: 360px; width: 100%; }
+      .totals p { display: flex; justify-content: space-between; margin: 4px 0; }
+      .totals .grand { font-size: 18px; border-top: 1px solid #d3dbe5; padding-top: 8px; margin-top: 8px; }
+      `,
+    );
+    if (!opened) {
+      setStatus("Enable popups to print or save PDF.");
+      return;
+    }
+    setStatus("Opened print view. Choose Save as PDF.");
+    trackEvent("invoice_print_open", { currency: invoice.currency, items: invoice.items.length });
+  };
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Receipt}
+        title="Invoice generator"
+        subtitle="Create client-ready invoices with taxes, discounts, due tracking, and print-to-PDF."
+      />
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={printInvoice}>
+          <Printer size={15} />
+          Print / PDF
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("invoice-data.json", JSON.stringify(invoice, null, 2), "application/json;charset=utf-8;");
+            setStatus("Invoice JSON exported.");
+          }}
+        >
+          <Download size={15} />
+          Export JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadCsv(
+              "invoice-line-items.csv",
+              ["Description", "Quantity", "Unit Price", "Line Total"],
+              invoice.items.map((item) => {
+                const quantity = Math.max(0, safeNumberValue(item.quantity));
+                const unitPrice = Math.max(0, safeNumberValue(item.unitPrice));
+                return [item.description, String(quantity), String(unitPrice), String(quantity * unitPrice)];
+              }),
+            );
+            setStatus("Line items CSV exported.");
+          }}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+      </div>
+      <div className="split-panel">
+        <div className="invoice-editor">
+          <div className="field-grid">
+            <label className="field">
+              <span>Invoice number</span>
+              <input type="text" value={invoice.invoiceNumber} onChange={(event) => updateInvoice("invoiceNumber", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Issue date</span>
+              <input type="date" value={invoice.issueDate} onChange={(event) => updateInvoice("issueDate", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Due date</span>
+              <input type="date" value={invoice.dueDate} onChange={(event) => updateInvoice("dueDate", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Currency</span>
+              <select value={invoice.currency} onChange={(event) => updateInvoice("currency", event.target.value)}>
+                {["USD", "EUR", "GBP", "CAD", "AUD", "INR"].map((currency) => (
+                  <option key={currency} value={currency}>
+                    {currency}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>From (business name)</span>
+              <input type="text" value={invoice.businessName} onChange={(event) => updateInvoice("businessName", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Business email</span>
+              <input type="email" value={invoice.businessEmail} onChange={(event) => updateInvoice("businessEmail", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Bill to (client)</span>
+              <input type="text" value={invoice.clientName} onChange={(event) => updateInvoice("clientName", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Client email</span>
+              <input type="email" value={invoice.clientEmail} onChange={(event) => updateInvoice("clientEmail", event.target.value)} />
+            </label>
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>Business address</span>
+              <textarea rows={3} value={invoice.businessAddress} onChange={(event) => updateInvoice("businessAddress", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Client address</span>
+              <textarea rows={3} value={invoice.clientAddress} onChange={(event) => updateInvoice("clientAddress", event.target.value)} />
+            </label>
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3>Line items</h3>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() =>
+                  setInvoice((current) => ({
+                    ...current,
+                    items: [...current.items, { id: crypto.randomUUID(), description: "", quantity: "1", unitPrice: "0" }],
+                  }))
+                }
+              >
+                <Plus size={15} />
+                Add item
+              </button>
+            </div>
+            {invoice.items.map((item) => (
+              <article key={item.id} className="resume-row">
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Description</span>
+                    <input type="text" value={item.description} onChange={(event) => updateItem(item.id, { description: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Quantity</span>
+                    <input type="number" min={0} step={0.01} value={item.quantity} onChange={(event) => updateItem(item.id, { quantity: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Unit price</span>
+                    <input type="number" min={0} step={0.01} value={item.unitPrice} onChange={(event) => updateItem(item.id, { unitPrice: event.target.value })} />
+                  </label>
+                </div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  disabled={invoice.items.length <= 1}
+                  onClick={() =>
+                    setInvoice((current) => ({
+                      ...current,
+                      items: current.items.length > 1 ? current.items.filter((entry) => entry.id !== item.id) : current.items,
+                    }))
+                  }
+                >
+                  <Trash2 size={14} />
+                  Remove item
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>Tax (%)</span>
+              <input type="number" min={0} step={0.01} value={invoice.taxPercent} onChange={(event) => updateInvoice("taxPercent", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Discount type</span>
+              <select value={invoice.discountType} onChange={(event) => updateInvoice("discountType", event.target.value as "percent" | "fixed")}>
+                <option value="percent">Percent</option>
+                <option value="fixed">Fixed amount</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Discount {invoice.discountType === "percent" ? "(%)" : "(amount)"}</span>
+              <input type="number" min={0} step={0.01} value={invoice.discountValue} onChange={(event) => updateInvoice("discountValue", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Shipping</span>
+              <input type="number" min={0} step={0.01} value={invoice.shipping} onChange={(event) => updateInvoice("shipping", event.target.value)} />
+            </label>
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>Payment terms</span>
+              <textarea rows={2} value={invoice.paymentTerms} onChange={(event) => updateInvoice("paymentTerms", event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Notes</span>
+              <textarea rows={2} value={invoice.notes} onChange={(event) => updateInvoice("notes", event.target.value)} />
+            </label>
+          </div>
+        </div>
+        <aside className="invoice-preview">
+          <h3>Invoice preview</h3>
+          <p className="supporting-text">
+            <strong>{invoice.invoiceNumber || "Invoice Number"}</strong> | {invoice.issueDate || "-"} to {invoice.dueDate || "-"}
+          </p>
+          <p className={`status-badge ${dueStatus.startsWith("Overdue") ? "bad" : dueStatus === "Due today" ? "warn" : "ok"}`}>{dueStatus}</p>
+          <div className="invoice-identity-grid">
+            <div className="mini-panel">
+              <h4>From</h4>
+              <p>{invoice.businessName || "-"}</p>
+              <p>{invoice.businessEmail || "-"}</p>
+              <p>{invoice.businessAddress || "-"}</p>
+            </div>
+            <div className="mini-panel">
+              <h4>Bill To</h4>
+              <p>{invoice.clientName || "-"}</p>
+              <p>{invoice.clientEmail || "-"}</p>
+              <p>{invoice.clientAddress || "-"}</p>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Description</th>
+                  <th>Qty</th>
+                  <th>Unit</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoice.items.map((item) => {
+                  const quantity = Math.max(0, safeNumberValue(item.quantity));
+                  const unitPrice = Math.max(0, safeNumberValue(item.unitPrice));
+                  const lineTotal = quantity * unitPrice;
+                  return (
+                    <tr key={item.id}>
+                      <td>{item.description || "-"}</td>
+                      <td>{formatNumericValue(quantity)}</td>
+                      <td>{formatCurrencyWithCode(unitPrice, invoice.currency)}</td>
+                      <td>{formatCurrencyWithCode(lineTotal, invoice.currency)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="mini-panel invoice-totals">
+            <p>
+              <span>Subtotal</span>
+              <strong>{formatCurrencyWithCode(financials.subtotal, invoice.currency)}</strong>
+            </p>
+            <p>
+              <span>Discount</span>
+              <strong>{formatCurrencyWithCode(financials.discount, invoice.currency)}</strong>
+            </p>
+            <p>
+              <span>Shipping</span>
+              <strong>{formatCurrencyWithCode(financials.shipping, invoice.currency)}</strong>
+            </p>
+            <p>
+              <span>Tax</span>
+              <strong>{formatCurrencyWithCode(financials.tax, invoice.currency)}</strong>
+            </p>
+            <p className="invoice-total-final">
+              <span>Amount due</span>
+              <strong>{formatCurrencyWithCode(financials.total, invoice.currency)}</strong>
+            </p>
+          </div>
+          {invoice.paymentTerms ? <p className="supporting-text"><strong>Terms:</strong> {invoice.paymentTerms}</p> : null}
+          {invoice.notes ? <p className="supporting-text"><strong>Notes:</strong> {invoice.notes}</p> : null}
+          <ResultList
+            rows={[
+              { label: "Line items", value: formatNumericValue(invoice.items.length) },
+              { label: "Discount mode", value: invoice.discountType === "percent" ? "Percent" : "Fixed" },
+              { label: "Amount due", value: formatCurrencyWithCode(financials.total, invoice.currency) },
+            ]}
+          />
+        </aside>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -4805,6 +6931,10 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <TodoListTool />;
     case "notes-pad":
       return <NotesPadTool />;
+    case "resume-builder":
+      return <ResumeBuilderTool />;
+    case "invoice-generator":
+      return <InvoiceGeneratorTool />;
     default:
       return <p>Productivity tool unavailable.</p>;
   }

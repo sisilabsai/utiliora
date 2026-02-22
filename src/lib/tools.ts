@@ -697,8 +697,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "pomodoro-timer",
     category: "productivity-tools",
     title: "Pomodoro Timer",
-    summary: "Focus timer with start, pause, reset, and custom session lengths.",
-    description: "Use structured focus sessions to improve deep work and time discipline.",
+    summary: "Smart focus timer with presets, auto transitions, and daily productivity stats.",
+    description:
+      "Run structured focus and break cycles with custom durations, auto-start options, phase controls, and local progress tracking.",
     keywords: ["pomodoro timer", "focus timer", "productivity timer"],
     engine: { kind: "productivity-tool", id: "pomodoro-timer" },
     faq: baseFaq("Pomodoro Timer"),
@@ -707,8 +708,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "simple-todo-list",
     category: "productivity-tools",
     title: "Simple To-do List",
-    summary: "Track daily tasks with local persistent storage.",
-    description: "A lightweight to-do manager for quick capture and completion tracking.",
+    summary: "Task manager with priorities, due dates, filters, search, and CSV export.",
+    description:
+      "Capture and organize tasks with local persistence, overdue tracking, completion workflows, and productivity-focused task insights.",
     keywords: ["todo list", "task list", "simple todo app"],
     engine: { kind: "productivity-tool", id: "simple-todo-list" },
     faq: baseFaq("Simple To-do List"),
@@ -717,11 +719,34 @@ const productivityTools: ToolDefinition[] = [
     slug: "notes-pad",
     category: "productivity-tools",
     title: "Notes Pad",
-    summary: "Fast note taking with autosave to browser storage.",
-    description: "Keep temporary notes, snippets, and ideas in a clean distraction-free editor.",
+    summary: "Multi-note workspace with autosave, search, markdown preview, and export.",
+    description:
+      "Capture ideas, technical snippets, and work notes with local autosave, quick organization, and export options.",
     keywords: ["notes pad", "online notes", "quick note app"],
     engine: { kind: "productivity-tool", id: "notes-pad" },
     faq: baseFaq("Notes Pad"),
+  },
+  {
+    slug: "resume-builder",
+    category: "productivity-tools",
+    title: "Resume Builder",
+    summary: "Build modern resumes with templates, structured sections, and print-to-PDF export.",
+    description:
+      "Create a polished resume with editable personal details, skills, experience, and education sections in multiple templates.",
+    keywords: ["resume builder", "cv builder", "resume template", "resume pdf"],
+    engine: { kind: "productivity-tool", id: "resume-builder" },
+    faq: baseFaq("Resume Builder"),
+  },
+  {
+    slug: "invoice-generator",
+    category: "productivity-tools",
+    title: "Invoice Generator",
+    summary: "Generate professional invoices with line items, taxes, totals, and print-to-PDF export.",
+    description:
+      "Create client-ready invoices with business and client details, due dates, discount/tax support, and export workflow.",
+    keywords: ["invoice generator", "invoice template", "invoice pdf", "billing tool"],
+    engine: { kind: "productivity-tool", id: "invoice-generator" },
+    faq: baseFaq("Invoice Generator"),
   },
 ];
 
