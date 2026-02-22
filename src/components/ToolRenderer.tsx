@@ -74,7 +74,7 @@ function ResultList({ rows }: { rows: ResultRow[] }) {
 interface CalculatorField {
   name: string;
   label: string;
-  type?: "number" | "text" | "select";
+  type?: "number" | "text" | "select" | "date";
   min?: number;
   step?: number;
   defaultValue: string;
@@ -104,6 +104,43 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     },
     { name: "months", label: "Loan tenure (months)", defaultValue: "60", min: 1, step: 1, type: "number" },
   ],
+  "mortgage-calculator": [
+    {
+      name: "homePrice",
+      label: "Home price (USD)",
+      defaultValue: "450000",
+      min: 0,
+      step: 1000,
+      type: "number",
+    },
+    {
+      name: "downPayment",
+      label: "Down payment (USD)",
+      defaultValue: "90000",
+      min: 0,
+      step: 500,
+      type: "number",
+    },
+    { name: "annualRate", label: "Interest rate (%)", defaultValue: "6.5", min: 0, step: 0.1, type: "number" },
+    { name: "years", label: "Loan term (years)", defaultValue: "30", min: 1, step: 1, type: "number" },
+    {
+      name: "annualPropertyTaxRate",
+      label: "Property tax rate (%)",
+      defaultValue: "1.2",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "annualHomeInsurance",
+      label: "Annual home insurance (USD)",
+      defaultValue: "1800",
+      min: 0,
+      step: 50,
+      type: "number",
+    },
+    { name: "monthlyHoa", label: "Monthly HOA (USD)", defaultValue: "0", min: 0, step: 10, type: "number" },
+  ],
   "compound-interest-calculator": [
     { name: "principal", label: "Initial principal (USD)", defaultValue: "10000", min: 0, step: 10, type: "number" },
     { name: "annualRate", label: "Annual return rate (%)", defaultValue: "7", min: 0, step: 0.1, type: "number" },
@@ -126,6 +163,127 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     { name: "annualRate", label: "Annual rate (%)", defaultValue: "5", min: 0, step: 0.1, type: "number" },
     { name: "years", label: "Years", defaultValue: "3", min: 0, step: 0.5, type: "number" },
   ],
+  "inflation-calculator": [
+    { name: "amount", label: "Current amount (USD)", defaultValue: "1000", min: 0, step: 10, type: "number" },
+    {
+      name: "annualInflationRate",
+      label: "Annual inflation rate (%)",
+      defaultValue: "3",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    { name: "years", label: "Years", defaultValue: "10", min: 0, step: 0.5, type: "number" },
+  ],
+  "currency-converter-calculator": [
+    { name: "amount", label: "Amount", defaultValue: "1000", min: 0, step: 0.01, type: "number" },
+    {
+      name: "fromCurrency",
+      label: "From currency",
+      defaultValue: "USD",
+      type: "select",
+      options: [
+        { label: "USD", value: "USD" },
+        { label: "EUR", value: "EUR" },
+        { label: "GBP", value: "GBP" },
+        { label: "JPY", value: "JPY" },
+        { label: "INR", value: "INR" },
+        { label: "CAD", value: "CAD" },
+        { label: "AUD", value: "AUD" },
+      ],
+    },
+    {
+      name: "toCurrency",
+      label: "To currency",
+      defaultValue: "EUR",
+      type: "select",
+      options: [
+        { label: "USD", value: "USD" },
+        { label: "EUR", value: "EUR" },
+        { label: "GBP", value: "GBP" },
+        { label: "JPY", value: "JPY" },
+        { label: "INR", value: "INR" },
+        { label: "CAD", value: "CAD" },
+        { label: "AUD", value: "AUD" },
+      ],
+    },
+    {
+      name: "exchangeRate",
+      label: "Exchange rate (1 from = ? to)",
+      defaultValue: "0.92",
+      min: 0,
+      step: 0.0001,
+      type: "number",
+    },
+    {
+      name: "conversionFeePercent",
+      label: "Conversion fee (%)",
+      defaultValue: "0",
+      min: 0,
+      step: 0.01,
+      type: "number",
+    },
+  ],
+  "crypto-profit-calculator": [
+    { name: "buyPrice", label: "Buy price (USD)", defaultValue: "60000", min: 0, step: 0.01, type: "number" },
+    { name: "sellPrice", label: "Sell price (USD)", defaultValue: "68000", min: 0, step: 0.01, type: "number" },
+    { name: "quantity", label: "Quantity", defaultValue: "0.2", min: 0, step: 0.0001, type: "number" },
+    {
+      name: "tradingFeePercent",
+      label: "Fee per trade (%)",
+      defaultValue: "0.25",
+      min: 0,
+      step: 0.01,
+      type: "number",
+    },
+  ],
+  "credit-card-payoff-calculator": [
+    { name: "balance", label: "Current balance (USD)", defaultValue: "8500", min: 0, step: 10, type: "number" },
+    { name: "apr", label: "APR (%)", defaultValue: "21.9", min: 0, step: 0.1, type: "number" },
+    { name: "monthlyPayment", label: "Monthly payment (USD)", defaultValue: "300", min: 1, step: 1, type: "number" },
+  ],
+  "salary-after-tax-calculator": [
+    {
+      name: "annualSalary",
+      label: "Gross annual salary (USD)",
+      defaultValue: "85000",
+      min: 0,
+      step: 100,
+      type: "number",
+    },
+    {
+      name: "federalTaxRate",
+      label: "Federal tax rate (%)",
+      defaultValue: "18",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "stateTaxRate",
+      label: "State tax rate (%)",
+      defaultValue: "6",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "retirementPercent",
+      label: "Retirement contribution (%)",
+      defaultValue: "6",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "monthlyBenefitsCost",
+      label: "Monthly deductions (USD)",
+      defaultValue: "220",
+      min: 0,
+      step: 1,
+      type: "number",
+    },
+  ],
   "roi-calculator": [
     { name: "investment", label: "Initial investment (USD)", defaultValue: "2000", min: 0, step: 10, type: "number" },
     { name: "returns", label: "Final returns (USD)", defaultValue: "2600", min: 0, step: 10, type: "number" },
@@ -134,6 +292,10 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     { name: "revenue", label: "Revenue (USD)", defaultValue: "1000", min: 0, step: 1, type: "number" },
     { name: "cost", label: "Cost (USD)", defaultValue: "650", min: 0, step: 1, type: "number" },
   ],
+  "markup-calculator": [
+    { name: "cost", label: "Unit cost (USD)", defaultValue: "35", min: 0, step: 0.01, type: "number" },
+    { name: "markupPercent", label: "Target markup (%)", defaultValue: "50", min: 0, step: 0.1, type: "number" },
+  ],
   "vat-calculator": [
     { name: "amount", label: "Base amount (USD)", defaultValue: "100", min: 0, step: 0.01, type: "number" },
     { name: "vatRate", label: "VAT rate (%)", defaultValue: "20", min: 0, step: 0.1, type: "number" },
@@ -141,6 +303,23 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
   "bmi-calculator": [
     { name: "weightKg", label: "Weight (kg)", defaultValue: "70", min: 1, step: 0.1, type: "number" },
     { name: "heightCm", label: "Height (cm)", defaultValue: "175", min: 30, step: 0.1, type: "number" },
+  ],
+  "body-fat-calculator": [
+    {
+      name: "sex",
+      label: "Sex",
+      defaultValue: "male",
+      type: "select",
+      options: [
+        { label: "Male", value: "male" },
+        { label: "Female", value: "female" },
+      ],
+    },
+    { name: "weightKg", label: "Weight (kg)", defaultValue: "75", min: 1, step: 0.1, type: "number" },
+    { name: "heightCm", label: "Height (cm)", defaultValue: "178", min: 100, step: 0.1, type: "number" },
+    { name: "neckCm", label: "Neck (cm)", defaultValue: "38", min: 10, step: 0.1, type: "number" },
+    { name: "waistCm", label: "Waist (cm)", defaultValue: "86", min: 20, step: 0.1, type: "number" },
+    { name: "hipCm", label: "Hip (cm, female)", defaultValue: "98", min: 20, step: 0.1, type: "number" },
   ],
   "calorie-needs-calculator": [
     {
@@ -173,6 +352,10 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     { name: "weightKg", label: "Weight (kg)", defaultValue: "70", min: 1, step: 0.1, type: "number" },
     { name: "activityMinutes", label: "Exercise minutes/day", defaultValue: "30", min: 0, step: 1, type: "number" },
   ],
+  "pregnancy-due-date-calculator": [
+    { name: "lmpDate", label: "First day of last period", defaultValue: "2026-01-01", type: "date" },
+    { name: "cycleLengthDays", label: "Cycle length (days)", defaultValue: "28", min: 20, step: 1, type: "number" },
+  ],
   "savings-goal-calculator": [
     { name: "targetAmount", label: "Target amount (USD)", defaultValue: "50000", min: 1, step: 100, type: "number" },
     { name: "currentSavings", label: "Current savings (USD)", defaultValue: "5000", min: 0, step: 100, type: "number" },
@@ -183,6 +366,12 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     { name: "fixedCosts", label: "Fixed costs (USD)", defaultValue: "15000", min: 0, step: 100, type: "number" },
     { name: "variableCostPerUnit", label: "Variable cost/unit (USD)", defaultValue: "20", min: 0, step: 0.01, type: "number" },
     { name: "unitPrice", label: "Selling price/unit (USD)", defaultValue: "45", min: 0, step: 0.01, type: "number" },
+  ],
+  "startup-cost-estimator": [
+    { name: "oneTimeCosts", label: "One-time setup costs (USD)", defaultValue: "25000", min: 0, step: 100, type: "number" },
+    { name: "monthlyBurn", label: "Monthly operating burn (USD)", defaultValue: "12000", min: 0, step: 100, type: "number" },
+    { name: "runwayMonths", label: "Runway target (months)", defaultValue: "12", min: 1, step: 1, type: "number" },
+    { name: "contingencyPercent", label: "Contingency buffer (%)", defaultValue: "15", min: 0, step: 1, type: "number" },
   ],
   "freelance-rate-calculator": [
     {
@@ -213,16 +402,26 @@ interface CalculatorPreset {
 
 const calculatorSubtitles: Record<CalculatorId, string> = {
   "loan-emi-calculator": "Plan loan payments with amortization detail and repayment impact.",
+  "mortgage-calculator": "Estimate all-in home payments with taxes, insurance, and HOA included.",
   "compound-interest-calculator": "Model long-term growth and compounding outcomes year by year.",
   "simple-interest-calculator": "Quickly estimate simple-interest returns for fixed-rate periods.",
+  "inflation-calculator": "Project future price impact and loss of purchasing power over time.",
+  "currency-converter-calculator": "Convert currencies using your rate assumptions and fee impact.",
+  "crypto-profit-calculator": "Evaluate crypto trade outcomes including entry/exit fees.",
+  "credit-card-payoff-calculator": "See how payment size changes debt payoff time and interest cost.",
+  "salary-after-tax-calculator": "Estimate realistic take-home pay after taxes and deductions.",
   "roi-calculator": "Measure profitability and capital efficiency for campaigns and investments.",
   "profit-margin-calculator": "Tune price, cost, margin, and markup for sustainable profitability.",
+  "markup-calculator": "Set retail selling price from your target markup and unit cost.",
   "vat-calculator": "Compute tax-inclusive totals with accurate VAT breakdowns.",
   "bmi-calculator": "Check body mass index and healthy range guidance.",
+  "body-fat-calculator": "Estimate body-fat percentage and lean mass using body measurements.",
   "calorie-needs-calculator": "Estimate maintenance, cut, and gain calorie targets.",
   "water-intake-calculator": "Set a hydration target based on body weight and activity.",
+  "pregnancy-due-date-calculator": "Estimate due date and current gestational age from LMP.",
   "savings-goal-calculator": "Calculate the monthly contribution needed to hit your target.",
   "break-even-calculator": "See units and revenue needed to cover fixed and variable costs.",
+  "startup-cost-estimator": "Forecast startup capital requirements with runway and contingency.",
   "freelance-rate-calculator": "Set hourly/day rates aligned with income and profit goals.",
 };
 
@@ -230,6 +429,32 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "loan-emi-calculator": [
     { label: "Home Loan", values: { principal: "250000", annualRate: "7.5", months: "360" } },
     { label: "Car Loan", values: { principal: "28000", annualRate: "6.8", months: "60" } },
+  ],
+  "mortgage-calculator": [
+    {
+      label: "Starter home",
+      values: {
+        homePrice: "350000",
+        downPayment: "70000",
+        annualRate: "6.4",
+        years: "30",
+        annualPropertyTaxRate: "1.1",
+        annualHomeInsurance: "1400",
+        monthlyHoa: "0",
+      },
+    },
+    {
+      label: "Urban condo",
+      values: {
+        homePrice: "520000",
+        downPayment: "104000",
+        annualRate: "6.1",
+        years: "30",
+        annualPropertyTaxRate: "1.3",
+        annualHomeInsurance: "2100",
+        monthlyHoa: "360",
+      },
+    },
   ],
   "compound-interest-calculator": [
     {
@@ -245,6 +470,38 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
     { label: "Short-term deposit", values: { principal: "5000", annualRate: "4.5", years: "2" } },
     { label: "Corporate note", values: { principal: "25000", annualRate: "6.2", years: "3" } },
   ],
+  "inflation-calculator": [
+    { label: "Moderate inflation", values: { amount: "1000", annualInflationRate: "3", years: "10" } },
+    { label: "High inflation", values: { amount: "1000", annualInflationRate: "7", years: "10" } },
+  ],
+  "currency-converter-calculator": [
+    {
+      label: "USD to EUR",
+      values: { amount: "1500", fromCurrency: "USD", toCurrency: "EUR", exchangeRate: "0.92", conversionFeePercent: "0.5" },
+    },
+    {
+      label: "USD to JPY",
+      values: { amount: "1500", fromCurrency: "USD", toCurrency: "JPY", exchangeRate: "149.4", conversionFeePercent: "1" },
+    },
+  ],
+  "crypto-profit-calculator": [
+    { label: "BTC swing trade", values: { buyPrice: "60000", sellPrice: "72000", quantity: "0.15", tradingFeePercent: "0.2" } },
+    { label: "ETH quick trade", values: { buyPrice: "3100", sellPrice: "3450", quantity: "2.5", tradingFeePercent: "0.35" } },
+  ],
+  "credit-card-payoff-calculator": [
+    { label: "Aggressive payoff", values: { balance: "8500", apr: "21.9", monthlyPayment: "420" } },
+    { label: "Moderate payoff", values: { balance: "8500", apr: "21.9", monthlyPayment: "260" } },
+  ],
+  "salary-after-tax-calculator": [
+    {
+      label: "Mid-career role",
+      values: { annualSalary: "95000", federalTaxRate: "18", stateTaxRate: "6", retirementPercent: "8", monthlyBenefitsCost: "260" },
+    },
+    {
+      label: "Senior role",
+      values: { annualSalary: "140000", federalTaxRate: "24", stateTaxRate: "7", retirementPercent: "10", monthlyBenefitsCost: "420" },
+    },
+  ],
   "roi-calculator": [
     { label: "Marketing campaign", values: { investment: "1500", returns: "4200" } },
     { label: "Equipment upgrade", values: { investment: "8000", returns: "11200" } },
@@ -253,6 +510,10 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
     { label: "SaaS plan", values: { revenue: "49", cost: "12" } },
     { label: "Ecommerce product", values: { revenue: "80", cost: "42" } },
   ],
+  "markup-calculator": [
+    { label: "Retail 50%", values: { cost: "35", markupPercent: "50" } },
+    { label: "Premium 120%", values: { cost: "85", markupPercent: "120" } },
+  ],
   "vat-calculator": [
     { label: "Standard VAT 20%", values: { amount: "500", vatRate: "20" } },
     { label: "Reduced VAT 5%", values: { amount: "500", vatRate: "5" } },
@@ -260,6 +521,16 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "bmi-calculator": [
     { label: "Average adult", values: { weightKg: "72", heightCm: "175" } },
     { label: "Athletic build", values: { weightKg: "82", heightCm: "183" } },
+  ],
+  "body-fat-calculator": [
+    {
+      label: "Male profile",
+      values: { sex: "male", weightKg: "78", heightCm: "178", neckCm: "39", waistCm: "88", hipCm: "98" },
+    },
+    {
+      label: "Female profile",
+      values: { sex: "female", weightKg: "64", heightCm: "168", neckCm: "33", waistCm: "76", hipCm: "98" },
+    },
   ],
   "calorie-needs-calculator": [
     {
@@ -275,6 +546,10 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
     { label: "Low activity", values: { weightKg: "70", activityMinutes: "20" } },
     { label: "High activity", values: { weightKg: "70", activityMinutes: "90" } },
   ],
+  "pregnancy-due-date-calculator": [
+    { label: "28-day cycle", values: { lmpDate: "2026-01-01", cycleLengthDays: "28" } },
+    { label: "32-day cycle", values: { lmpDate: "2026-01-01", cycleLengthDays: "32" } },
+  ],
   "savings-goal-calculator": [
     {
       label: "Emergency fund",
@@ -288,6 +563,10 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "break-even-calculator": [
     { label: "Product launch", values: { fixedCosts: "20000", variableCostPerUnit: "18", unitPrice: "45" } },
     { label: "Service package", values: { fixedCosts: "8000", variableCostPerUnit: "45", unitPrice: "140" } },
+  ],
+  "startup-cost-estimator": [
+    { label: "Lean SaaS", values: { oneTimeCosts: "18000", monthlyBurn: "9000", runwayMonths: "12", contingencyPercent: "15" } },
+    { label: "Marketplace launch", values: { oneTimeCosts: "45000", monthlyBurn: "22000", runwayMonths: "18", contingencyPercent: "20" } },
   ],
   "freelance-rate-calculator": [
     {
@@ -402,10 +681,20 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   }, [autoCalculate, calculate]);
 
   const insights = useMemo(() => getCalculatorInsights(id, values), [id, values]);
-  const loanSchedule = useMemo(
-    () => (id === "loan-emi-calculator" ? getLoanAmortizationSchedule(values) : []),
-    [id, values],
-  );
+  const loanSchedule = useMemo(() => {
+    if (id === "loan-emi-calculator") {
+      return getLoanAmortizationSchedule(values);
+    }
+    if (id === "mortgage-calculator") {
+      const homePrice = Math.max(0, safeNumberValue(values.homePrice));
+      const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+      const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+      const years = Math.max(1, Math.round(safeNumberValue(values.years)));
+      const principal = Math.max(0, homePrice - downPayment);
+      return getLoanAmortizationSchedule({ principal, annualRate, months: years * 12 });
+    }
+    return [];
+  }, [id, values]);
   const compoundTimeline = useMemo(
     () => (id === "compound-interest-calculator" ? getCompoundGrowthTimeline(values) : []),
     [id, values],
@@ -465,9 +754,9 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
               </select>
             ) : (
               <input
-                type="number"
-                min={field.min}
-                step={field.step}
+                type={field.type === "date" ? "date" : field.type === "text" ? "text" : "number"}
+                min={field.type === "number" ? field.min : undefined}
+                step={field.type === "number" ? field.step : undefined}
                 value={values[field.name] ?? field.defaultValue}
                 onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
               />
@@ -529,7 +818,7 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         </ul>
       </div>
 
-      {id === "loan-emi-calculator" && loanSchedule.length > 0 ? (
+      {(id === "loan-emi-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
         <div className="mini-panel">
           <div className="panel-head">
             <h3>Amortization schedule</h3>

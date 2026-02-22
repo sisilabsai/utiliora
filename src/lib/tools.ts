@@ -32,6 +32,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Loan EMI Calculator"),
   },
   {
+    slug: "mortgage-calculator",
+    category: "calculators",
+    title: "Mortgage Calculator",
+    summary: "Plan monthly mortgage payments including taxes, insurance, and HOA.",
+    description:
+      "Estimate principal and interest payments plus housing extras to see your all-in monthly mortgage cost.",
+    keywords: ["mortgage calculator", "home loan payment", "monthly mortgage payment"],
+    engine: { kind: "calculator", id: "mortgage-calculator" },
+    faq: baseFaq("Mortgage Calculator"),
+  },
+  {
     slug: "compound-interest-calculator",
     category: "calculators",
     title: "Compound Interest Calculator",
@@ -51,6 +62,61 @@ const calculators: ToolDefinition[] = [
     keywords: ["simple interest calculator", "interest formula"],
     engine: { kind: "calculator", id: "simple-interest-calculator" },
     faq: baseFaq("Simple Interest Calculator"),
+  },
+  {
+    slug: "inflation-calculator",
+    category: "calculators",
+    title: "Inflation Calculator",
+    summary: "See how inflation changes future costs and purchasing power over time.",
+    description:
+      "Project future price impact from annual inflation and understand how much buying power is lost.",
+    keywords: ["inflation calculator", "future value inflation", "purchasing power calculator"],
+    engine: { kind: "calculator", id: "inflation-calculator" },
+    faq: baseFaq("Inflation Calculator"),
+  },
+  {
+    slug: "currency-converter-calculator",
+    category: "calculators",
+    title: "Currency Converter Calculator",
+    summary: "Convert values between major currencies using your selected exchange rate.",
+    description:
+      "Estimate converted values with a manual rate and optional conversion fee for transparent planning.",
+    keywords: ["currency converter calculator", "fx calculator", "exchange rate calculator"],
+    engine: { kind: "calculator", id: "currency-converter-calculator" },
+    faq: baseFaq("Currency Converter Calculator"),
+  },
+  {
+    slug: "crypto-profit-calculator",
+    category: "calculators",
+    title: "Crypto Profit Calculator",
+    summary: "Calculate crypto trade profit, ROI, and break-even sell price after fees.",
+    description:
+      "Model entry and exit prices with trading fees to evaluate profitability before placing trades.",
+    keywords: ["crypto profit calculator", "bitcoin roi calculator", "trading profit calculator"],
+    engine: { kind: "calculator", id: "crypto-profit-calculator" },
+    faq: baseFaq("Crypto Profit Calculator"),
+  },
+  {
+    slug: "credit-card-payoff-calculator",
+    category: "calculators",
+    title: "Credit Card Payoff Calculator",
+    summary: "Estimate debt payoff time, total paid, and interest cost from your payment amount.",
+    description:
+      "See how long it takes to clear credit card debt and how payment size impacts total interest.",
+    keywords: ["credit card payoff calculator", "debt payoff", "credit card interest calculator"],
+    engine: { kind: "calculator", id: "credit-card-payoff-calculator" },
+    faq: baseFaq("Credit Card Payoff Calculator"),
+  },
+  {
+    slug: "salary-after-tax-calculator",
+    category: "calculators",
+    title: "Salary After Tax Calculator",
+    summary: "Estimate annual and monthly take-home pay after tax, retirement, and deductions.",
+    description:
+      "Plan personal budgets with net salary projections using federal/state tax and recurring deductions.",
+    keywords: ["salary after tax calculator", "take home pay", "net salary calculator"],
+    engine: { kind: "calculator", id: "salary-after-tax-calculator" },
+    faq: baseFaq("Salary After Tax Calculator"),
   },
   {
     slug: "roi-calculator",
@@ -73,6 +139,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Profit Margin Calculator"),
   },
   {
+    slug: "markup-calculator",
+    category: "calculators",
+    title: "Markup Calculator",
+    summary: "Set selling price from cost and target markup percentage.",
+    description:
+      "Calculate selling price, profit per unit, and resulting margin from a chosen markup target.",
+    keywords: ["markup calculator", "selling price calculator", "retail pricing"],
+    engine: { kind: "calculator", id: "markup-calculator" },
+    faq: baseFaq("Markup Calculator"),
+  },
+  {
     slug: "vat-calculator",
     category: "calculators",
     title: "VAT Calculator",
@@ -91,6 +168,17 @@ const calculators: ToolDefinition[] = [
     keywords: ["bmi calculator", "body mass index", "weight category"],
     engine: { kind: "calculator", id: "bmi-calculator" },
     faq: baseFaq("BMI Calculator"),
+  },
+  {
+    slug: "body-fat-calculator",
+    category: "calculators",
+    title: "Body Fat Calculator",
+    summary: "Estimate body fat percentage and lean mass using body measurements.",
+    description:
+      "Use the U.S. Navy method to estimate body-fat percentage from waist, neck, height, and weight metrics.",
+    keywords: ["body fat calculator", "navy body fat", "body composition calculator"],
+    engine: { kind: "calculator", id: "body-fat-calculator" },
+    faq: baseFaq("Body Fat Calculator"),
   },
   {
     slug: "calorie-needs-calculator",
@@ -113,6 +201,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Water Intake Calculator"),
   },
   {
+    slug: "pregnancy-due-date-calculator",
+    category: "calculators",
+    title: "Pregnancy Due Date Calculator",
+    summary: "Estimate due date and current pregnancy week from LMP and cycle length.",
+    description:
+      "Calculate an estimated due date and gestational progress using your last menstrual period details.",
+    keywords: ["pregnancy due date calculator", "lmp due date", "gestational age calculator"],
+    engine: { kind: "calculator", id: "pregnancy-due-date-calculator" },
+    faq: baseFaq("Pregnancy Due Date Calculator"),
+  },
+  {
     slug: "savings-goal-calculator",
     category: "calculators",
     title: "Savings Goal Calculator",
@@ -133,6 +232,17 @@ const calculators: ToolDefinition[] = [
     keywords: ["break-even calculator", "break even point", "business calculator"],
     engine: { kind: "calculator", id: "break-even-calculator" },
     faq: baseFaq("Break-even Calculator"),
+  },
+  {
+    slug: "startup-cost-estimator",
+    category: "calculators",
+    title: "Startup Cost Estimator",
+    summary: "Estimate launch budget using one-time costs, monthly burn, and runway.",
+    description:
+      "Project total capital needed to launch and operate through your planned runway with contingency.",
+    keywords: ["startup cost estimator", "startup budget calculator", "runway calculator"],
+    engine: { kind: "calculator", id: "startup-cost-estimator" },
+    faq: baseFaq("Startup Cost Estimator"),
   },
   {
     slug: "freelance-rate-calculator",

@@ -29,16 +29,26 @@ export interface AffiliateOffer {
 
 export type CalculatorId =
   | "loan-emi-calculator"
+  | "mortgage-calculator"
   | "compound-interest-calculator"
   | "simple-interest-calculator"
+  | "inflation-calculator"
+  | "currency-converter-calculator"
+  | "crypto-profit-calculator"
+  | "credit-card-payoff-calculator"
+  | "salary-after-tax-calculator"
   | "roi-calculator"
   | "profit-margin-calculator"
+  | "markup-calculator"
   | "vat-calculator"
   | "bmi-calculator"
+  | "body-fat-calculator"
   | "calorie-needs-calculator"
   | "water-intake-calculator"
+  | "pregnancy-due-date-calculator"
   | "savings-goal-calculator"
   | "break-even-calculator"
+  | "startup-cost-estimator"
   | "freelance-rate-calculator";
 
 export type UnitQuantity =
