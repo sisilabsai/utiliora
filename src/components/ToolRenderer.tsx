@@ -1,7 +1,7 @@
 "use client";
 
 import NextImage from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runCalculator, type ResultRow } from "@/lib/calculations";
 import { trackEvent } from "@/lib/analytics";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
@@ -1078,136 +1078,526 @@ function HexRgbConverterTool() {
 
 type ImageMode = "resize" | "compress" | "jpg-to-png" | "png-to-webp";
 
+type OutputMimeType = "image/png" | "image/jpeg" | "image/webp";
+type OutputFormatChoice = "original" | OutputMimeType;
+
+interface ImageDetails {
+  filename: string;
+  sizeBytes: number;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
+interface OutputImageDetails extends ImageDetails {
+  url: string;
+  downloadName: string;
+}
+
+interface ImageModeConfig {
+  title: string;
+  description: string;
+  accept: string;
+  fixedOutput?: OutputMimeType;
+  defaultOutputChoice: OutputFormatChoice;
+  supportsResize: boolean;
+  supportsQuality: boolean;
+}
+
+const IMAGE_MODE_CONFIG: Record<ImageMode, ImageModeConfig> = {
+  resize: {
+    title: "Image Resizer",
+    description: "Resize with live preview while preserving aspect ratio.",
+    accept: "image/png,image/jpeg,image/webp",
+    defaultOutputChoice: "original",
+    supportsResize: true,
+    supportsQuality: true,
+  },
+  compress: {
+    title: "Image Compressor",
+    description: "Reduce file size with quality control and before/after comparison.",
+    accept: "image/png,image/jpeg,image/webp",
+    defaultOutputChoice: "image/webp",
+    supportsResize: false,
+    supportsQuality: true,
+  },
+  "jpg-to-png": {
+    title: "JPG to PNG Converter",
+    description: "Convert JPG/JPEG images to PNG with immediate preview.",
+    accept: "image/jpeg",
+    fixedOutput: "image/png",
+    defaultOutputChoice: "image/png",
+    supportsResize: false,
+    supportsQuality: false,
+  },
+  "png-to-webp": {
+    title: "PNG to WebP Converter",
+    description: "Convert PNG images to WebP for lighter web delivery.",
+    accept: "image/png",
+    fixedOutput: "image/webp",
+    defaultOutputChoice: "image/webp",
+    supportsResize: false,
+    supportsQuality: true,
+  },
+};
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function normalizeOutputMimeType(value: string): OutputMimeType | null {
+  if (value === "image/jpg" || value === "image/jpeg") return "image/jpeg";
+  if (value === "image/png") return "image/png";
+  if (value === "image/webp") return "image/webp";
+  return null;
+}
+
+function extensionFromMimeType(mimeType: string): string {
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  return "png";
+}
+
+function labelForMimeType(mimeType: string): string {
+  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "JPEG";
+  if (mimeType === "image/webp") return "WebP";
+  if (mimeType === "image/png") return "PNG";
+  return mimeType;
+}
+
+function stripFileExtension(filename: string): string {
+  return filename.replace(/\.[^/.]+$/, "");
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("Could not load image."));
+    element.src = url;
+  });
+}
+
 function ImageTransformTool({ mode }: { mode: ImageMode }) {
+  const config = IMAGE_MODE_CONFIG[mode];
   const [file, setFile] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
+  const [resultDetails, setResultDetails] = useState<OutputImageDetails | null>(null);
   const [targetWidth, setTargetWidth] = useState(1200);
-  const [quality, setQuality] = useState(0.8);
-  const [resultUrl, setResultUrl] = useState<string>("");
+  const [quality, setQuality] = useState(0.82);
+  const [outputChoice, setOutputChoice] = useState<OutputFormatChoice>(config.defaultOutputChoice);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("Upload an image to begin.");
-  const previousUrlRef = useRef<string>("");
+  const [autoPreview, setAutoPreview] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sourceUrlRef = useRef("");
+  const resultUrlRef = useRef("");
+  const processingRunRef = useRef(0);
+
+  const resolvedOutputMimeType: OutputMimeType = useMemo(() => {
+    if (config.fixedOutput) return config.fixedOutput;
+    if (outputChoice === "original") {
+      return normalizeOutputMimeType(file?.type ?? "") ?? "image/png";
+    }
+    return outputChoice;
+  }, [config.fixedOutput, file?.type, outputChoice]);
+
+  const lossyOutput = resolvedOutputMimeType === "image/jpeg" || resolvedOutputMimeType === "image/webp";
+
+  const computedResizeHeight = useMemo(() => {
+    if (!sourceDetails) return null;
+    const safeWidth = Math.max(16, Math.round(targetWidth || sourceDetails.width));
+    return Math.max(1, Math.round((safeWidth / sourceDetails.width) * sourceDetails.height));
+  }, [sourceDetails, targetWidth]);
+
+  const comparisonText = useMemo(() => {
+    if (!sourceDetails || !resultDetails) return "";
+    const delta = resultDetails.sizeBytes - sourceDetails.sizeBytes;
+    if (delta === 0) return "No size change";
+    const percentage = (Math.abs(delta) / sourceDetails.sizeBytes) * 100;
+    if (delta < 0) {
+      return `Saved ${formatBytes(Math.abs(delta))} (${percentage.toFixed(1)}%)`;
+    }
+    return `Increased by ${formatBytes(delta)} (${percentage.toFixed(1)}%)`;
+  }, [sourceDetails, resultDetails]);
 
   useEffect(() => {
     return () => {
-      if (previousUrlRef.current) {
-        URL.revokeObjectURL(previousUrlRef.current);
-      }
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
     };
   }, []);
 
-  const processImage = async () => {
-    if (!file) {
-      setStatus("Select an image file first.");
-      return;
+  const clearOutput = useCallback(() => {
+    if (resultUrlRef.current) {
+      URL.revokeObjectURL(resultUrlRef.current);
+      resultUrlRef.current = "";
     }
+    setResultDetails(null);
+  }, []);
 
-    try {
-      setStatus("Processing image...");
-      const sourceUrl = URL.createObjectURL(file);
-      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const element = new Image();
-        element.onload = () => resolve(element);
-        element.onerror = () => reject(new Error("Could not load image."));
-        element.src = sourceUrl;
-      });
+  const resetAll = useCallback(() => {
+    if (sourceUrlRef.current) {
+      URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = "";
+    }
+    clearOutput();
+    setFile(null);
+    setSourceUrl("");
+    setSourceDetails(null);
+    setProgress(0);
+    setStatus("Upload an image to begin.");
+    processingRunRef.current += 1;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [clearOutput]);
 
-      const canvas = document.createElement("canvas");
-      const ratio = image.height / image.width;
-      const width = mode === "resize" ? Math.max(16, targetWidth) : image.width;
-      const height = mode === "resize" ? Math.round(width * ratio) : image.height;
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-      if (!context) {
-        setStatus("Canvas context unavailable.");
+  const handleSelectedFile = useCallback(
+    async (candidate: File | null) => {
+      if (!candidate) {
+        resetAll();
         return;
       }
 
-      context.drawImage(image, 0, 0, width, height);
-      URL.revokeObjectURL(sourceUrl);
+      if (mode === "jpg-to-png" && !candidate.type.startsWith("image/jpeg")) {
+        setStatus("This converter accepts JPG/JPEG files only.");
+        return;
+      }
+      if (mode === "png-to-webp" && candidate.type !== "image/png") {
+        setStatus("This converter accepts PNG files only.");
+        return;
+      }
+      if (!candidate.type.startsWith("image/")) {
+        setStatus("Please upload a valid image file.");
+        return;
+      }
 
-      const outputType =
-        mode === "jpg-to-png"
-          ? "image/png"
-          : mode === "png-to-webp"
-            ? "image/webp"
+      const newSourceUrl = URL.createObjectURL(candidate);
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = newSourceUrl;
+      setSourceUrl(newSourceUrl);
+      setFile(candidate);
+      clearOutput();
+      setStatus("Reading image metadata...");
+      setProgress(8);
+
+      try {
+        const image = await loadImage(newSourceUrl);
+        setSourceDetails({
+          filename: candidate.name,
+          sizeBytes: candidate.size,
+          mimeType: candidate.type || "image/png",
+          width: image.width,
+          height: image.height,
+        });
+        if (mode === "resize") {
+          const recommendedWidth = Math.min(1200, image.width);
+          setTargetWidth(recommendedWidth);
+        }
+        setStatus("Image loaded. Generating converted preview...");
+        setProgress(15);
+      } catch {
+        setStatus("Could not read this image. Try another file.");
+      }
+    },
+    [clearOutput, mode, resetAll],
+  );
+
+  const processImage = useCallback(
+    async (trigger: "manual" | "auto") => {
+      if (!file || !sourceDetails || !sourceUrl) {
+        setStatus("Select an image first.");
+        return;
+      }
+
+      const runId = ++processingRunRef.current;
+      setProcessing(true);
+
+      try {
+        setProgress(25);
+        setStatus("Loading pixels...");
+        const image = await loadImage(sourceUrl);
+        if (runId !== processingRunRef.current) return;
+
+        const canvas = document.createElement("canvas");
+        const width =
+          mode === "resize"
+            ? Math.max(16, Math.min(8000, Math.round(targetWidth || sourceDetails.width)))
+            : sourceDetails.width;
+        const height =
+          mode === "resize"
+            ? Math.max(1, Math.round((width / sourceDetails.width) * sourceDetails.height))
+            : sourceDetails.height;
+        canvas.width = width;
+        canvas.height = height;
+
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setStatus("Canvas context unavailable.");
+          return;
+        }
+
+        setProgress(50);
+        setStatus("Rendering preview...");
+        context.drawImage(image, 0, 0, width, height);
+
+        const qualityValue = lossyOutput ? quality : undefined;
+        setProgress(72);
+        setStatus("Encoding output...");
+        let outputMimeType: OutputMimeType = resolvedOutputMimeType;
+        let outputBlob = await canvasToBlob(canvas, outputMimeType, qualityValue);
+
+        if (!outputBlob) {
+          outputMimeType = "image/png";
+          outputBlob = await canvasToBlob(canvas, outputMimeType);
+        }
+        if (!outputBlob) {
+          setStatus("Failed to encode image output.");
+          return;
+        }
+
+        if (runId !== processingRunRef.current) return;
+
+        const outputUrl = URL.createObjectURL(outputBlob);
+        if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+        resultUrlRef.current = outputUrl;
+
+        const baseName = stripFileExtension(file.name) || "image";
+        const suffix =
+          mode === "resize"
+            ? "resized"
             : mode === "compress"
-              ? "image/jpeg"
-              : file.type || "image/png";
+              ? "compressed"
+              : mode === "jpg-to-png"
+                ? "converted"
+                : "web-optimized";
+        const downloadName = `${baseName}-${suffix}.${extensionFromMimeType(outputMimeType)}`;
 
-      const outputBlob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, outputType, mode === "compress" ? quality : 0.92),
-      );
+        setResultDetails({
+          url: outputUrl,
+          downloadName,
+          filename: downloadName,
+          sizeBytes: outputBlob.size,
+          mimeType: outputMimeType,
+          width,
+          height,
+        });
 
-      if (!outputBlob) {
-        setStatus("Image conversion failed.");
-        return;
+        setProgress(100);
+        const sizeSummary = `${formatBytes(sourceDetails.sizeBytes)} -> ${formatBytes(outputBlob.size)}`;
+        setStatus(`Done (${sizeSummary}). ${trigger === "auto" ? "Auto-preview updated." : "Ready to download."}`);
+        trackEvent("tool_image_process", { mode, trigger, outputType: outputMimeType });
+      } catch {
+        setStatus("Image processing failed. Please retry.");
+      } finally {
+        if (runId === processingRunRef.current) setProcessing(false);
       }
+    },
+    [file, lossyOutput, mode, quality, resolvedOutputMimeType, sourceDetails, sourceUrl, targetWidth],
+  );
 
-      const outputUrl = URL.createObjectURL(outputBlob);
-      if (previousUrlRef.current) URL.revokeObjectURL(previousUrlRef.current);
-      previousUrlRef.current = outputUrl;
-      setResultUrl(outputUrl);
-      setStatus(`Done. Output size: ${(outputBlob.size / 1024).toFixed(1)} KB`);
-      trackEvent("tool_image_process", { mode });
-    } catch {
-      setStatus("Image processing failed.");
-    }
-  };
+  useEffect(() => {
+    if (!autoPreview || !file || !sourceDetails) return;
+    const timeout = setTimeout(() => {
+      void processImage("auto");
+    }, 140);
+    return () => clearTimeout(timeout);
+  }, [autoPreview, file, processImage, quality, sourceDetails, targetWidth, outputChoice]);
 
   return (
     <section className="tool-surface">
-      <h2>Image processor</h2>
+      <h2>{config.title}</h2>
+      <p className="supporting-text">{config.description}</p>
+
       <label className="field">
         <span>Choose image</span>
         <input
+          ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp"
-          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          accept={config.accept}
+          onChange={(event) => {
+            void handleSelectedFile(event.target.files?.[0] ?? null);
+          }}
         />
       </label>
-      {mode === "resize" ? (
-        <label className="field">
-          <span>Target width (px)</span>
+
+      <div className="field-grid">
+        {config.supportsResize ? (
+          <label className="field">
+            <span>Target width (px)</span>
+            <input
+              type="number"
+              min={16}
+              max={8000}
+              value={targetWidth}
+              onChange={(event) => setTargetWidth(Number(event.target.value))}
+            />
+            {computedResizeHeight ? (
+              <small className="supporting-text">Estimated output: {targetWidth} x {computedResizeHeight}px</small>
+            ) : null}
+          </label>
+        ) : null}
+
+        {!config.fixedOutput ? (
+          <label className="field">
+            <span>Output format</span>
+            <select value={outputChoice} onChange={(event) => setOutputChoice(event.target.value as OutputFormatChoice)}>
+              {mode === "resize" ? <option value="original">Keep original format</option> : null}
+              {(mode === "resize" || mode === "compress") && <option value="image/webp">WebP</option>}
+              {(mode === "resize" || mode === "compress") && <option value="image/jpeg">JPEG</option>}
+              {mode === "resize" && <option value="image/png">PNG</option>}
+            </select>
+          </label>
+        ) : (
+          <div className="result-row">
+            <span>Output format</span>
+            <strong>{labelForMimeType(config.fixedOutput)}</strong>
+          </div>
+        )}
+
+        {config.supportsQuality && lossyOutput ? (
+          <label className="field">
+            <span>Quality ({quality.toFixed(2)})</span>
+            <input
+              type="range"
+              min={0.1}
+              max={1}
+              step={0.05}
+              value={quality}
+              onChange={(event) => setQuality(Number(event.target.value))}
+            />
+            <small className="supporting-text">Lower quality means smaller file size.</small>
+          </label>
+        ) : null}
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          disabled={!file || processing}
+          onClick={() => {
+            void processImage("manual");
+          }}
+        >
+          {processing ? "Processing..." : "Process now"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={resetAll}>
+          Clear
+        </button>
+        <label className="checkbox">
           <input
-            type="number"
-            min={16}
-            max={5000}
-            value={targetWidth}
-            onChange={(event) => setTargetWidth(Number(event.target.value))}
+            type="checkbox"
+            checked={autoPreview}
+            onChange={(event) => setAutoPreview(event.target.checked)}
           />
+          Auto preview on changes
         </label>
-      ) : null}
-      {mode === "compress" ? (
-        <label className="field">
-          <span>Quality ({quality.toFixed(2)})</span>
-          <input
-            type="range"
-            min={0.1}
-            max={1}
-            step={0.05}
-            value={quality}
-            onChange={(event) => setQuality(Number(event.target.value))}
-          />
-        </label>
-      ) : null}
-      <button className="action-button" type="button" onClick={processImage}>
-        Process image
-      </button>
-      <p className="supporting-text">{status}</p>
-      {resultUrl ? (
-        <div className="image-preview">
-          <NextImage
-            src={resultUrl}
-            alt="Processed output preview"
-            width={1200}
-            height={900}
-            style={{ width: "100%", height: "auto", maxWidth: "620px" }}
-            unoptimized
-          />
-          <a className="action-link" href={resultUrl} download={`utiliora-${mode}.png`}>
-            Download result
-          </a>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
         </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <div className="image-compare-grid">
+        <article className="image-card">
+          <h3>Original</h3>
+          <div className="image-frame">
+            {sourceUrl ? (
+              <NextImage
+                src={sourceUrl}
+                alt="Original uploaded image preview"
+                width={sourceDetails?.width ?? 800}
+                height={sourceDetails?.height ?? 600}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                unoptimized
+              />
+            ) : (
+              <p className="image-placeholder">Select a file to preview the original image.</p>
+            )}
+          </div>
+          {sourceDetails ? (
+            <dl className="image-meta">
+              <div>
+                <dt>Name</dt>
+                <dd>{sourceDetails.filename}</dd>
+              </div>
+              <div>
+                <dt>Format</dt>
+                <dd>{labelForMimeType(sourceDetails.mimeType)}</dd>
+              </div>
+              <div>
+                <dt>Dimensions</dt>
+                <dd>
+                  {sourceDetails.width} x {sourceDetails.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{formatBytes(sourceDetails.sizeBytes)}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </article>
+
+        <article className="image-card">
+          <h3>Converted</h3>
+          <div className="image-frame">
+            {resultDetails ? (
+              <NextImage
+                src={resultDetails.url}
+                alt="Processed image preview"
+                width={resultDetails.width}
+                height={resultDetails.height}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                unoptimized
+              />
+            ) : (
+              <p className="image-placeholder">Converted output will appear here.</p>
+            )}
+          </div>
+          {resultDetails ? (
+            <dl className="image-meta">
+              <div>
+                <dt>Name</dt>
+                <dd>{resultDetails.downloadName}</dd>
+              </div>
+              <div>
+                <dt>Format</dt>
+                <dd>{labelForMimeType(resultDetails.mimeType)}</dd>
+              </div>
+              <div>
+                <dt>Dimensions</dt>
+                <dd>
+                  {resultDetails.width} x {resultDetails.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{formatBytes(resultDetails.sizeBytes)}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </article>
+      </div>
+
+      {comparisonText ? <p className="supporting-text image-summary">{comparisonText}</p> : null}
+
+      {resultDetails ? (
+        <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+          Download {labelForMimeType(resultDetails.mimeType)}
+        </a>
       ) : null}
     </section>
   );
