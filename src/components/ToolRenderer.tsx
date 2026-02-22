@@ -1,22 +1,34 @@
-"use client";
+﻿"use client";
 
 import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Binary,
+  Calculator,
   Braces,
   Code2,
   Copy,
+  Download,
   Hash,
   Link2,
+  RefreshCw,
   Search,
   Share2,
+  Sparkles,
   Tags,
   Trash2,
   Type,
   type LucideIcon,
 } from "lucide-react";
-import { runCalculator, type ResultRow } from "@/lib/calculations";
+import {
+  getBreakEvenScenarios,
+  getCalculatorInsights,
+  getCompoundGrowthTimeline,
+  getLoanAmortizationSchedule,
+  getSavingsGoalTimeline,
+  runCalculator,
+  type ResultRow,
+} from "@/lib/calculations";
 import { trackEvent } from "@/lib/analytics";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
@@ -66,13 +78,30 @@ interface CalculatorField {
   min?: number;
   step?: number;
   defaultValue: string;
+  helper?: string;
   options?: Array<{ label: string; value: string }>;
 }
 
 const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
   "loan-emi-calculator": [
-    { name: "principal", label: "Loan amount (USD)", defaultValue: "100000", min: 0, step: 100, type: "number" },
-    { name: "annualRate", label: "Annual interest rate (%)", defaultValue: "8.5", min: 0, step: 0.1, type: "number" },
+    {
+      name: "principal",
+      label: "Loan amount (USD)",
+      defaultValue: "100000",
+      min: 0,
+      step: 100,
+      type: "number",
+      helper: "Total amount borrowed.",
+    },
+    {
+      name: "annualRate",
+      label: "Annual interest rate (%)",
+      defaultValue: "8.5",
+      min: 0,
+      step: 0.1,
+      type: "number",
+      helper: "Nominal yearly rate from your lender.",
+    },
     { name: "months", label: "Loan tenure (months)", defaultValue: "60", min: 1, step: 1, type: "number" },
   ],
   "compound-interest-calculator": [
@@ -177,21 +206,248 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
   ],
 };
 
+interface CalculatorPreset {
+  label: string;
+  values: Record<string, string>;
+}
+
+const calculatorSubtitles: Record<CalculatorId, string> = {
+  "loan-emi-calculator": "Plan loan payments with amortization detail and repayment impact.",
+  "compound-interest-calculator": "Model long-term growth and compounding outcomes year by year.",
+  "simple-interest-calculator": "Quickly estimate simple-interest returns for fixed-rate periods.",
+  "roi-calculator": "Measure profitability and capital efficiency for campaigns and investments.",
+  "profit-margin-calculator": "Tune price, cost, margin, and markup for sustainable profitability.",
+  "vat-calculator": "Compute tax-inclusive totals with accurate VAT breakdowns.",
+  "bmi-calculator": "Check body mass index and healthy range guidance.",
+  "calorie-needs-calculator": "Estimate maintenance, cut, and gain calorie targets.",
+  "water-intake-calculator": "Set a hydration target based on body weight and activity.",
+  "savings-goal-calculator": "Calculate the monthly contribution needed to hit your target.",
+  "break-even-calculator": "See units and revenue needed to cover fixed and variable costs.",
+  "freelance-rate-calculator": "Set hourly/day rates aligned with income and profit goals.",
+};
+
+const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
+  "loan-emi-calculator": [
+    { label: "Home Loan", values: { principal: "250000", annualRate: "7.5", months: "360" } },
+    { label: "Car Loan", values: { principal: "28000", annualRate: "6.8", months: "60" } },
+  ],
+  "compound-interest-calculator": [
+    {
+      label: "Retirement (25y)",
+      values: { principal: "25000", annualRate: "8", years: "25", compoundsPerYear: "12" },
+    },
+    {
+      label: "Conservative (10y)",
+      values: { principal: "10000", annualRate: "5", years: "10", compoundsPerYear: "4" },
+    },
+  ],
+  "simple-interest-calculator": [
+    { label: "Short-term deposit", values: { principal: "5000", annualRate: "4.5", years: "2" } },
+    { label: "Corporate note", values: { principal: "25000", annualRate: "6.2", years: "3" } },
+  ],
+  "roi-calculator": [
+    { label: "Marketing campaign", values: { investment: "1500", returns: "4200" } },
+    { label: "Equipment upgrade", values: { investment: "8000", returns: "11200" } },
+  ],
+  "profit-margin-calculator": [
+    { label: "SaaS plan", values: { revenue: "49", cost: "12" } },
+    { label: "Ecommerce product", values: { revenue: "80", cost: "42" } },
+  ],
+  "vat-calculator": [
+    { label: "Standard VAT 20%", values: { amount: "500", vatRate: "20" } },
+    { label: "Reduced VAT 5%", values: { amount: "500", vatRate: "5" } },
+  ],
+  "bmi-calculator": [
+    { label: "Average adult", values: { weightKg: "72", heightCm: "175" } },
+    { label: "Athletic build", values: { weightKg: "82", heightCm: "183" } },
+  ],
+  "calorie-needs-calculator": [
+    {
+      label: "Desk worker",
+      values: { sex: "female", age: "30", weightKg: "65", heightCm: "168", activityFactor: "1.2" },
+    },
+    {
+      label: "Active athlete",
+      values: { sex: "male", age: "28", weightKg: "78", heightCm: "180", activityFactor: "1.725" },
+    },
+  ],
+  "water-intake-calculator": [
+    { label: "Low activity", values: { weightKg: "70", activityMinutes: "20" } },
+    { label: "High activity", values: { weightKg: "70", activityMinutes: "90" } },
+  ],
+  "savings-goal-calculator": [
+    {
+      label: "Emergency fund",
+      values: { targetAmount: "15000", currentSavings: "2000", years: "2", annualReturn: "3.5" },
+    },
+    {
+      label: "House down payment",
+      values: { targetAmount: "60000", currentSavings: "10000", years: "5", annualReturn: "5.5" },
+    },
+  ],
+  "break-even-calculator": [
+    { label: "Product launch", values: { fixedCosts: "20000", variableCostPerUnit: "18", unitPrice: "45" } },
+    { label: "Service package", values: { fixedCosts: "8000", variableCostPerUnit: "45", unitPrice: "140" } },
+  ],
+  "freelance-rate-calculator": [
+    {
+      label: "Solo consultant",
+      values: { targetMonthlyIncome: "6000", monthlyExpenses: "2200", billableHoursPerMonth: "85", desiredProfitPercent: "25" },
+    },
+    {
+      label: "Part-time specialist",
+      values: { targetMonthlyIncome: "3000", monthlyExpenses: "1100", billableHoursPerMonth: "45", desiredProfitPercent: "20" },
+    },
+  ],
+};
+
+const calculatorCurrencyFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
+const calculatorNumberFormatter = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 2,
+});
+
+function formatCurrencyValue(value: number): string {
+  return calculatorCurrencyFormatter.format(value);
+}
+
+function formatNumericValue(value: number): string {
+  return calculatorNumberFormatter.format(value);
+}
+
+function safeNumberValue(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function stringifyRows(rows: ResultRow[]): string {
+  return rows.map((row) => `${row.label}: ${row.value}`).join("\n");
+}
+
+function downloadCsv(filename: string, headers: string[], rows: string[][]): void {
+  const csv = [headers.join(","), ...rows.map((row) => row.join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
 function CalculatorTool({ id }: { id: CalculatorId }) {
   const fields = calculatorFields[id];
-  const initialValues = Object.fromEntries(fields.map((field) => [field.name, field.defaultValue]));
-  const [values, setValues] = useState<Record<string, string>>(initialValues);
-  const [resultRows, setResultRows] = useState<ResultRow[]>(runCalculator(id, initialValues));
+  const defaultValues = useMemo(() => Object.fromEntries(fields.map((field) => [field.name, field.defaultValue])), [fields]);
+  const storageKey = `utiliora-calculator-values-${id}`;
+  const autoModeKey = `utiliora-calculator-auto-${id}`;
+  const [values, setValues] = useState<Record<string, string>>(defaultValues);
+  const [resultRows, setResultRows] = useState<ResultRow[]>(runCalculator(id, defaultValues));
+  const [autoCalculate, setAutoCalculate] = useState(true);
+  const [copyStatus, setCopyStatus] = useState("");
+  const [showFullTable, setShowFullTable] = useState(false);
+  const presets = calculatorPresets[id] ?? [];
 
-  const calculate = () => {
-    const rows = runCalculator(id, values);
-    setResultRows(rows);
-    trackEvent("tool_calculate", { tool: id });
-  };
+  useEffect(() => {
+    setValues(defaultValues);
+    setResultRows(runCalculator(id, defaultValues));
+    setShowFullTable(false);
+  }, [defaultValues, id]);
+
+  useEffect(() => {
+    try {
+      const savedValues = localStorage.getItem(storageKey);
+      const savedAutoMode = localStorage.getItem(autoModeKey);
+      if (savedValues) {
+        const parsed = JSON.parse(savedValues) as Record<string, string>;
+        setValues((current) => ({ ...current, ...parsed }));
+      }
+      if (savedAutoMode !== null) {
+        setAutoCalculate(savedAutoMode === "true");
+      }
+    } catch {
+      // Ignore malformed storage values and continue with defaults.
+    }
+  }, [autoModeKey, storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(values));
+      localStorage.setItem(autoModeKey, autoCalculate ? "true" : "false");
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [autoCalculate, autoModeKey, storageKey, values]);
+
+  const calculate = useCallback(
+    (
+      trigger: "manual" | "auto" | "preset" | "reset" = "manual",
+      nextValues: Record<string, string> = values,
+    ) => {
+      const rows = runCalculator(id, nextValues);
+      setResultRows(rows);
+      trackEvent("tool_calculate", { tool: id, trigger });
+    },
+    [id, values],
+  );
+
+  useEffect(() => {
+    if (!autoCalculate) return;
+    calculate("auto");
+  }, [autoCalculate, calculate]);
+
+  const insights = useMemo(() => getCalculatorInsights(id, values), [id, values]);
+  const loanSchedule = useMemo(
+    () => (id === "loan-emi-calculator" ? getLoanAmortizationSchedule(values) : []),
+    [id, values],
+  );
+  const compoundTimeline = useMemo(
+    () => (id === "compound-interest-calculator" ? getCompoundGrowthTimeline(values) : []),
+    [id, values],
+  );
+  const savingsTimeline = useMemo(
+    () => (id === "savings-goal-calculator" ? getSavingsGoalTimeline(values) : []),
+    [id, values],
+  );
+  const breakEvenScenarios = useMemo(
+    () => (id === "break-even-calculator" ? getBreakEvenScenarios(values) : []),
+    [id, values],
+  );
+
+  const visibleLoanRows = showFullTable ? loanSchedule : loanSchedule.slice(0, 24);
 
   return (
     <section className="tool-surface">
-      <h2>Calculator</h2>
+      <ToolHeading icon={Calculator} title="Calculator workspace" subtitle={calculatorSubtitles[id]} />
+
+      {presets.length > 0 ? (
+        <div className="preset-row">
+          <span className="supporting-text">Quick presets:</span>
+          {presets.map((preset) => (
+            <button
+              key={preset.label}
+              className="chip-button"
+              type="button"
+              onClick={() => {
+                const nextValues = { ...values, ...preset.values };
+                setValues(nextValues);
+                setCopyStatus(`Applied preset: ${preset.label}`);
+                if (!autoCalculate) {
+                  calculate("preset", nextValues);
+                }
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <div className="field-grid">
         {fields.map((field) => (
           <label key={field.name} className="field">
@@ -216,13 +472,273 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                 onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
               />
             )}
+            {field.helper ? <small className="supporting-text">{field.helper}</small> : null}
           </label>
         ))}
       </div>
-      <button className="action-button" onClick={calculate} type="button">
-        Calculate
-      </button>
+
+      <div className="button-row">
+        <button className="action-button" onClick={() => calculate("manual")} type="button">
+          Calculate
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setValues(defaultValues);
+            setCopyStatus("Reset to default values.");
+            calculate("reset", defaultValues);
+          }}
+        >
+          <RefreshCw size={15} />
+          Reset
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(stringifyRows(resultRows));
+            setCopyStatus(ok ? "Results copied to clipboard." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy results
+        </button>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={autoCalculate}
+            onChange={(event) => setAutoCalculate(event.target.checked)}
+          />
+          Auto-calculate
+        </label>
+      </div>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+
       <ResultList rows={resultRows} />
+
+      <div className="mini-panel">
+        <h3 className="mini-heading">
+          <Sparkles size={15} />
+          Insights
+        </h3>
+        <ul className="plain-list">
+          {insights.map((insight) => (
+            <li key={insight}>{insight}</li>
+          ))}
+        </ul>
+      </div>
+
+      {id === "loan-emi-calculator" && loanSchedule.length > 0 ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Amortization schedule</h3>
+            <div className="button-row">
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => setShowFullTable((current) => !current)}
+              >
+                {showFullTable ? "Show first 24" : "Show full table"}
+              </button>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() =>
+                  downloadCsv(
+                    "loan-amortization.csv",
+                    ["Month", "Payment", "Principal", "Interest", "Balance"],
+                    loanSchedule.map((row) => [
+                      row.period.toString(),
+                      row.payment.toFixed(2),
+                      row.principal.toFixed(2),
+                      row.interest.toFixed(2),
+                      row.balance.toFixed(2),
+                    ]),
+                  )
+                }
+              >
+                <Download size={15} />
+                CSV
+              </button>
+            </div>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Payment</th>
+                  <th>Principal</th>
+                  <th>Interest</th>
+                  <th>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleLoanRows.map((row) => (
+                  <tr key={`loan-row-${row.period}`}>
+                    <td>{row.period}</td>
+                    <td>{formatCurrencyValue(row.payment)}</td>
+                    <td>{formatCurrencyValue(row.principal)}</td>
+                    <td>{formatCurrencyValue(row.interest)}</td>
+                    <td>{formatCurrencyValue(row.balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {id === "compound-interest-calculator" && compoundTimeline.length > 0 ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Growth timeline</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                downloadCsv(
+                  "compound-growth-timeline.csv",
+                  ["Years", "Value", "Gain"],
+                  compoundTimeline.map((row) => [
+                    row.periodYears.toString(),
+                    row.value.toFixed(2),
+                    row.gain.toFixed(2),
+                  ]),
+                )
+              }
+            >
+              <Download size={15} />
+              CSV
+            </button>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Years</th>
+                  <th>Account Value</th>
+                  <th>Total Gain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {compoundTimeline.map((row) => (
+                  <tr key={`growth-${row.periodYears}`}>
+                    <td>{Number.isInteger(row.periodYears) ? row.periodYears : row.periodYears.toFixed(1)}</td>
+                    <td>{formatCurrencyValue(row.value)}</td>
+                    <td>{formatCurrencyValue(row.gain)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {id === "savings-goal-calculator" && savingsTimeline.length > 0 ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Savings projection timeline</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                downloadCsv(
+                  "savings-projection.csv",
+                  ["Years", "Account Value", "Contributed", "Growth"],
+                  savingsTimeline.map((row) => [
+                    row.periodYears.toString(),
+                    row.accountValue.toFixed(2),
+                    row.contributed.toFixed(2),
+                    row.growth.toFixed(2),
+                  ]),
+                )
+              }
+            >
+              <Download size={15} />
+              CSV
+            </button>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Years</th>
+                  <th>Account Value</th>
+                  <th>Contributed</th>
+                  <th>Growth</th>
+                </tr>
+              </thead>
+              <tbody>
+                {savingsTimeline.map((row) => (
+                  <tr key={`savings-${row.periodYears}`}>
+                    <td>{Number.isInteger(row.periodYears) ? row.periodYears : row.periodYears.toFixed(1)}</td>
+                    <td>{formatCurrencyValue(row.accountValue)}</td>
+                    <td>{formatCurrencyValue(row.contributed)}</td>
+                    <td>{formatCurrencyValue(row.growth)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {id === "break-even-calculator" && breakEvenScenarios.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Price sensitivity scenarios</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Scenario</th>
+                  <th>Unit Price</th>
+                  <th>Contribution</th>
+                  <th>Break-even Units</th>
+                  <th>Break-even Revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakEvenScenarios.map((row, index) => {
+                  const labels = ["-10%", "Current", "+10%", "+20%"];
+                  return (
+                    <tr key={`break-even-${labels[index]}`}>
+                      <td>{labels[index] ?? `${index + 1}`}</td>
+                      <td>{formatCurrencyValue(row.unitPrice)}</td>
+                      <td>{formatCurrencyValue(row.contributionPerUnit)}</td>
+                      <td>{Number.isFinite(row.units) ? formatNumericValue(row.units) : "Not reachable"}</td>
+                      <td>{Number.isFinite(row.revenue) ? formatCurrencyValue(row.revenue) : "Not reachable"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {id === "freelance-rate-calculator" ? (
+        <div className="mini-panel">
+          <h3>Pricing quick view</h3>
+          <ResultList
+            rows={[
+              {
+                label: "Estimated hourly",
+                value: resultRows.find((row) => row.label === "Target Hourly Rate")?.value ?? "--",
+              },
+              {
+                label: "Estimated day rate (8h)",
+                value: formatCurrencyValue((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 8),
+              },
+              {
+                label: "Estimated week rate (40h)",
+                value: formatCurrencyValue((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 40),
+              },
+            ]}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2554,3 +3070,4 @@ export function ToolRenderer({ tool }: ToolRendererProps) {
       return <p>Tool renderer unavailable.</p>;
   }
 }
+

@@ -516,6 +516,62 @@ textarea {
   font-size: 0.96rem;
 }
 
+.mini-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.preset-row {
+  margin-bottom: 0.8rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.preset-row .supporting-text {
+  margin: 0;
+}
+
+.chip-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.chip-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.panel-head h3 {
+  margin: 0;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll .table {
+  min-width: 540px;
+  margin-top: 0.7rem;
+}
+
 .chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -933,5 +989,16 @@ textarea {
   .main-nav {
     width: 100%;
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .panel-head .button-row {
+    width: 100%;
+  }
+
+  .panel-head .action-button {
+    flex: 1 1 auto;
+    justify-content: center;
   }
 }
