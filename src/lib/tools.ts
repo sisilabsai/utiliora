@@ -271,8 +271,9 @@ const converterDefinitions: ToolDefinition[] = [
     slug: "weight-converter",
     category: "converters",
     title: "Weight Converter",
-    summary: "Convert kilograms, grams, pounds, and ounces.",
-    description: "Quick weight unit transformations for health, cooking, and logistics.",
+    summary: "Convert kilograms, grams, pounds, and ounces with precision control and live comparison.",
+    description:
+      "Advanced weight conversion workflow with instant results, all-unit output table, reusable history, and CSV export.",
     keywords: ["weight converter", "kg to lbs", "grams to ounces"],
     engine: { kind: "unit-converter", quantity: "weight" },
     faq: baseFaq("Weight Converter"),

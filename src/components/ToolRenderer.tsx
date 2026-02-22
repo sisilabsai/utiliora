@@ -1032,27 +1032,153 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   );
 }
 
+interface WeightHistoryEntry {
+  id: string;
+  input: number;
+  from: string;
+  to: string;
+  output: number;
+  timestamp: number;
+}
+
+const weightQuickPresets: Array<{ label: string; value: string; from: string; to: string }> = [
+  { label: "Bodyweight kg -> lb", value: "70", from: "kilogram", to: "pound" },
+  { label: "Shipping lb -> kg", value: "25", from: "pound", to: "kilogram" },
+  { label: "Cooking g -> oz", value: "500", from: "gram", to: "ounce" },
+  { label: "Nutrition oz -> g", value: "12", from: "ounce", to: "gram" },
+];
+
 function UnitConverterTool({ quantity }: { quantity: UnitQuantity }) {
-  const units = getUnitsForQuantity(quantity);
+  const units = useMemo(() => getUnitsForQuantity(quantity), [quantity]);
   const [inputValue, setInputValue] = useState("1");
   const [from, setFrom] = useState(units[0]?.value ?? "");
   const [to, setTo] = useState(units[1]?.value ?? units[0]?.value ?? "");
+  const [precision, setPrecision] = useState("6");
+  const [status, setStatus] = useState("");
+  const [weightHistory, setWeightHistory] = useState<WeightHistoryEntry[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const isWeightConverter = quantity === "weight";
+  const historyStorageKey = "utiliora-weight-converter-history-v1";
 
-  const output = useMemo(() => {
-    const value = Number(inputValue);
-    if (!Number.isFinite(value)) return "Enter a valid number.";
-    const converted = convertUnitValue(quantity, value, from, to);
-    if (!Number.isFinite(converted)) return "Unable to convert with selected units.";
-    return converted.toLocaleString("en-US", { maximumFractionDigits: 8 });
-  }, [from, inputValue, quantity, to]);
+  useEffect(() => {
+    const defaultFrom = units[0]?.value ?? "";
+    const defaultTo = units[1]?.value ?? defaultFrom;
+    setFrom(defaultFrom);
+    setTo(defaultTo);
+    setInputValue("1");
+    setStatus("");
+  }, [quantity, units]);
+
+  useEffect(() => {
+    if (!isWeightConverter) {
+      setHistoryLoaded(true);
+      return;
+    }
+
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) {
+        setHistoryLoaded(true);
+        return;
+      }
+      const parsed = JSON.parse(raw) as WeightHistoryEntry[];
+      if (Array.isArray(parsed)) {
+        setWeightHistory(parsed.slice(0, 10));
+      }
+    } catch {
+      // Ignore malformed storage and continue.
+    } finally {
+      setHistoryLoaded(true);
+    }
+  }, [historyStorageKey, isWeightConverter]);
+
+  useEffect(() => {
+    if (!isWeightConverter || !historyLoaded) return;
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(weightHistory.slice(0, 10)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [historyLoaded, historyStorageKey, isWeightConverter, weightHistory]);
+
+  const parsedInput = Number(inputValue);
+  const maxFractionDigits = Math.max(0, Math.min(10, Number(precision) || 6));
+  const unitMap = useMemo(() => new Map(units.map((unit) => [unit.value, unit.label])), [units]);
+
+  const conversion = useMemo(() => {
+    if (!Number.isFinite(parsedInput)) {
+      return { ok: false, message: "Enter a valid number.", value: 0 };
+    }
+    const converted = convertUnitValue(quantity, parsedInput, from, to);
+    if (!Number.isFinite(converted)) {
+      return { ok: false, message: "Unable to convert with selected units.", value: 0 };
+    }
+    return { ok: true, message: "", value: converted };
+  }, [from, parsedInput, quantity, to]);
+
+  const conversionDisplay = conversion.ok
+    ? conversion.value.toLocaleString("en-US", { maximumFractionDigits: maxFractionDigits })
+    : conversion.message;
+
+  const perUnitValue = useMemo(() => {
+    if (!from || !to) return null;
+    const converted = convertUnitValue(quantity, 1, from, to);
+    if (!Number.isFinite(converted)) return null;
+    return converted;
+  }, [from, quantity, to]);
+
+  const allWeightConversions = useMemo(() => {
+    if (!isWeightConverter || !Number.isFinite(parsedInput)) return [];
+    return units
+      .map((unit) => ({
+        unit: unit.label,
+        value: convertUnitValue(quantity, parsedInput, from, unit.value),
+      }))
+      .filter((entry) => Number.isFinite(entry.value));
+  }, [from, isWeightConverter, parsedInput, quantity, units]);
+
+  const fromLabel = unitMap.get(from) ?? from;
+  const toLabel = unitMap.get(to) ?? to;
 
   return (
     <section className="tool-surface">
-      <h2>Unit converter</h2>
+      <ToolHeading
+        icon={RefreshCw}
+        title="Unit converter"
+        subtitle="Fast, precise conversions with instant output updates and smart conversion helpers."
+      />
+
+      {isWeightConverter ? (
+        <div className="preset-row">
+          <span className="supporting-text">Weight presets:</span>
+          {weightQuickPresets.map((preset) => (
+            <button
+              key={preset.label}
+              className="chip-button"
+              type="button"
+              onClick={() => {
+                setInputValue(preset.value);
+                setFrom(preset.from);
+                setTo(preset.to);
+                setStatus(`Applied preset: ${preset.label}`);
+                trackEvent("unit_converter_preset", { quantity, preset: preset.label });
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <div className="field-grid">
         <label className="field">
           <span>Value</span>
-          <input type="number" value={inputValue} onChange={(event) => setInputValue(event.target.value)} />
+          <input
+            type="number"
+            value={inputValue}
+            onChange={(event) => setInputValue(event.target.value)}
+            inputMode="decimal"
+          />
         </label>
         <label className="field">
           <span>From</span>
@@ -1074,11 +1200,195 @@ function UnitConverterTool({ quantity }: { quantity: UnitQuantity }) {
             ))}
           </select>
         </label>
+        <label className="field">
+          <span>Precision</span>
+          <select value={precision} onChange={(event) => setPrecision(event.target.value)}>
+            <option value="2">2 decimals</option>
+            <option value="4">4 decimals</option>
+            <option value="6">6 decimals</option>
+            <option value="8">8 decimals</option>
+          </select>
+        </label>
       </div>
-      <div className="result-row">
-        <span>Converted value</span>
-        <strong>{output}</strong>
+
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setFrom(to);
+            setTo(from);
+            setStatus("Swapped conversion direction.");
+            trackEvent("unit_converter_swap", { quantity });
+          }}
+        >
+          <RefreshCw size={15} />
+          Swap
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(conversion.ok ? `${conversionDisplay}` : "");
+            setStatus(ok ? "Converted value copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy result
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const defaultFrom = units[0]?.value ?? "";
+            const defaultTo = units[1]?.value ?? defaultFrom;
+            setInputValue("1");
+            setFrom(defaultFrom);
+            setTo(defaultTo);
+            setPrecision("6");
+            setStatus("Converter reset to defaults.");
+            trackEvent("unit_converter_reset", { quantity });
+          }}
+        >
+          <Trash2 size={15} />
+          Reset
+        </button>
+        {isWeightConverter ? (
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              if (!conversion.ok || !Number.isFinite(parsedInput)) return;
+              const entry: WeightHistoryEntry = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                input: parsedInput,
+                from,
+                to,
+                output: conversion.value,
+                timestamp: Date.now(),
+              };
+              setWeightHistory((current) => [entry, ...current].slice(0, 10));
+              setStatus("Saved conversion to recent history.");
+              trackEvent("weight_converter_history_save", { quantity, from, to });
+            }}
+            disabled={!conversion.ok}
+          >
+            Save conversion
+          </button>
+        ) : null}
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <div className="result-list" aria-live="polite">
+        <div className="result-row">
+          <span>
+            Converted value ({fromLabel} to {toLabel})
+          </span>
+          <strong>{conversionDisplay}</strong>
+        </div>
+        {perUnitValue !== null ? (
+          <div className="result-row">
+            <span>Rate</span>
+            <strong>
+              1 {fromLabel} = {perUnitValue.toLocaleString("en-US", { maximumFractionDigits: maxFractionDigits })}{" "}
+              {toLabel}
+            </strong>
+          </div>
+        ) : null}
+      </div>
+
+      {isWeightConverter && allWeightConversions.length > 0 ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>All weight unit outputs</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                downloadCsv(
+                  "weight-conversions.csv",
+                  ["Unit", "Value"],
+                  allWeightConversions.map((entry) => [entry.unit, entry.value.toString()]),
+                )
+              }
+            >
+              <Download size={15} />
+              CSV
+            </button>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Unit</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allWeightConversions.map((entry) => (
+                  <tr key={entry.unit}>
+                    <td>{entry.unit}</td>
+                    <td>{entry.value.toLocaleString("en-US", { maximumFractionDigits: maxFractionDigits })}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {isWeightConverter ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Recent weight conversions</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setWeightHistory([]);
+                setStatus("Cleared recent conversion history.");
+              }}
+            >
+              Clear history
+            </button>
+          </div>
+          {weightHistory.length === 0 ? (
+            <p className="supporting-text">No history yet. Save a conversion to create quick recall.</p>
+          ) : (
+            <ul className="plain-list">
+              {weightHistory.map((entry) => {
+                const fromText = unitMap.get(entry.from) ?? entry.from;
+                const toText = unitMap.get(entry.to) ?? entry.to;
+                return (
+                  <li key={entry.id}>
+                    <div className="history-line">
+                      <strong>
+                        {entry.input.toLocaleString("en-US", { maximumFractionDigits: maxFractionDigits })} {fromText} ={" "}
+                        {entry.output.toLocaleString("en-US", { maximumFractionDigits: maxFractionDigits })} {toText}
+                      </strong>
+                      <span className="supporting-text">{new Date(entry.timestamp).toLocaleString("en-US")}</span>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="action-button secondary"
+                        type="button"
+                        onClick={() => {
+                          setInputValue(entry.input.toString());
+                          setFrom(entry.from);
+                          setTo(entry.to);
+                          setStatus("Loaded conversion from history.");
+                        }}
+                      >
+                        Use again
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

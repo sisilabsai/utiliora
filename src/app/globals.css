@@ -427,6 +427,11 @@ textarea {
   background: var(--accent-strong);
 }
 
+.action-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .action-button.secondary {
   background: transparent;
   color: var(--accent);
@@ -601,6 +606,14 @@ textarea {
   border-radius: var(--radius-sm);
   background: var(--surface);
   padding: 0.45rem 0.55rem;
+}
+
+.history-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.7rem;
+  flex-wrap: wrap;
 }
 
 .limit-meter-wrap {

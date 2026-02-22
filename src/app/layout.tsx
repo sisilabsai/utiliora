@@ -17,6 +17,7 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://utiliora.com"),
+  applicationName: "Utiliora",
   title: {
     default: "Utiliora | Simple Tools. Instant Results.",
     template: "%s | Utiliora",
@@ -34,12 +35,28 @@ export const metadata: Metadata = {
   alternates: {
     canonical: "/",
   },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
   openGraph: {
     type: "website",
     title: "Utiliora",
     description: "Simple tools. Instant results.",
     url: "https://utiliora.com",
     siteName: "Utiliora",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Utiliora",
+    description: "Simple tools. Instant results.",
   },
 };
 

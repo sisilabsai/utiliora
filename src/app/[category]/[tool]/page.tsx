@@ -27,22 +27,39 @@ export function generateMetadata({ params }: ToolPageProps): Metadata {
   if (!tool) return {};
   return {
     title: tool.title,
-    description: tool.summary,
-    keywords: tool.keywords,
+    description: tool.description,
+    keywords: Array.from(new Set([...tool.keywords, tool.title.toLowerCase(), `${tool.category} tool`, "utiliora"])),
     alternates: {
       canonical: `/${tool.category}/${tool.slug}`,
     },
     openGraph: {
       title: tool.title,
-      description: tool.summary,
+      description: tool.description,
       url: `https://utiliora.com/${tool.category}/${tool.slug}`,
       type: "article",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: `${tool.title} | Utiliora`,
+      description: tool.description,
+    },
+    robots: {
+      index: true,
+      follow: true,
     },
   };
 }
 
-function buildJsonLd(toolTitle: string, description: string, categoryTitle: string) {
-  return {
+function buildJsonLd(
+  toolTitle: string,
+  description: string,
+  categoryTitle: string,
+  categorySlug: string,
+  toolSlug: string,
+  faq: Array<{ question: string; answer: string }>,
+) {
+  const url = `https://utiliora.com/${categorySlug}/${toolSlug}`;
+  const softwareApplication = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: toolTitle,
@@ -54,7 +71,48 @@ function buildJsonLd(toolTitle: string, description: string, categoryTitle: stri
       priceCurrency: "USD",
     },
     description,
+    url,
   };
+
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Home",
+        item: "https://utiliora.com/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: categoryTitle,
+        item: `https://utiliora.com/${categorySlug}`,
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: toolTitle,
+        item: url,
+      },
+    ],
+  };
+
+  const faqPage = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faq.map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: item.answer,
+      },
+    })),
+  };
+
+  return [softwareApplication, breadcrumb, faqPage];
 }
 
 export default function ToolPage({ params }: ToolPageProps) {
@@ -63,7 +121,8 @@ export default function ToolPage({ params }: ToolPageProps) {
 
   const category = getCategory(tool.category);
   const relatedTools = getRelatedTools(tool);
-  const jsonLd = buildJsonLd(tool.title, tool.description, category?.title ?? "Utility Tool");
+  const categoryTitle = category?.title ?? "Utility Tool";
+  const jsonLd = buildJsonLd(tool.title, tool.description, categoryTitle, tool.category, tool.slug, tool.faq);
 
   return (
     <div className="site-container page-stack">
