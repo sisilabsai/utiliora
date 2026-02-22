@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCategory } from "@/lib/categories";
 import type { ToolDefinition } from "@/lib/types";
+import { CategoryIcon } from "@/components/CategoryIcon";
 
 interface ToolCardProps {
   tool: ToolDefinition;
@@ -11,7 +12,10 @@ export function ToolCard({ tool }: ToolCardProps) {
 
   return (
     <article className="tool-card">
-      <div className="tool-card-meta">{category?.shortTitle ?? "Tool"}</div>
+      <div className="tool-card-meta">
+        <CategoryIcon category={tool.category} size={14} />
+        <span>{category?.shortTitle ?? "Tool"}</span>
+      </div>
       <h3 className="tool-card-title">
         <Link href={`/${tool.category}/${tool.slug}`}>{tool.title}</Link>
       </h3>

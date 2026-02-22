@@ -4,6 +4,135 @@ export interface DensityRow {
   density: string;
 }
 
+export interface KeywordDensityOptions {
+  nGram?: 1 | 2 | 3;
+  minLength?: number;
+  excludeStopWords?: boolean;
+}
+
+export interface SlugifyOptions {
+  separator?: "-" | "_";
+  lowercase?: boolean;
+  maxLength?: number;
+  removeStopWords?: boolean;
+}
+
+export interface JsonFormatOptions {
+  minify?: boolean;
+  sortKeys?: boolean;
+  indent?: number;
+}
+
+export interface JsonFormatResult {
+  ok: boolean;
+  output: string;
+  error?: string;
+  line?: number;
+  column?: number;
+  sizeBefore: number;
+  sizeAfter?: number;
+}
+
+const STOP_WORDS = new Set([
+  "a",
+  "about",
+  "after",
+  "all",
+  "also",
+  "an",
+  "and",
+  "any",
+  "are",
+  "as",
+  "at",
+  "be",
+  "because",
+  "been",
+  "before",
+  "being",
+  "between",
+  "both",
+  "but",
+  "by",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "he",
+  "her",
+  "here",
+  "him",
+  "his",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "may",
+  "more",
+  "most",
+  "my",
+  "no",
+  "not",
+  "of",
+  "on",
+  "one",
+  "or",
+  "other",
+  "our",
+  "out",
+  "she",
+  "so",
+  "some",
+  "than",
+  "that",
+  "the",
+  "their",
+  "them",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "to",
+  "too",
+  "under",
+  "up",
+  "us",
+  "very",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "will",
+  "with",
+  "you",
+  "your",
+]);
+
+function normalizeForTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
 export function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -17,18 +146,28 @@ export function countCharacters(value: string, includeSpaces: boolean): number {
   return includeSpaces ? value.length : value.replace(/\s+/g, "").length;
 }
 
-export function keywordDensity(text: string, topN = 8): DensityRow[] {
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((word) => word.length > 2);
+export function keywordDensity(text: string, topN = 8, options: KeywordDensityOptions = {}): DensityRow[] {
+  const nGram = options.nGram ?? 1;
+  const minLength = options.minLength ?? 3;
+  const excludeStopWords = options.excludeStopWords ?? false;
 
-  const total = words.length;
+  const rawWords = normalizeForTokens(text).filter((word) => word.length >= minLength);
+  const words = excludeStopWords ? rawWords.filter((word) => !STOP_WORDS.has(word)) : rawWords;
+
+  const grams: string[] = [];
+  if (nGram === 1) {
+    grams.push(...words);
+  } else {
+    for (let index = 0; index <= words.length - nGram; index += 1) {
+      grams.push(words.slice(index, index + nGram).join(" "));
+    }
+  }
+
+  const total = grams.length;
   if (total === 0) return [];
 
   const frequencies = new Map<string, number>();
-  for (const word of words) {
+  for (const word of grams) {
     frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
   }
 
@@ -42,15 +181,31 @@ export function keywordDensity(text: string, topN = 8): DensityRow[] {
     }));
 }
 
-export function slugify(value: string): string {
-  return value
-    .toLowerCase()
+export function slugify(value: string, options: SlugifyOptions = {}): string {
+  const separator = options.separator ?? "-";
+  const lowercase = options.lowercase ?? true;
+  const maxLength = options.maxLength ?? 120;
+  const removeStopWords = options.removeStopWords ?? false;
+
+  const normalized = value
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
+    .replace(/[^a-zA-Z0-9\s-]/g, " ")
+    .trim();
+
+  const words = normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((word) => !removeStopWords || !STOP_WORDS.has(word.toLowerCase()))
+    .map((word) => (lowercase ? word.toLowerCase() : word));
+
+  const joined = words.join(separator).replace(new RegExp(`${separator}{2,}`, "g"), separator);
+  if (joined.length <= maxLength) return joined;
+
+  const slice = joined.slice(0, maxLength);
+  const lastSeparator = slice.lastIndexOf(separator);
+  if (lastSeparator > 0) return slice.slice(0, lastSeparator);
+  return slice;
 }
 
 export function minifyCss(value: string): string {
@@ -71,12 +226,51 @@ export function minifyJs(value: string): string {
     .trim();
 }
 
-export function safeJsonFormat(value: string): { ok: boolean; output: string } {
+function sortJsonRecursively(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map((item) => sortJsonRecursively(item));
+  if (input && typeof input === "object") {
+    const objectInput = input as Record<string, unknown>;
+    const orderedEntries = Object.entries(objectInput)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, val]) => [key, sortJsonRecursively(val)] as const);
+    return Object.fromEntries(orderedEntries);
+  }
+  return input;
+}
+
+function lineAndColumnFromPosition(text: string, position: number): { line: number; column: number } {
+  const safePos = Math.max(0, Math.min(position, text.length));
+  const before = text.slice(0, safePos);
+  const lines = before.split("\n");
+  return {
+    line: lines.length,
+    column: lines[lines.length - 1].length + 1,
+  };
+}
+
+export function safeJsonFormat(value: string, options: JsonFormatOptions = {}): JsonFormatResult {
+  const sizeBefore = value.length;
   try {
     const parsed = JSON.parse(value);
-    return { ok: true, output: JSON.stringify(parsed, null, 2) };
-  } catch {
-    return { ok: false, output: "Invalid JSON. Please check commas, quotes, and brackets." };
+    const sorted = options.sortKeys ? sortJsonRecursively(parsed) : parsed;
+    const output = options.minify
+      ? JSON.stringify(sorted)
+      : JSON.stringify(sorted, null, Math.max(0, options.indent ?? 2));
+    return { ok: true, output, sizeBefore, sizeAfter: output.length };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid JSON";
+    const match = message.match(/position\s+(\d+)/i);
+    const position = match ? Number.parseInt(match[1], 10) : -1;
+    const pointer = position >= 0 ? lineAndColumnFromPosition(value, position) : null;
+    const details = pointer ? `${message} (line ${pointer.line}, col ${pointer.column})` : message;
+    return {
+      ok: false,
+      output: "Invalid JSON. Please check commas, quotes, and brackets.",
+      error: details,
+      line: pointer?.line,
+      column: pointer?.column,
+      sizeBefore,
+    };
   }
 }
 

@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { Grid2x2 } from "lucide-react";
 import { getCategories } from "@/lib/categories";
+import { CategoryIcon } from "@/components/CategoryIcon";
 
 export function SiteHeader() {
   const categories = getCategories();
@@ -18,10 +20,14 @@ export function SiteHeader() {
         </Link>
 
         <nav aria-label="Primary navigation" className="main-nav">
-          <Link href="/tools">All Tools</Link>
+          <Link href="/tools">
+            <Grid2x2 size={14} />
+            <span>All Tools</span>
+          </Link>
           {categories.map((category) => (
             <Link key={category.slug} href={`/${category.slug}`}>
-              {category.title}
+              <CategoryIcon category={category.slug} size={14} />
+              <span>{category.title}</span>
             </Link>
           ))}
         </nav>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ToolCard } from "@/components/ToolCard";
 import { ToolSearch } from "@/components/ToolSearch";
+import { CategoryIcon } from "@/components/CategoryIcon";
 import { getCategories } from "@/lib/categories";
 import { getAllTools, getToolsByCategory } from "@/lib/tools";
 
@@ -34,6 +35,7 @@ export default function Home() {
           return (
             <article key={category.slug} className="category-card">
               <h2>
+                <CategoryIcon category={category.slug} size={16} />
                 <Link href={`/${category.slug}`}>{category.title}</Link>
               </h2>
               <p>{category.description}</p>

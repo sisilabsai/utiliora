@@ -2,6 +2,20 @@
 
 import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Binary,
+  Braces,
+  Code2,
+  Copy,
+  Hash,
+  Link2,
+  Search,
+  Share2,
+  Tags,
+  Trash2,
+  Type,
+  type LucideIcon,
+} from "lucide-react";
 import { runCalculator, type ResultRow } from "@/lib/calculations";
 import { trackEvent } from "@/lib/analytics";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
@@ -300,28 +314,154 @@ function NumberConverterTool({
   );
 }
 
+interface ToolHeadingProps {
+  icon: LucideIcon;
+  title: string;
+  subtitle: string;
+}
+
+function ToolHeading({ icon: Icon, title, subtitle }: ToolHeadingProps) {
+  return (
+    <header className="tool-heading">
+      <div className="tool-heading-icon" aria-hidden>
+        <Icon size={18} />
+      </div>
+      <div className="tool-heading-text">
+        <h2>{title}</h2>
+        <p className="supporting-text">{subtitle}</p>
+      </div>
+    </header>
+  );
+}
+
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  if (!value.trim()) return false;
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function analyzeTerms(text: string, nGram: 1 | 2 | 3): string[] {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 0);
+
+  if (nGram === 1) {
+    return words.filter((word) => word.length > 2);
+  }
+
+  const terms: string[] = [];
+  for (let index = 0; index <= words.length - nGram; index += 1) {
+    terms.push(words.slice(index, index + nGram).join(" "));
+  }
+  return terms;
+}
+
+const CHARACTER_LIMIT_PRESETS = [
+  { id: "seo-title", label: "SEO title", limit: 60 },
+  { id: "meta-description", label: "Meta description", limit: 160 },
+  { id: "x-post", label: "X / Twitter post", limit: 280 },
+  { id: "linkedin-post", label: "LinkedIn post", limit: 3000 },
+  { id: "youtube-description", label: "YouTube description", limit: 5000 },
+] as const;
+
 function WordCounterTool() {
   const [text, setText] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
   const words = countWords(text);
   const characters = text.length;
+  const charactersNoSpaces = countCharacters(text, false);
   const sentences = text.split(/[.!?]+/).filter((segment) => segment.trim()).length;
+  const paragraphs = text.split(/\n\s*\n/).filter((segment) => segment.trim()).length;
+  const lines = text.split("\n").filter((line) => line.trim()).length;
   const readingTime = Math.max(1, Math.ceil(words / 200));
+  const speakingTime = Math.max(1, Math.ceil(words / 130));
+  const avgWordLength = words > 0 ? (charactersNoSpaces / words).toFixed(1) : "0";
+  const topTerms = keywordDensity(text, 8, {
+    nGram: 1,
+    excludeStopWords: true,
+    minLength: 3,
+  });
 
   return (
     <section className="tool-surface">
-      <h2>Word analysis</h2>
+      <ToolHeading
+        icon={Type}
+        title="Word analysis"
+        subtitle="Detailed writing stats for SEO pages, posts, and product copy."
+      />
       <label className="field">
         <span>Paste your text</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={10} />
       </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setText("");
+            setCopyStatus("");
+          }}
+        >
+          <Trash2 size={15} />
+          Clear
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(text);
+            setCopyStatus(ok ? "Text copied." : "Copy failed.");
+          }}
+        >
+          <Copy size={15} />
+          Copy text
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
+      </div>
       <ResultList
         rows={[
           { label: "Words", value: words.toString() },
           { label: "Characters", value: characters.toString() },
+          { label: "Characters (no spaces)", value: charactersNoSpaces.toString() },
           { label: "Sentences", value: sentences.toString() },
+          { label: "Paragraphs", value: paragraphs.toString() },
+          { label: "Lines", value: lines.toString() },
           { label: "Estimated reading time", value: `${readingTime} min` },
+          { label: "Estimated speaking time", value: `${speakingTime} min` },
+          { label: "Average word length", value: `${avgWordLength} chars` },
         ]}
       />
+      {topTerms.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Top keywords (stop words removed)</h3>
+          <div className="chip-list">
+            {topTerms.map((row) => (
+              <span key={row.keyword} className="chip">
+                {row.keyword} ({row.count})
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -329,13 +469,39 @@ function WordCounterTool() {
 function CharacterCounterTool() {
   const [text, setText] = useState("");
   const [includeSpaces, setIncludeSpaces] = useState(true);
+  const [presetId, setPresetId] = useState<(typeof CHARACTER_LIMIT_PRESETS)[number]["id"]>("seo-title");
+  const currentPreset = CHARACTER_LIMIT_PRESETS.find((preset) => preset.id === presetId) ?? CHARACTER_LIMIT_PRESETS[0];
+  const count = countCharacters(text, includeSpaces);
+  const words = countWords(text);
+  const lines = text ? text.split("\n").length : 0;
+  const remaining = currentPreset.limit - count;
+  const rawProgress = currentPreset.limit > 0 ? (count / currentPreset.limit) * 100 : 0;
+  const progress = Math.max(0, Math.min(130, rawProgress));
+  const overLimit = remaining < 0;
+
   return (
     <section className="tool-surface">
-      <h2>Character count</h2>
+      <ToolHeading
+        icon={Hash}
+        title="Character counter"
+        subtitle="Track copy limits for SEO tags and social platforms in real time."
+      />
       <label className="field">
         <span>Text</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={8} />
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Limit preset</span>
+          <select value={presetId} onChange={(event) => setPresetId(event.target.value as typeof presetId)}>
+            {CHARACTER_LIMIT_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label} ({preset.limit})
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       <label className="checkbox">
         <input
           type="checkbox"
@@ -344,24 +510,127 @@ function CharacterCounterTool() {
         />
         Include spaces
       </label>
-      <div className="result-row">
-        <span>Characters</span>
-        <strong>{countCharacters(text, includeSpaces)}</strong>
+      <div className="limit-meter-wrap" aria-live="polite">
+        <div className="limit-meter">
+          <div
+            className={`limit-meter-fill ${overLimit ? "over" : ""}`}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <small className="supporting-text">
+          {overLimit
+            ? `${Math.abs(remaining)} characters over limit for ${currentPreset.label}.`
+            : `${remaining} characters left for ${currentPreset.label}.`}
+        </small>
       </div>
+      <ResultList
+        rows={[
+          { label: "Characters", value: count.toString() },
+          { label: "Words", value: words.toString() },
+          { label: "Lines", value: lines.toString() },
+          { label: "Limit", value: currentPreset.limit.toString() },
+        ]}
+      />
     </section>
   );
 }
 
 function KeywordDensityTool() {
   const [text, setText] = useState("");
-  const rows = keywordDensity(text);
+  const [nGram, setNGram] = useState<1 | 2 | 3>(1);
+  const [excludeStopWords, setExcludeStopWords] = useState(true);
+  const [topN, setTopN] = useState(12);
+  const [targetKeyword, setTargetKeyword] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const rows = keywordDensity(text, topN, {
+    nGram,
+    excludeStopWords,
+    minLength: nGram === 1 ? 3 : 1,
+  });
+  const analyzedTerms = analyzeTerms(text, nGram);
+  const totalTerms = analyzedTerms.length;
+  const uniqueTerms = new Set(analyzedTerms).size;
+  const lexicalDiversity = totalTerms > 0 ? ((uniqueTerms / totalTerms) * 100).toFixed(1) : "0";
+  const normalizedTarget = targetKeyword
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const targetCount = normalizedTarget ? analyzedTerms.filter((term) => term === normalizedTarget).length : 0;
+  const targetDensity = totalTerms > 0 ? `${((targetCount / totalTerms) * 100).toFixed(2)}%` : "0.00%";
+  const csvOutput = rows.map((row) => `${row.keyword},${row.count},${row.density}`).join("\n");
+
   return (
     <section className="tool-surface">
-      <h2>Keyword density</h2>
+      <ToolHeading
+        icon={Search}
+        title="Keyword density checker"
+        subtitle="Analyze term frequency, lexical diversity, and exact target-keyword share."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Term size</span>
+          <select value={nGram} onChange={(event) => setNGram(Number(event.target.value) as 1 | 2 | 3)}>
+            <option value={1}>Single word</option>
+            <option value={2}>2-word phrase</option>
+            <option value={3}>3-word phrase</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Top rows</span>
+          <input
+            type="number"
+            min={5}
+            max={30}
+            value={topN}
+            onChange={(event) => setTopN(Math.max(5, Math.min(30, Number(event.target.value) || 5)))}
+          />
+        </label>
+        <label className="field">
+          <span>Target keyword/phrase</span>
+          <input
+            type="text"
+            value={targetKeyword}
+            onChange={(event) => setTargetKeyword(event.target.value)}
+            placeholder={nGram === 1 ? "example: seo" : "example: seo tools"}
+          />
+        </label>
+      </div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={excludeStopWords}
+          onChange={(event) => setExcludeStopWords(event.target.checked)}
+        />
+        Exclude common stop words
+      </label>
       <label className="field">
         <span>Content input</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={10} />
       </label>
+      <ResultList
+        rows={[
+          { label: "Terms analyzed", value: totalTerms.toString() },
+          { label: "Unique terms", value: uniqueTerms.toString() },
+          { label: "Lexical diversity", value: `${lexicalDiversity}%` },
+          { label: "Target occurrences", value: targetCount.toString() },
+          { label: "Target density", value: targetDensity },
+        ]}
+      />
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(csvOutput);
+            setCopyStatus(ok ? "CSV copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy CSV
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
+      </div>
       {rows.length ? (
         <table className="table">
           <thead>
@@ -390,19 +659,125 @@ function KeywordDensityTool() {
 
 function SlugGeneratorTool() {
   const [text, setText] = useState("");
-  const output = slugify(text);
+  const [separator, setSeparator] = useState<"-" | "_">("-");
+  const [lowercase, setLowercase] = useState(true);
+  const [removeStopWords, setRemoveStopWords] = useState(false);
+  const [maxLength, setMaxLength] = useState(80);
+  const [domain, setDomain] = useState("https://utiliora.com");
+  const [copyStatus, setCopyStatus] = useState("");
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const generated = lines.map((line) =>
+    slugify(line, {
+      separator,
+      lowercase,
+      maxLength,
+      removeStopWords,
+    }),
+  );
+  const output = generated[0] ?? "";
+  const normalizedDomain = domain.replace(/\/+$/, "");
+  const fullUrl = output ? `${normalizedDomain}/${output}` : normalizedDomain;
 
   return (
     <section className="tool-surface">
-      <h2>Slug generation</h2>
+      <ToolHeading
+        icon={Link2}
+        title="Slug generator"
+        subtitle="Generate clean URL slugs with separator, casing, and length controls."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Separator</span>
+          <select value={separator} onChange={(event) => setSeparator(event.target.value as "-" | "_")}>
+            <option value="-">Hyphen (-)</option>
+            <option value="_">Underscore (_)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Max length</span>
+          <input
+            type="number"
+            min={20}
+            max={200}
+            value={maxLength}
+            onChange={(event) => setMaxLength(Math.max(20, Math.min(200, Number(event.target.value) || 80)))}
+          />
+        </label>
+        <label className="field">
+          <span>Preview domain</span>
+          <input type="url" value={domain} onChange={(event) => setDomain(event.target.value)} />
+        </label>
+      </div>
+      <div className="button-row">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={lowercase}
+            onChange={(event) => setLowercase(event.target.checked)}
+          />
+          Force lowercase
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={removeStopWords}
+            onChange={(event) => setRemoveStopWords(event.target.checked)}
+          />
+          Remove stop words
+        </label>
+      </div>
       <label className="field">
-        <span>Source title</span>
-        <input type="text" value={text} onChange={(event) => setText(event.target.value)} />
+        <span>Source title(s) - one per line for bulk generation</span>
+        <textarea value={text} onChange={(event) => setText(event.target.value)} rows={6} />
       </label>
       <div className="result-row">
         <span>Slug</span>
         <strong>{output || "Add title text to generate slug"}</strong>
       </div>
+      <div className="result-row">
+        <span>URL preview</span>
+        <strong>{fullUrl}</strong>
+      </div>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setCopyStatus(ok ? "Slug copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy slug
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(fullUrl);
+            setCopyStatus(ok ? "URL copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy full URL
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
+      </div>
+      {generated.length > 1 ? (
+        <div className="mini-panel">
+          <h3>Bulk output</h3>
+          <ul className="plain-list">
+            {generated.map((slug, index) => (
+              <li key={`${slug}-${index}`}>
+                <code>{slug}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -411,32 +786,98 @@ function MetaTagGeneratorTool() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [canonical, setCanonical] = useState("");
+  const [author, setAuthor] = useState("");
+  const [robotsIndex, setRobotsIndex] = useState(true);
+  const [robotsFollow, setRobotsFollow] = useState(true);
+  const [siteName, setSiteName] = useState("Utiliora");
+  const [copyStatus, setCopyStatus] = useState("");
+  const titleLength = title.length;
+  const descriptionLength = description.length;
+  const robotsValue = `${robotsIndex ? "index" : "noindex"}, ${robotsFollow ? "follow" : "nofollow"}`;
+  const canonicalUrl = canonical.trim() || "https://example.com/page";
 
-  const output = `<title>${title || "Page title"}</title>
-<meta name="description" content="${description || "Page description"}" />
-${canonical ? `<link rel="canonical" href="${canonical}" />` : ""}`;
+  const output = [
+    `<title>${title || "Page title"}</title>`,
+    `<meta name="description" content="${description || "Page description"}" />`,
+    `<meta name="robots" content="${robotsValue}" />`,
+    author ? `<meta name="author" content="${author}" />` : "",
+    `<meta property="og:site_name" content="${siteName}" />`,
+    canonical ? `<link rel="canonical" href="${canonical}" />` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return (
     <section className="tool-surface">
-      <h2>Meta tag generator</h2>
+      <ToolHeading
+        icon={Tags}
+        title="Meta tag generator"
+        subtitle="Build production-ready title/description tags with robots control and SERP preview."
+      />
       <div className="field-grid">
         <label className="field">
-          <span>Title</span>
+          <span>Title ({titleLength}/60)</span>
           <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} />
         </label>
         <label className="field">
-          <span>Description</span>
+          <span>Description ({descriptionLength}/160)</span>
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} />
         </label>
         <label className="field">
           <span>Canonical URL</span>
           <input type="url" value={canonical} onChange={(event) => setCanonical(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Author</span>
+          <input type="text" value={author} onChange={(event) => setAuthor(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Site name</span>
+          <input type="text" value={siteName} onChange={(event) => setSiteName(event.target.value)} />
+        </label>
+      </div>
+      <div className="button-row">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={robotsIndex}
+            onChange={(event) => setRobotsIndex(event.target.checked)}
+          />
+          Allow indexing
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={robotsFollow}
+            onChange={(event) => setRobotsFollow(event.target.checked)}
+          />
+          Allow following links
+        </label>
+      </div>
+      <div className="serp-preview">
+        <small>Google preview</small>
+        <h3>{title || "Page title preview"}</h3>
+        <p className="serp-url">{canonicalUrl}</p>
+        <p>{description || "Meta description preview appears here."}</p>
       </div>
       <label className="field">
         <span>Generated tags</span>
         <textarea value={output} readOnly rows={6} />
       </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setCopyStatus(ok ? "Meta tags copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy tags
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
+      </div>
     </section>
   );
 }
@@ -446,20 +887,38 @@ function OpenGraphGeneratorTool() {
   const [description, setDescription] = useState("");
   const [url, setUrl] = useState("");
   const [image, setImage] = useState("");
+  const [siteName, setSiteName] = useState("Utiliora");
+  const [ogType, setOgType] = useState("website");
+  const [twitterCard, setTwitterCard] = useState("summary_large_image");
+  const [twitterHandle, setTwitterHandle] = useState("@utiliora");
+  const [copyStatus, setCopyStatus] = useState("");
+  const previewTitle = title || "Social preview title";
+  const previewDescription = description || "Social preview description will appear here.";
+  const previewUrl = url || "https://example.com";
 
   const output = [
-    `<meta property="og:title" content="${title || "OG Title"}" />`,
-    `<meta property="og:description" content="${description || "OG Description"}" />`,
-    `<meta property="og:url" content="${url || "https://example.com"}" />`,
-    `<meta property="og:type" content="website" />`,
+    `<meta property="og:title" content="${previewTitle}" />`,
+    `<meta property="og:description" content="${previewDescription}" />`,
+    `<meta property="og:url" content="${previewUrl}" />`,
+    `<meta property="og:type" content="${ogType}" />`,
+    `<meta property="og:site_name" content="${siteName}" />`,
     image ? `<meta property="og:image" content="${image}" />` : "",
+    `<meta name="twitter:card" content="${twitterCard}" />`,
+    `<meta name="twitter:title" content="${previewTitle}" />`,
+    `<meta name="twitter:description" content="${previewDescription}" />`,
+    `<meta name="twitter:site" content="${twitterHandle}" />`,
+    image ? `<meta name="twitter:image" content="${image}" />` : "",
   ]
     .filter(Boolean)
     .join("\n");
 
   return (
     <section className="tool-surface">
-      <h2>Open Graph tags</h2>
+      <ToolHeading
+        icon={Share2}
+        title="Open Graph + Twitter generator"
+        subtitle="Generate complete social card metadata with a live preview panel."
+      />
       <div className="field-grid">
         <label className="field">
           <span>Title</span>
@@ -477,35 +936,165 @@ function OpenGraphGeneratorTool() {
           <span>Image URL</span>
           <input type="url" value={image} onChange={(event) => setImage(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Site name</span>
+          <input type="text" value={siteName} onChange={(event) => setSiteName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Open Graph type</span>
+          <select value={ogType} onChange={(event) => setOgType(event.target.value)}>
+            <option value="website">website</option>
+            <option value="article">article</option>
+            <option value="product">product</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Twitter card</span>
+          <select value={twitterCard} onChange={(event) => setTwitterCard(event.target.value)}>
+            <option value="summary_large_image">summary_large_image</option>
+            <option value="summary">summary</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Twitter handle</span>
+          <input type="text" value={twitterHandle} onChange={(event) => setTwitterHandle(event.target.value)} />
+        </label>
+      </div>
+      <div className="social-preview-card">
+        <div className="social-preview-media">
+          {image ? (
+            <span className="supporting-text">Image URL configured</span>
+          ) : (
+            <span className="supporting-text">No image URL set</span>
+          )}
+        </div>
+        <div className="social-preview-body">
+          <small>{previewUrl}</small>
+          <h3>{previewTitle}</h3>
+          <p>{previewDescription}</p>
+        </div>
       </div>
       <label className="field">
         <span>Generated OG tags</span>
-        <textarea value={output} readOnly rows={8} />
+        <textarea value={output} readOnly rows={11} />
       </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setCopyStatus(ok ? "Tags copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy social tags
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
+      </div>
     </section>
   );
 }
 
 function JsonFormatterTool() {
   const [input, setInput] = useState('{"name":"Utiliora","tools":10}');
-  const [output, setOutput] = useState(() => safeJsonFormat('{"name":"Utiliora","tools":10}'));
+  const [sortKeys, setSortKeys] = useState(true);
+  const [minifyOutput, setMinifyOutput] = useState(false);
+  const [indent, setIndent] = useState(2);
+  const [result, setResult] = useState(() =>
+    safeJsonFormat('{"name":"Utiliora","tools":10}', {
+      sortKeys: true,
+      minify: false,
+      indent: 2,
+    }),
+  );
+  const [copyStatus, setCopyStatus] = useState("");
 
-  const format = () => setOutput(safeJsonFormat(input));
+  const format = () =>
+    setResult(
+      safeJsonFormat(input, {
+        sortKeys,
+        minify: minifyOutput,
+        indent,
+      }),
+    );
 
   return (
     <section className="tool-surface">
-      <h2>JSON formatter</h2>
+      <ToolHeading
+        icon={Braces}
+        title="JSON formatter + validator"
+        subtitle="Validate, beautify, minify, and sort JSON keys with error location hints."
+      />
       <label className="field">
         <span>Input JSON</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={8} />
       </label>
-      <button className="action-button" type="button" onClick={format}>
-        Format JSON
-      </button>
+      <div className="field-grid">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={sortKeys}
+            onChange={(event) => setSortKeys(event.target.checked)}
+          />
+          Sort object keys
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={minifyOutput}
+            onChange={(event) => setMinifyOutput(event.target.checked)}
+          />
+          Minify output
+        </label>
+        <label className="field">
+          <span>Indent size</span>
+          <input
+            type="number"
+            min={0}
+            max={8}
+            value={indent}
+            onChange={(event) => setIndent(Math.max(0, Math.min(8, Number(event.target.value) || 2)))}
+            disabled={minifyOutput}
+          />
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={format}>
+          Format JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(result.output);
+            setCopyStatus(ok ? "Output copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => setInput("")}>
+          <Trash2 size={15} />
+          Clear input
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Status", value: result.ok ? "Valid JSON" : "Invalid JSON" },
+          { label: "Input size", value: `${result.sizeBefore} chars` },
+          {
+            label: "Output size",
+            value: result.ok ? `${result.sizeAfter ?? result.output.length} chars` : "N/A",
+          },
+        ]}
+      />
+      {result.error ? <p className="error-text">{result.error}</p> : null}
       <label className="field">
-        <span>{output.ok ? "Formatted JSON" : "Error"}</span>
-        <textarea value={output.output} readOnly rows={10} />
+        <span>{result.ok ? "Formatted JSON" : "Error"}</span>
+        <textarea value={result.ok ? result.output : result.error ?? result.output} readOnly rows={10} />
       </label>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
     </section>
   );
 }
@@ -514,27 +1103,70 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
   const [input, setInput] = useState(
     mode === "css" ? "body { color: #111; }" : "function hello() { console.log('hi'); }",
   );
-  const [output, setOutput] = useState("");
+  const [output, setOutput] = useState(() => (mode === "css" ? minifyCss(input) : minifyJs(input)));
+  const [autoMinify, setAutoMinify] = useState(true);
+  const [copyStatus, setCopyStatus] = useState("");
+
+  useEffect(() => {
+    if (!autoMinify) return;
+    setOutput(mode === "css" ? minifyCss(input) : minifyJs(input));
+  }, [autoMinify, input, mode]);
 
   const minify = () => {
     const result = mode === "css" ? minifyCss(input) : minifyJs(input);
     setOutput(result);
   };
+  const before = input.length;
+  const after = output.length;
+  const savings = before > 0 ? (((before - after) / before) * 100).toFixed(1) : "0";
 
   return (
     <section className="tool-surface">
-      <h2>{mode.toUpperCase()} minifier</h2>
+      <ToolHeading
+        icon={Code2}
+        title={`${mode.toUpperCase()} minifier`}
+        subtitle="Reduce payload size and estimate compression impact before deployment."
+      />
       <label className="field">
         <span>Input {mode.toUpperCase()}</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={8} />
       </label>
-      <button className="action-button" type="button" onClick={minify}>
-        Minify
-      </button>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={autoMinify}
+          onChange={(event) => setAutoMinify(event.target.checked)}
+        />
+        Auto minify while typing
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={minify}>
+          Minify now
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setCopyStatus(ok ? "Minified code copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Original size", value: `${before} chars` },
+          { label: "Minified size", value: `${after} chars` },
+          { label: "Reduction", value: `${savings}%` },
+        ]}
+      />
       <label className="field">
         <span>Output</span>
         <textarea value={output} readOnly rows={6} />
       </label>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
     </section>
   );
 }
@@ -542,26 +1174,102 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
 function Base64Tool() {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
+  const [urlSafe, setUrlSafe] = useState(false);
+  const [status, setStatus] = useState("");
+  const [decodedFileUrl, setDecodedFileUrl] = useState("");
+  const [decodedFileName, setDecodedFileName] = useState("decoded.bin");
+  const decodedFileUrlRef = useRef("");
+
+  useEffect(() => {
+    return () => {
+      if (decodedFileUrlRef.current) URL.revokeObjectURL(decodedFileUrlRef.current);
+    };
+  }, []);
+
+  const toUrlSafe = (value: string) => value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const fromUrlSafe = (value: string) => {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = normalized.length % 4;
+    if (padding === 0) return normalized;
+    return normalized + "=".repeat(4 - padding);
+  };
 
   const encode = () => {
     try {
-      setOutput(btoa(unescape(encodeURIComponent(input))));
+      const encoded = btoa(unescape(encodeURIComponent(input)));
+      setOutput(urlSafe ? toUrlSafe(encoded) : encoded);
+      setStatus("Encoded successfully.");
+      trackEvent("tool_base64_encode", { urlSafe });
     } catch {
       setOutput("Unable to encode input.");
+      setStatus("Encode failed.");
     }
   };
 
   const decode = () => {
     try {
-      setOutput(decodeURIComponent(escape(atob(input))));
+      const decoded = decodeURIComponent(escape(atob(urlSafe ? fromUrlSafe(input.trim()) : input.trim())));
+      setOutput(decoded);
+      setStatus("Decoded successfully.");
+      trackEvent("tool_base64_decode", { urlSafe });
     } catch {
       setOutput("Invalid Base64 string.");
+      setStatus("Decode failed.");
     }
+  };
+
+  const decodeToFile = () => {
+    try {
+      const raw = input.trim();
+      const dataUrlMatch = raw.match(/^data:([^;]+);base64,(.+)$/i);
+      const mimeType = dataUrlMatch?.[1] ?? "application/octet-stream";
+      const payload = dataUrlMatch ? dataUrlMatch[2] : raw;
+      const decodedBinary = atob(urlSafe ? fromUrlSafe(payload) : payload);
+      const buffer = new Uint8Array(decodedBinary.length);
+      for (let index = 0; index < decodedBinary.length; index += 1) {
+        buffer[index] = decodedBinary.charCodeAt(index);
+      }
+      const blob = new Blob([buffer], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      if (decodedFileUrlRef.current) URL.revokeObjectURL(decodedFileUrlRef.current);
+      decodedFileUrlRef.current = url;
+      setDecodedFileUrl(url);
+      setDecodedFileName(`decoded.${mimeType.split("/")[1] || "bin"}`);
+      setStatus("Decoded into downloadable file.");
+    } catch {
+      setStatus("Unable to decode file payload.");
+    }
+  };
+
+  const encodeFile = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      setOutput(result);
+      setStatus("File converted to Data URL Base64.");
+    };
+    reader.onerror = () => {
+      setStatus("Unable to read selected file.");
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
     <section className="tool-surface">
-      <h2>Base64 encode/decode</h2>
+      <ToolHeading
+        icon={Binary}
+        title="Base64 encoder/decoder"
+        subtitle="Encode text, decode payloads, and convert files to/from Base64 Data URLs."
+      />
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={urlSafe}
+          onChange={(event) => setUrlSafe(event.target.checked)}
+        />
+        URL-safe mode (- and _ instead of + and /)
+      </label>
       <label className="field">
         <span>Input</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={6} />
@@ -573,11 +1281,35 @@ function Base64Tool() {
         <button className="action-button secondary" type="button" onClick={decode}>
           Decode
         </button>
+        <button className="action-button secondary" type="button" onClick={decodeToFile}>
+          Decode to file
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setStatus(ok ? "Output copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
       </div>
+      <label className="field">
+        <span>Encode file to Base64 Data URL</span>
+        <input type="file" onChange={(event) => encodeFile(event.target.files?.[0] ?? null)} />
+      </label>
       <label className="field">
         <span>Output</span>
         <textarea value={output} readOnly rows={6} />
       </label>
+      {decodedFileUrl ? (
+        <a className="action-link" href={decodedFileUrl} download={decodedFileName}>
+          Download decoded file
+        </a>
+      ) : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
