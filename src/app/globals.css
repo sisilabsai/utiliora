@@ -949,6 +949,35 @@ textarea {
   justify-content: flex-end;
 }
 
+.notes-list-panel {
+  max-height: 620px;
+  overflow-y: auto;
+}
+
+.notes-editor {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.notes-editor textarea {
+  font-family: var(--font-geist-mono), "Consolas", monospace;
+  line-height: 1.5;
+}
+
+.notes-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.split-panel.notes-focus {
+  grid-template-columns: 1fr;
+}
+
+.split-panel.notes-focus .notes-list-panel {
+  display: none;
+}
+
 .resume-editor {
   display: grid;
   gap: 0.95rem;
@@ -976,6 +1005,27 @@ textarea {
 
 .resume-preview h3 {
   margin: 0;
+}
+
+.resume-preview.resume-template-executive {
+  border-color: color-mix(in srgb, var(--accent-strong) 35%, var(--border) 65%);
+}
+
+.resume-preview.resume-template-executive .resume-header {
+  border-bottom-width: 2px;
+}
+
+.resume-preview.resume-template-creative {
+  border-color: color-mix(in srgb, #236f6a 35%, var(--border) 65%);
+}
+
+.resume-preview.resume-template-creative .resume-section h5 {
+  color: #236f6a;
+}
+
+.resume-preview.resume-template-creative .chip {
+  border-color: #236f6a;
+  color: #236f6a;
 }
 
 .resume-header {

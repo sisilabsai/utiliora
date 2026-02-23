@@ -638,6 +638,27 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain;
   URL.revokeObjectURL(url);
 }
 
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeBase64Url(value: string): string | null {
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 function formatCurrencyWithCode(value: number, currency: string): string {
   try {
     return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(value);
@@ -5309,35 +5330,225 @@ interface NoteItem {
   title: string;
   content: string;
   updatedAt: number;
+  pinned: boolean;
+  tags: string[];
+}
+
+type MarkdownFormatAction =
+  | "heading"
+  | "bold"
+  | "italic"
+  | "link"
+  | "quote"
+  | "bullet-list"
+  | "check-list"
+  | "inline-code"
+  | "code-block"
+  | "date-stamp";
+
+interface NoteTemplate {
+  id: string;
+  label: string;
+  title: string;
+  content: string;
+}
+
+const NOTE_TEMPLATES: NoteTemplate[] = [
+  {
+    id: "meeting",
+    label: "Meeting",
+    title: "Team meeting notes",
+    content: `## Agenda
+- 
+
+## Decisions
+- 
+
+## Action items
+- [ ] `,
+  },
+  {
+    id: "journal",
+    label: "Daily log",
+    title: "Daily journal",
+    content: `## Wins
+- 
+
+## Challenges
+- 
+
+## Tomorrow plan
+- [ ] `,
+  },
+  {
+    id: "launch",
+    label: "Launch plan",
+    title: "Product launch checklist",
+    content: `## Launch objective
+
+## Checklist
+- [ ] QA pass
+- [ ] Release notes
+- [ ] Comms ready
+
+## Risks
+- `,
+  },
+];
+
+function createNote(title: string, content = ""): NoteItem {
+  return {
+    id: crypto.randomUUID(),
+    title,
+    content,
+    updatedAt: Date.now(),
+    pinned: false,
+    tags: [],
+  };
+}
+
+function parseTagsFromInput(value: string): string[] {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 10);
+}
+
+function sanitizeStoredNote(candidate: unknown): NoteItem | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const note = candidate as Partial<NoteItem>;
+  if (typeof note.id !== "string" || typeof note.title !== "string" || typeof note.content !== "string") {
+    return null;
+  }
+  const parsedTags = Array.isArray(note.tags)
+    ? note.tags.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean).slice(0, 10)
+    : [];
+  return {
+    id: note.id,
+    title: note.title || "Untitled note",
+    content: note.content,
+    updatedAt: typeof note.updatedAt === "number" ? note.updatedAt : Date.now(),
+    pinned: Boolean(note.pinned),
+    tags: parsedTags,
+  };
+}
+
+function applyMarkdownFormatting(
+  content: string,
+  selectionStart: number,
+  selectionEnd: number,
+  action: MarkdownFormatAction,
+): { value: string; nextStart: number; nextEnd: number } {
+  const start = Math.max(0, Math.min(selectionStart, content.length));
+  const end = Math.max(start, Math.min(selectionEnd, content.length));
+  const before = content.slice(0, start);
+  const selected = content.slice(start, end);
+  const after = content.slice(end);
+  const fallbackLine = selected || "text";
+
+  let insertion = selected;
+  switch (action) {
+    case "heading":
+      insertion = `## ${selected || "Heading"}`;
+      break;
+    case "bold":
+      insertion = `**${selected || "bold text"}**`;
+      break;
+    case "italic":
+      insertion = `_${selected || "italic text"}_`;
+      break;
+    case "link":
+      insertion = `[${selected || "link text"}](https://example.com)`;
+      break;
+    case "quote":
+      insertion = selected
+        ? selected.split(/\r?\n/).map((line) => `> ${line}`).join("\n")
+        : "> Quote";
+      break;
+    case "bullet-list":
+      insertion = selected
+        ? selected.split(/\r?\n/).map((line) => (line.trim() ? `- ${line}` : "- ")).join("\n")
+        : "- list item";
+      break;
+    case "check-list":
+      insertion = selected
+        ? selected.split(/\r?\n/).map((line) => `- [ ] ${line}`).join("\n")
+        : "- [ ] task";
+      break;
+    case "inline-code":
+      insertion = `\`${selected || "code"}\``;
+      break;
+    case "code-block":
+      insertion = `\n\`\`\`\n${selected || "code"}\n\`\`\`\n`;
+      break;
+    case "date-stamp":
+      insertion = `\n${new Date().toLocaleString("en-US")}\n`;
+      break;
+    default:
+      insertion = fallbackLine;
+      break;
+  }
+
+  const value = `${before}${insertion}${after}`;
+  const nextEnd = before.length + insertion.length;
+  return { value, nextStart: nextEnd, nextEnd };
 }
 
 function NotesPadTool() {
-  const storageKey = "utiliora-notes-v2";
-  const defaultNote: NoteItem = {
-    id: crypto.randomUUID(),
-    title: "Untitled note",
-    content: "",
-    updatedAt: Date.now(),
-  };
-
+  const storageKey = "utiliora-notes-v3";
+  const legacyStorageKey = "utiliora-notes-v2";
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const defaultNote = useMemo(() => createNote("Untitled note"), []);
   const [notes, setNotes] = useState<NoteItem[]>([defaultNote]);
-  const [activeId, setActiveId] = useState(defaultNote.id);
+  const [activeId, setActiveId] = useState<string>(defaultNote.id);
   const [search, setSearch] = useState("");
+  const [tagFilter, setTagFilter] = useState("all");
+  const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [status, setStatus] = useState("");
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem(storageKey);
-      if (!stored) return;
-      const parsed = JSON.parse(stored) as NoteItem[];
-      if (!Array.isArray(parsed) || parsed.length === 0) return;
-      setNotes(parsed);
-      setActiveId(parsed[0].id);
+      const source = stored ?? localStorage.getItem(legacyStorageKey);
+      if (source) {
+        const parsed = JSON.parse(source) as unknown[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const normalized = parsed
+            .map((item) => sanitizeStoredNote(item))
+            .filter((item): item is NoteItem => Boolean(item));
+          if (normalized.length) {
+            setNotes(normalized);
+            setActiveId(normalized[0].id);
+          }
+        }
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const sharedPayload = params.get("noteShare");
+      if (sharedPayload) {
+        const decoded = decodeBase64Url(sharedPayload);
+        if (decoded) {
+          const parsedShare = JSON.parse(decoded) as Partial<NoteItem>;
+          const imported = createNote(
+            parsedShare.title?.trim() || "Shared note",
+            typeof parsedShare.content === "string" ? parsedShare.content : "",
+          );
+          imported.tags = Array.isArray(parsedShare.tags)
+            ? parsedShare.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 10)
+            : [];
+          setNotes((current) => [imported, ...current]);
+          setActiveId(imported.id);
+          setStatus("Imported shared note from URL.");
+          params.delete("noteShare");
+          const cleanQuery = params.toString();
+          const cleanUrl = `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}`;
+          window.history.replaceState({}, "", cleanUrl);
+        }
+      }
     } catch {
-      // Ignore malformed notes.
+      // Ignore malformed notes or share links.
     }
-  }, [storageKey]);
+  }, [defaultNote.id, legacyStorageKey, storageKey]);
 
   useEffect(() => {
     try {
@@ -5347,31 +5558,114 @@ function NotesPadTool() {
     }
   }, [notes, storageKey]);
 
+  useEffect(() => {
+    if (notes.some((note) => note.id === activeId)) return;
+    setActiveId(notes[0]?.id ?? defaultNote.id);
+  }, [activeId, defaultNote.id, notes]);
+
   const activeNote = useMemo(
     () => notes.find((note) => note.id === activeId) ?? notes[0] ?? null,
     [activeId, notes],
   );
 
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    notes.forEach((note) => {
+      note.tags.forEach((tag) => set.add(tag));
+    });
+    return [...set].sort((left, right) => left.localeCompare(right));
+  }, [notes]);
+
   const filteredNotes = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    if (!needle) return notes;
-    return notes.filter(
-      (note) =>
-        note.title.toLowerCase().includes(needle) || note.content.toLowerCase().includes(needle),
-    );
-  }, [notes, search]);
+    return [...notes]
+      .filter((note) => {
+        if (showPinnedOnly && !note.pinned) return false;
+        if (tagFilter !== "all" && !note.tags.includes(tagFilter)) return false;
+        if (!needle) return true;
+        return (
+          note.title.toLowerCase().includes(needle) ||
+          note.content.toLowerCase().includes(needle) ||
+          note.tags.some((tag) => tag.toLowerCase().includes(needle))
+        );
+      })
+      .sort((left, right) => {
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+        return right.updatedAt - left.updatedAt;
+      });
+  }, [notes, search, showPinnedOnly, tagFilter]);
 
-  const updateActiveNote = (patch: Partial<NoteItem>) => {
+  const updateActiveNote = useCallback((patch: Partial<NoteItem>) => {
     if (!activeNote) return;
     setNotes((current) =>
       current.map((note) =>
         note.id === activeNote.id ? { ...note, ...patch, updatedAt: Date.now() } : note,
       ),
     );
-  };
+  }, [activeNote]);
+
+  const createNoteFromTemplate = useCallback((template?: NoteTemplate) => {
+    const note = createNote(template?.title ?? `New note ${notes.length + 1}`, template?.content ?? "");
+    setNotes((current) => [note, ...current]);
+    setActiveId(note.id);
+    setStatus(template ? `Created note from ${template.label} template.` : "Created a new note.");
+    trackEvent("notes_create", { template: template?.id ?? "blank" });
+  }, [notes.length]);
+
+  const exportActiveNote = useCallback(() => {
+    if (!activeNote) return;
+    downloadTextFile(
+      `${(activeNote.title || "note").replace(/[^\w.-]+/g, "-").toLowerCase()}.md`,
+      activeNote.content,
+    );
+    setStatus("Exported note as Markdown.");
+  }, [activeNote]);
+
+  const applyFormatting = useCallback((action: MarkdownFormatAction) => {
+    if (!activeNote || !editorRef.current) return;
+    const textarea = editorRef.current;
+    const result = applyMarkdownFormatting(
+      activeNote.content,
+      textarea.selectionStart ?? 0,
+      textarea.selectionEnd ?? 0,
+      action,
+    );
+    updateActiveNote({ content: result.value });
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(result.nextStart, result.nextEnd);
+    });
+  }, [activeNote, updateActiveNote]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const useMod = event.ctrlKey || event.metaKey;
+      if (!useMod) return;
+      const key = event.key.toLowerCase();
+      if (key === "b") {
+        event.preventDefault();
+        applyFormatting("bold");
+      } else if (key === "i") {
+        event.preventDefault();
+        applyFormatting("italic");
+      } else if (key === "k") {
+        event.preventDefault();
+        applyFormatting("link");
+      } else if (key === "s") {
+        event.preventDefault();
+        exportActiveNote();
+      } else if (event.shiftKey && key === "n") {
+        event.preventDefault();
+        createNoteFromTemplate();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [applyFormatting, createNoteFromTemplate, exportActiveNote]);
 
   const activeWordCount = countWords(activeNote?.content ?? "");
   const activeCharCount = activeNote?.content.length ?? 0;
+  const readingMinutes = Math.max(1, Math.ceil(activeWordCount / 220));
   const renderedPreview = useMemo(
     () => markdownToHtml(activeNote?.content ?? ""),
     [activeNote?.content],
@@ -5382,25 +5676,15 @@ function NotesPadTool() {
       <ToolHeading
         icon={Type}
         title="Notes pad"
-        subtitle="Organize multiple notes with autosave, search, markdown preview, and quick export."
+        subtitle="Write in markdown with shortcuts, smart templates, shareable links, and instant previews."
       />
       <div className="button-row">
         <button
           className="action-button"
           type="button"
-          onClick={() => {
-            const created: NoteItem = {
-              id: crypto.randomUUID(),
-              title: `New note ${notes.length + 1}`,
-              content: "",
-              updatedAt: Date.now(),
-            };
-            setNotes((current) => [created, ...current]);
-            setActiveId(created.id);
-            setStatus("Created a new note.");
-          }}
+          onClick={() => createNoteFromTemplate()}
         >
-          New note
+          New note (Ctrl/Cmd+Shift+N)
         </button>
         <button
           className="action-button secondary"
@@ -5424,17 +5708,20 @@ function NotesPadTool() {
         <button
           className="action-button secondary"
           type="button"
+          onClick={() => updateActiveNote({ pinned: !(activeNote?.pinned ?? false) })}
+          disabled={!activeNote}
+        >
+          {activeNote?.pinned ? "Unpin" : "Pin"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
           onClick={() => {
             if (!activeNote) return;
             setNotes((current) => {
               const next = current.filter((note) => note.id !== activeNote.id);
               if (next.length === 0) {
-                const replacement: NoteItem = {
-                  id: crypto.randomUUID(),
-                  title: "Untitled note",
-                  content: "",
-                  updatedAt: Date.now(),
-                };
+                const replacement = createNote("Untitled note");
                 setActiveId(replacement.id);
                 setStatus("Deleted note and created a new empty note.");
                 return [replacement];
@@ -5448,6 +5735,22 @@ function NotesPadTool() {
         >
           Delete
         </button>
+        <button className="action-button secondary" type="button" onClick={() => setFocusMode((current) => !current)}>
+          {focusMode ? "Exit focus mode" : "Focus mode"}
+        </button>
+      </div>
+      <div className="preset-row">
+        <span className="supporting-text">Quick starts:</span>
+        {NOTE_TEMPLATES.map((template) => (
+          <button
+            key={template.id}
+            className="chip-button"
+            type="button"
+            onClick={() => createNoteFromTemplate(template)}
+          >
+            {template.label}
+          </button>
+        ))}
       </div>
       <div className="field-grid">
         <label className="field">
@@ -5459,6 +5762,25 @@ function NotesPadTool() {
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
+        <label className="field">
+          <span>Filter by tag</span>
+          <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+            <option value="all">All tags</option>
+            {allTags.map((tag) => (
+              <option key={tag} value={tag}>
+                {tag}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={showPinnedOnly}
+            onChange={(event) => setShowPinnedOnly(event.target.checked)}
+          />
+          Pinned only
+        </label>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -5469,8 +5791,8 @@ function NotesPadTool() {
         </label>
       </div>
       {status ? <p className="supporting-text">{status}</p> : null}
-      <div className="split-panel">
-        <div className="mini-panel">
+      <div className={`split-panel${focusMode ? " notes-focus" : ""}`}>
+        <div className="mini-panel notes-list-panel">
           <h3>Notes</h3>
           <ul className="plain-list">
             {filteredNotes.map((note) => (
@@ -5483,12 +5805,20 @@ function NotesPadTool() {
                 >
                   {note.title}
                 </button>
+                <div className="chip-list">
+                  {note.pinned ? <span className="status-badge info">Pinned</span> : null}
+                  {note.tags.map((tag) => (
+                    <span key={`${note.id}-${tag}`} className="chip">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
                 <p className="supporting-text">{new Date(note.updatedAt).toLocaleString("en-US")}</p>
               </li>
             ))}
           </ul>
         </div>
-        <div>
+        <div className="notes-editor">
           {activeNote ? (
             <>
               <label className="field">
@@ -5500,8 +5830,50 @@ function NotesPadTool() {
                 />
               </label>
               <label className="field">
-                <span>Your note (autosaved locally)</span>
+                <span>Tags (comma separated)</span>
+                <input
+                  type="text"
+                  value={activeNote.tags.join(", ")}
+                  placeholder="ideas, planning, urgent"
+                  onChange={(event) => updateActiveNote({ tags: parseTagsFromInput(event.target.value) })}
+                />
+              </label>
+              <div className="notes-toolbar" role="toolbar" aria-label="Markdown formatting shortcuts">
+                <button className="chip-button" type="button" onClick={() => applyFormatting("heading")}>
+                  H2
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("bold")}>
+                  Bold
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("italic")}>
+                  Italic
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("link")}>
+                  Link
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("quote")}>
+                  Quote
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("bullet-list")}>
+                  List
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("check-list")}>
+                  Checklist
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("inline-code")}>
+                  Inline code
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("code-block")}>
+                  Code block
+                </button>
+                <button className="chip-button" type="button" onClick={() => applyFormatting("date-stamp")}>
+                  Timestamp
+                </button>
+              </div>
+              <label className="field">
+                <span>Your note (autosaved locally, markdown supported)</span>
                 <textarea
+                  ref={editorRef}
                   value={activeNote.content}
                   onChange={(event) => updateActiveNote({ content: event.target.value })}
                   rows={16}
@@ -5535,31 +5907,87 @@ function NotesPadTool() {
         <button
           className="action-button secondary"
           type="button"
-          onClick={() =>
-            downloadTextFile(
-              `${(activeNote?.title || "note").replace(/[^\w.-]+/g, "-").toLowerCase()}.md`,
-              activeNote?.content ?? "",
-            )
-          }
+          onClick={exportActiveNote}
           disabled={!activeNote}
         >
           <Download size={15} />
-          Export .md
+          Export .md (Ctrl/Cmd+S)
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => importRef.current?.click()}
+        >
+          <Plus size={15} />
+          Import text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            if (!activeNote) return;
+            const payload = encodeBase64Url(
+              JSON.stringify({
+                title: activeNote.title,
+                content: activeNote.content,
+                tags: activeNote.tags,
+              }),
+            );
+            if (payload.length > 3500) {
+              setStatus("This note is too large for URL sharing. Export it instead.");
+              return;
+            }
+            const url = new URL(window.location.href);
+            url.searchParams.set("noteShare", payload);
+            const copied = await copyTextToClipboard(url.toString());
+            setStatus(copied ? "Shareable link copied." : "Could not copy share link.");
+          }}
+          disabled={!activeNote}
+        >
+          <Share2 size={15} />
+          Copy share link
+        </button>
+        <input
+          ref={importRef}
+          type="file"
+          hidden
+          accept=".txt,.md,text/plain,text/markdown"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              const content = await file.text();
+              const title = file.name.replace(/\.[^/.]+$/, "");
+              const imported = createNote(title || `Imported note ${notes.length + 1}`, content);
+              setNotes((current) => [imported, ...current]);
+              setActiveId(imported.id);
+              setStatus("Imported note from file.");
+            } catch {
+              setStatus("Could not import this file.");
+            } finally {
+              event.target.value = "";
+            }
+          }}
+        />
       </div>
       <ResultList
         rows={[
           { label: "Total notes", value: formatNumericValue(notes.length) },
+          { label: "Pinned notes", value: formatNumericValue(notes.filter((note) => note.pinned).length) },
           { label: "Words in active note", value: formatNumericValue(activeWordCount) },
           { label: "Characters in active note", value: formatNumericValue(activeCharCount) },
+          { label: "Estimated reading time", value: `${readingMinutes} min` },
+          { label: "Last edited", value: activeNote ? new Date(activeNote.updatedAt).toLocaleString("en-US") : "-" },
         ]}
       />
-      <p className="supporting-text">Notes stay in your browser only unless you export them.</p>
+      <p className="supporting-text">
+        Notes stay in your browser only unless you export or share them. Shortcuts: Ctrl/Cmd+B, I, K, S and Ctrl/Cmd+Shift+N.
+      </p>
     </section>
   );
 }
 
-type ResumeTemplate = "modern" | "minimal" | "compact";
+type ResumeTemplate = "modern" | "minimal" | "compact" | "executive" | "creative";
 
 interface ResumePersonalInfo {
   fullName: string;
@@ -5647,12 +6075,220 @@ function createDefaultResumeData(): ResumeData {
   };
 }
 
+interface ResumeStarterProfile {
+  id: string;
+  label: string;
+  description: string;
+  template: ResumeTemplate;
+  personal: ResumePersonalInfo;
+  skills: string[];
+  experience: Array<Omit<ResumeExperience, "id">>;
+  education: Array<Omit<ResumeEducation, "id">>;
+  links: Array<Omit<ResumeLink, "id">>;
+}
+
+const RESUME_STARTER_PROFILES: ResumeStarterProfile[] = [
+  {
+    id: "software-engineer",
+    label: "Software engineer",
+    description: "Backend/frontend impact-focused profile.",
+    template: "modern",
+    personal: {
+      fullName: "Alex Morgan",
+      headline: "Senior Software Engineer",
+      email: "alex@domain.com",
+      phone: "+1 (555) 210-3000",
+      location: "Seattle, WA",
+      website: "https://alexmorgan.dev",
+      summary:
+        "Product-oriented software engineer with 8+ years delivering scalable web platforms, performance optimizations, and high-availability services used by millions.",
+    },
+    skills: ["TypeScript", "React", "Next.js", "Node.js", "PostgreSQL", "AWS", "Redis", "Docker"],
+    experience: [
+      {
+        role: "Senior Software Engineer",
+        company: "Orbit Commerce",
+        location: "Remote",
+        startDate: "2022-01",
+        endDate: "",
+        current: true,
+        highlights:
+          "Led migration from monolith to modular services, improving deployment frequency by 3x.\nOptimized checkout APIs and cut P95 latency by 41%.\nMentored 5 engineers and established engineering quality standards.",
+      },
+      {
+        role: "Software Engineer",
+        company: "Nimbus Labs",
+        location: "Austin, TX",
+        startDate: "2018-05",
+        endDate: "2021-12",
+        current: false,
+        highlights:
+          "Built analytics dashboard used by 2,500+ business users.\nReduced cloud spend by 28% through workload and caching optimizations.\nImplemented CI/CD pipelines reducing release rollback incidents by 35%.",
+      },
+    ],
+    education: [
+      {
+        school: "University of Texas",
+        degree: "B.S.",
+        field: "Computer Science",
+        startDate: "2013-09",
+        endDate: "2017-05",
+        details: "Graduated with honors. Capstone: distributed event processing platform.",
+      },
+    ],
+    links: [
+      { label: "GitHub", url: "https://github.com/alexmorgan" },
+      { label: "LinkedIn", url: "https://linkedin.com/in/alexmorgan" },
+    ],
+  },
+  {
+    id: "product-manager",
+    label: "Product manager",
+    description: "Growth and execution-oriented product profile.",
+    template: "executive",
+    personal: {
+      fullName: "Jordan Lee",
+      headline: "Senior Product Manager",
+      email: "jordan@domain.com",
+      phone: "+1 (555) 770-1221",
+      location: "San Francisco, CA",
+      website: "https://jordanlee.pm",
+      summary:
+        "Data-driven product manager with 7+ years shipping B2B SaaS initiatives, improving activation and retention through customer insight, experimentation, and cross-functional execution.",
+    },
+    skills: ["Roadmapping", "Product Discovery", "SQL", "A/B Testing", "Analytics", "Go-to-market", "Agile", "UX Research"],
+    experience: [
+      {
+        role: "Senior Product Manager",
+        company: "Atlas Ops",
+        location: "Remote",
+        startDate: "2021-03",
+        endDate: "",
+        current: true,
+        highlights:
+          "Defined and launched onboarding redesign that increased activation by 22%.\nPrioritized and delivered enterprise permissions suite adding $1.8M ARR.\nEstablished product health dashboard used in weekly leadership reviews.",
+      },
+      {
+        role: "Product Manager",
+        company: "Metricflow",
+        location: "New York, NY",
+        startDate: "2018-01",
+        endDate: "2021-02",
+        current: false,
+        highlights:
+          "Owned reporting product line with 40k MAU.\nDrove churn reduction project lowering monthly churn from 4.1% to 2.9%.\nBuilt partner integration roadmap and delivered first 6 integrations in two quarters.",
+      },
+    ],
+    education: [
+      {
+        school: "University of Michigan",
+        degree: "B.A.",
+        field: "Economics",
+        startDate: "2011-09",
+        endDate: "2015-05",
+        details: "Minor in Computer Science.",
+      },
+    ],
+    links: [
+      { label: "LinkedIn", url: "https://linkedin.com/in/jordanlee" },
+      { label: "Portfolio", url: "https://jordanlee.pm/case-studies" },
+    ],
+  },
+  {
+    id: "ux-designer",
+    label: "UX designer",
+    description: "Research and product design profile.",
+    template: "creative",
+    personal: {
+      fullName: "Taylor Brooks",
+      headline: "Senior UX/UI Designer",
+      email: "taylor@domain.com",
+      phone: "+1 (555) 640-9302",
+      location: "Chicago, IL",
+      website: "https://taylor.design",
+      summary:
+        "UX/UI designer with 6+ years shaping intuitive B2B and consumer experiences. Strong in user research, interaction design, and design systems that improve product adoption.",
+    },
+    skills: ["Figma", "Design Systems", "Interaction Design", "UX Research", "Prototyping", "Usability Testing", "Accessibility", "Storytelling"],
+    experience: [
+      {
+        role: "Senior UX Designer",
+        company: "Northstar Health",
+        location: "Remote",
+        startDate: "2022-02",
+        endDate: "",
+        current: true,
+        highlights:
+          "Redesigned patient onboarding flow, reducing abandonment by 31%.\nBuilt cross-platform design system with 50+ reusable components.\nPartnered with engineering to improve accessibility from WCAG A to AA.",
+      },
+      {
+        role: "Product Designer",
+        company: "Beacon Suite",
+        location: "Chicago, IL",
+        startDate: "2019-06",
+        endDate: "2022-01",
+        current: false,
+        highlights:
+          "Led end-to-end design for analytics workspace used by 15k users.\nImplemented user research program and improved SUS score from 62 to 81.\nProduced interactive prototypes accelerating stakeholder alignment.",
+      },
+    ],
+    education: [
+      {
+        school: "Illinois Institute of Art",
+        degree: "BFA",
+        field: "Interaction Design",
+        startDate: "2014-09",
+        endDate: "2018-05",
+        details: "Dean's list, interaction and visual design specialization.",
+      },
+    ],
+    links: [
+      { label: "Portfolio", url: "https://taylor.design/work" },
+      { label: "LinkedIn", url: "https://linkedin.com/in/taylorbrooks" },
+    ],
+  },
+];
+
+function createResumeFromStarter(starter: ResumeStarterProfile): ResumeData {
+  return {
+    template: starter.template,
+    personal: starter.personal,
+    skills: starter.skills,
+    experience: starter.experience.map((item) => ({ ...item, id: crypto.randomUUID() })),
+    education: starter.education.map((item) => ({ ...item, id: crypto.randomUUID() })),
+    links: starter.links.map((item) => ({ ...item, id: crypto.randomUUID() })),
+  };
+}
+
+function suggestExperienceHighlights(role: string, company: string): string {
+  const safeRole = role || "core";
+  const safeCompany = company || "the organization";
+  return [
+    `Led ${safeRole.toLowerCase()} initiatives at ${safeCompany}, improving team velocity by 30%.`,
+    `Delivered a measurable project outcome that reduced cycle time by 25% and improved quality.`,
+    `Partnered cross-functionally to launch high-impact work with clear business KPIs and stakeholder alignment.`,
+  ].join("\n");
+}
+
+function generateProfessionalSummary(resume: ResumeData): string {
+  const topSkills = resume.skills.slice(0, 5).join(", ");
+  const latestExperience = resume.experience.find((item) => item.role || item.company);
+  const role = latestExperience?.role || resume.personal.headline || "professional";
+  const company = latestExperience?.company ? ` at ${latestExperience.company}` : "";
+  const skillText = topSkills ? ` with strengths in ${topSkills}` : "";
+  return `${role}${company} focused on delivering measurable outcomes${skillText}. Experienced in cross-functional execution, stakeholder communication, and turning complex goals into reliable results.`;
+}
+
 function sanitizeResumeData(raw: unknown): ResumeData | null {
   if (!raw || typeof raw !== "object") return null;
   const candidate = raw as Partial<ResumeData>;
   const defaults = createDefaultResumeData();
   const template: ResumeTemplate =
-    candidate.template === "minimal" || candidate.template === "compact" || candidate.template === "modern"
+    candidate.template === "minimal" ||
+    candidate.template === "compact" ||
+    candidate.template === "modern" ||
+    candidate.template === "executive" ||
+    candidate.template === "creative"
       ? candidate.template
       : defaults.template;
 
@@ -5926,6 +6562,38 @@ function ResumeBuilderTool() {
     return jobKeywords.filter((item) => resumeSet.has(item));
   }, [jobKeywords, resumeKeywords]);
   const coveragePercent = jobKeywords.length ? (matchedKeywords.length / jobKeywords.length) * 100 : 0;
+  const missingKeywords = useMemo(() => {
+    const matched = new Set(matchedKeywords);
+    return jobKeywords.filter((keyword) => !matched.has(keyword));
+  }, [jobKeywords, matchedKeywords]);
+
+  const resumeScoreChecks = useMemo(
+    () => [
+      {
+        label: "Header details",
+        ok: Boolean(
+          resume.personal.fullName.trim() &&
+            resume.personal.headline.trim() &&
+            (resume.personal.email.trim() || resume.personal.phone.trim()),
+        ),
+      },
+      { label: "Summary quality", ok: resume.personal.summary.trim().length >= 80 },
+      { label: "Skills depth", ok: resume.skills.length >= 6 },
+      {
+        label: "Experience coverage",
+        ok:
+          resume.experience.filter((item) => item.role.trim() || item.company.trim()).length >= 2 &&
+          resume.experience.some((item) => item.highlights.trim().split(/\r?\n/).filter(Boolean).length >= 2),
+      },
+      { label: "Education", ok: resume.education.some((item) => item.school.trim() || item.degree.trim()) },
+      { label: "Portfolio links", ok: resume.links.some((item) => item.url.trim()) },
+    ],
+    [resume],
+  );
+  const resumeQualityScore = useMemo(() => {
+    const passed = resumeScoreChecks.filter((item) => item.ok).length;
+    return Math.round((passed / resumeScoreChecks.length) * 100);
+  }, [resumeScoreChecks]);
 
   const printResume = () => {
     const opened = openPrintWindow(
@@ -5946,6 +6614,11 @@ function ResumeBuilderTool() {
       ul { margin: 6px 0 0; padding-left: 18px; }
       .resume-template-compact .entry-head { display: block; }
       .resume-template-minimal h2 { text-transform: none; letter-spacing: 0; }
+      .resume-template-executive .resume-header { border-bottom: 2px solid #1f3347; }
+      .resume-template-executive h2 { color: #1f3347; }
+      .resume-template-creative .resume-header { border-bottom: 2px solid #236f6a; }
+      .resume-template-creative h2 { color: #236f6a; }
+      .resume-template-creative .pill { border-color: #236f6a; color: #236f6a; }
       `,
     );
     if (!opened) {
@@ -5969,6 +6642,8 @@ function ResumeBuilderTool() {
           { id: "modern", label: "Modern" },
           { id: "minimal", label: "Minimal" },
           { id: "compact", label: "Compact" },
+          { id: "executive", label: "Executive" },
+          { id: "creative", label: "Creative" },
         ].map((option) => (
           <button
             key={option.id}
@@ -5978,6 +6653,23 @@ function ResumeBuilderTool() {
             aria-pressed={resume.template === option.id}
           >
             {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="preset-row">
+        <span className="supporting-text">Starter profiles:</span>
+        {RESUME_STARTER_PROFILES.map((starter) => (
+          <button
+            key={starter.id}
+            className="chip-button"
+            type="button"
+            onClick={() => {
+              setResume(createResumeFromStarter(starter));
+              setStatus(`Loaded ${starter.label} starter profile.`);
+            }}
+            title={starter.description}
+          >
+            {starter.label}
           </button>
         ))}
       </div>
@@ -6055,6 +6747,36 @@ function ResumeBuilderTool() {
             <span>Summary</span>
             <textarea rows={4} value={resume.personal.summary} onChange={(event) => updatePersonal("summary", event.target.value)} />
           </label>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                const generated = generateProfessionalSummary(resume);
+                updatePersonal("summary", generated);
+                setStatus("Generated a professional summary from your current profile.");
+              }}
+            >
+              <Sparkles size={15} />
+              Generate summary
+            </button>
+          </div>
+          <div className="mini-panel">
+            <h3>Resume quality score</h3>
+            <div className="progress-panel" aria-hidden>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${resumeQualityScore}%` }} />
+              </div>
+            </div>
+            <p className="supporting-text">Current score: {resumeQualityScore}%</p>
+            <div className="chip-list">
+              {resumeScoreChecks.map((check) => (
+                <span key={check.label} className={`status-badge ${check.ok ? "ok" : "warn"}`}>
+                  {check.ok ? "Done" : "Needs work"} - {check.label}
+                </span>
+              ))}
+            </div>
+          </div>
           <div className="mini-panel">
             <h3>Skills</h3>
             <div className="button-row">
@@ -6176,6 +6898,20 @@ function ResumeBuilderTool() {
                   <span>Highlights (one bullet per line)</span>
                   <textarea rows={4} value={item.highlights} onChange={(event) => updateExperience(item.id, { highlights: event.target.value })} />
                 </label>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() =>
+                      updateExperience(item.id, {
+                        highlights: suggestExperienceHighlights(item.role, item.company),
+                      })
+                    }
+                  >
+                    <Sparkles size={15} />
+                    Suggest bullets
+                  </button>
+                </div>
                 <button
                   className="icon-button"
                   type="button"
@@ -6333,6 +7069,22 @@ function ResumeBuilderTool() {
                 { label: "Coverage", value: `${coveragePercent.toFixed(1)}%` },
               ]}
             />
+            {jobKeywords.length > 0 ? (
+              <>
+                <p className="supporting-text">
+                  Missing keywords to consider: {missingKeywords.length ? missingKeywords.length : 0}
+                </p>
+                <div className="chip-list">
+                  {missingKeywords.slice(0, 15).map((keyword) => (
+                    <span key={keyword} className="status-badge warn">
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="supporting-text">Add a job description to benchmark keyword coverage.</p>
+            )}
           </div>
         </div>
         <aside className={`resume-preview resume-template-${resume.template}`}>
@@ -6434,6 +7186,7 @@ function ResumeBuilderTool() {
                 ),
               },
               { label: "Skills", value: formatNumericValue(resume.skills.length) },
+              { label: "Quality score", value: `${resumeQualityScore}%` },
               {
                 label: "ATS match",
                 value: jobKeywords.length ? `${coveragePercent.toFixed(1)}%` : "Add target role",

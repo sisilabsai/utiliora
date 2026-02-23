@@ -719,9 +719,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "notes-pad",
     category: "productivity-tools",
     title: "Notes Pad",
-    summary: "Multi-note workspace with autosave, search, markdown preview, and export.",
+    summary: "Modern markdown notes with shortcuts, templates, sharing links, and local autosave.",
     description:
-      "Capture ideas, technical snippets, and work notes with local autosave, quick organization, and export options.",
+      "Capture ideas and work docs with markdown formatting tools, keyboard shortcuts, tagging, pinning, previews, import/export, and link-based sharing.",
     keywords: ["notes pad", "online notes", "quick note app"],
     engine: { kind: "productivity-tool", id: "notes-pad" },
     faq: baseFaq("Notes Pad"),
@@ -730,9 +730,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "resume-builder",
     category: "productivity-tools",
     title: "Resume Builder",
-    summary: "Build modern resumes with templates, structured sections, and print-to-PDF export.",
+    summary: "Build ATS-friendly resumes with advanced templates, starter profiles, and PDF-ready output.",
     description:
-      "Create a polished resume with editable personal details, skills, experience, and education sections in multiple templates.",
+      "Create polished resumes with role-based starter templates, smart summary and bullet suggestions, keyword alignment checks, and print-to-PDF export.",
     keywords: ["resume builder", "cv builder", "resume template", "resume pdf"],
     engine: { kind: "productivity-tool", id: "resume-builder" },
     faq: baseFaq("Resume Builder"),
