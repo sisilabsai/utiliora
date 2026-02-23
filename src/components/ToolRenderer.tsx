@@ -683,6 +683,128 @@ function downloadDataUrl(filename: string, dataUrl: string): void {
   document.body.removeChild(anchor);
 }
 
+interface ImageWorkflowHandoffPayload {
+  sourceToolId: ImageToolId;
+  targetToolId: ImageToolId;
+  fileName: string;
+  mimeType: string;
+  dataUrl: string;
+  createdAt: number;
+}
+
+interface ImageWorkflowIncomingFile {
+  token: string;
+  sourceToolId: ImageToolId;
+  file: File;
+}
+
+const IMAGE_WORKFLOW_STORAGE_KEY = "utiliora-image-workflow-handoff-v1";
+const IMAGE_WORKFLOW_MAX_AGE_MS = 20 * 60 * 1000;
+
+const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
+  "qr-code-generator": "qr-code-generator",
+  "color-picker": "color-picker",
+  "hex-rgb-converter": "hex-rgb-converter",
+  "image-resizer": "image-resizer",
+  "image-compressor": "image-compressor",
+  "jpg-to-png": "jpg-to-png-converter",
+  "png-to-webp": "png-to-webp-converter",
+  "image-cropper": "image-cropper",
+  "barcode-generator": "barcode-generator",
+  "image-to-pdf": "image-to-pdf-converter",
+  "pdf-to-jpg": "pdf-to-jpg-converter",
+};
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Failed to encode file."));
+      }
+    };
+    reader.onerror = () => reject(new Error("Failed to encode file."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function dataUrlToFile(dataUrl: string, fileName: string, fallbackMimeType = "image/png"): File | null {
+  const parts = dataUrl.split(",");
+  if (parts.length < 2) return null;
+  const meta = parts[0];
+  const base64 = parts[1];
+  const mimeMatch = /data:([^;]+);base64/.exec(meta);
+  const mimeType = mimeMatch?.[1] ?? fallbackMimeType;
+
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new File([bytes], fileName, { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
+async function handoffImageResultToTool(options: {
+  sourceToolId: ImageToolId;
+  targetToolId: ImageToolId;
+  fileName: string;
+  mimeType: string;
+  sourceUrl: string;
+}): Promise<boolean> {
+  if (typeof window === "undefined" || typeof sessionStorage === "undefined") return false;
+  try {
+    const response = await fetch(options.sourceUrl);
+    const blob = await response.blob();
+    const dataUrl = await blobToDataUrl(blob);
+    const payload: ImageWorkflowHandoffPayload = {
+      sourceToolId: options.sourceToolId,
+      targetToolId: options.targetToolId,
+      fileName: options.fileName,
+      mimeType: options.mimeType || blob.type || "image/png",
+      dataUrl,
+      createdAt: Date.now(),
+    };
+    sessionStorage.setItem(IMAGE_WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
+    window.location.assign(`/image-tools/${IMAGE_TOOL_ROUTE_SLUGS[options.targetToolId]}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function consumeImageWorkflowHandoff(targetToolId: ImageToolId): ImageWorkflowIncomingFile | null {
+  if (typeof window === "undefined" || typeof sessionStorage === "undefined") return null;
+  const raw = sessionStorage.getItem(IMAGE_WORKFLOW_STORAGE_KEY);
+  if (!raw) return null;
+
+  let parsed: ImageWorkflowHandoffPayload;
+  try {
+    parsed = JSON.parse(raw) as ImageWorkflowHandoffPayload;
+  } catch {
+    sessionStorage.removeItem(IMAGE_WORKFLOW_STORAGE_KEY);
+    return null;
+  }
+
+  if (parsed.targetToolId !== targetToolId) return null;
+  sessionStorage.removeItem(IMAGE_WORKFLOW_STORAGE_KEY);
+  if (!parsed.createdAt || Date.now() - parsed.createdAt > IMAGE_WORKFLOW_MAX_AGE_MS) return null;
+
+  const file = dataUrlToFile(parsed.dataUrl, parsed.fileName, parsed.mimeType);
+  if (!file) return null;
+
+  return {
+    token: `${parsed.targetToolId}-${parsed.createdAt}-${parsed.fileName}`,
+    sourceToolId: parsed.sourceToolId,
+    file,
+  };
+}
+
 function encodeBase64Url(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
@@ -6004,6 +6126,32 @@ const IMAGE_MODE_CONFIG: Record<ImageMode, ImageModeConfig> = {
   },
 };
 
+const IMAGE_WORKFLOW_SUGGESTIONS_BY_MODE: Record<
+  ImageMode,
+  Array<{ targetToolId: ImageToolId; label: string }>
+> = {
+  resize: [
+    { targetToolId: "image-compressor", label: "Send to compressor" },
+    { targetToolId: "png-to-webp", label: "Send to PNG -> WebP" },
+    { targetToolId: "image-to-pdf", label: "Send to Image -> PDF" },
+  ],
+  compress: [
+    { targetToolId: "png-to-webp", label: "Send to PNG -> WebP" },
+    { targetToolId: "image-to-pdf", label: "Send to Image -> PDF" },
+    { targetToolId: "image-cropper", label: "Send to cropper" },
+  ],
+  "jpg-to-png": [
+    { targetToolId: "png-to-webp", label: "Send to PNG -> WebP" },
+    { targetToolId: "image-cropper", label: "Send to cropper" },
+    { targetToolId: "image-to-pdf", label: "Send to Image -> PDF" },
+  ],
+  "png-to-webp": [
+    { targetToolId: "image-compressor", label: "Send to compressor" },
+    { targetToolId: "image-cropper", label: "Send to cropper" },
+    { targetToolId: "image-to-pdf", label: "Send to Image -> PDF" },
+  ],
+};
+
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -6047,7 +6195,13 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-function ImageTransformTool({ mode }: { mode: ImageMode }) {
+function ImageTransformTool({
+  mode,
+  incomingFile,
+}: {
+  mode: ImageMode;
+  incomingFile?: ImageWorkflowIncomingFile | null;
+}) {
   const config = IMAGE_MODE_CONFIG[mode];
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
@@ -6064,6 +6218,7 @@ function ImageTransformTool({ mode }: { mode: ImageMode }) {
   const sourceUrlRef = useRef("");
   const resultUrlRef = useRef("");
   const processingRunRef = useRef(0);
+  const incomingTokenRef = useRef("");
 
   const resolvedOutputMimeType: OutputMimeType = useMemo(() => {
     if (config.fixedOutput) return config.fixedOutput;
@@ -6173,6 +6328,13 @@ function ImageTransformTool({ mode }: { mode: ImageMode }) {
     [clearOutput, mode, resetAll],
   );
 
+  useEffect(() => {
+    if (!incomingFile || incomingTokenRef.current === incomingFile.token) return;
+    incomingTokenRef.current = incomingFile.token;
+    setStatus(`Workflow handoff received from ${incomingFile.sourceToolId}.`);
+    void handleSelectedFile(incomingFile.file);
+  }, [handleSelectedFile, incomingFile]);
+
   const processImage = useCallback(
     async (trigger: "manual" | "auto") => {
       if (!file || !sourceDetails || !sourceUrl) {
@@ -6273,6 +6435,43 @@ function ImageTransformTool({ mode }: { mode: ImageMode }) {
     }, 140);
     return () => clearTimeout(timeout);
   }, [autoPreview, file, processImage, quality, sourceDetails, targetWidth, outputChoice]);
+
+  const sendToWorkflowTool = useCallback(
+    async (targetToolId: ImageToolId) => {
+      if (!resultDetails) return;
+      setStatus(`Sending output to ${targetToolId}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId:
+          mode === "resize"
+            ? "image-resizer"
+            : mode === "compress"
+              ? "image-compressor"
+              : mode === "jpg-to-png"
+                ? "jpg-to-png"
+                : "png-to-webp",
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+      });
+      if (!ok) {
+        setStatus("Could not hand off this output to the next tool.");
+      } else {
+        trackEvent("tool_workflow_handoff", { sourceMode: mode, targetToolId });
+      }
+    },
+    [mode, resultDetails],
+  );
+
+  const canSendToWorkflowTool = useCallback(
+    (targetToolId: ImageToolId): boolean => {
+      if (!resultDetails) return false;
+      if (targetToolId === "png-to-webp") return resultDetails.mimeType === "image/png";
+      if (targetToolId === "jpg-to-png") return resultDetails.mimeType === "image/jpeg";
+      return true;
+    },
+    [resultDetails],
+  );
 
   return (
     <section className="tool-surface">
@@ -6458,9 +6657,26 @@ function ImageTransformTool({ mode }: { mode: ImageMode }) {
       {comparisonText ? <p className="supporting-text image-summary">{comparisonText}</p> : null}
 
       {resultDetails ? (
-        <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
-          Download {labelForMimeType(resultDetails.mimeType)}
-        </a>
+        <>
+          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+            Download {labelForMimeType(resultDetails.mimeType)}
+          </a>
+          <div className="button-row">
+            {IMAGE_WORKFLOW_SUGGESTIONS_BY_MODE[mode].map((suggestion) => (
+              <button
+                key={suggestion.targetToolId}
+                className="action-button secondary"
+                type="button"
+                disabled={processing || !canSendToWorkflowTool(suggestion.targetToolId)}
+                onClick={() => {
+                  void sendToWorkflowTool(suggestion.targetToolId);
+                }}
+              >
+                {suggestion.label}
+              </button>
+            ))}
+          </div>
+        </>
       ) : null}
     </section>
   );
@@ -6529,7 +6745,7 @@ function createCenteredCrop(details: ImageDetails, aspectRatio: number | null, f
   return clampCropRect({ x, y, width, height }, details);
 }
 
-function ImageCropperTool() {
+function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
@@ -6548,6 +6764,7 @@ function ImageCropperTool() {
   const resultUrlRef = useRef("");
   const runIdRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const incomingTokenRef = useRef("");
 
   const lossyOutput = outputMimeType === "image/jpeg" || outputMimeType === "image/webp";
 
@@ -6613,6 +6830,13 @@ function ImageCropperTool() {
     [aspectPreset, clearOutput],
   );
 
+  useEffect(() => {
+    if (!incomingFile || incomingTokenRef.current === incomingFile.token) return;
+    incomingTokenRef.current = incomingFile.token;
+    setStatus(`Workflow handoff received from ${incomingFile.sourceToolId}.`);
+    void handleFile(incomingFile.file);
+  }, [handleFile, incomingFile]);
+
   const processCrop = useCallback(
     async (trigger: "manual" | "auto") => {
       if (!file || !sourceDetails || !sourceUrl) return;
@@ -6672,6 +6896,26 @@ function ImageCropperTool() {
     return () => clearTimeout(timeout);
   }, [autoPreview, crop, file, outputMimeType, processCrop, quality, scalePercent, sourceDetails]);
 
+  const sendToWorkflowTool = useCallback(
+    async (targetToolId: ImageToolId) => {
+      if (!resultDetails) return;
+      setStatus(`Sending output to ${targetToolId}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId: "image-cropper",
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+      });
+      if (!ok) {
+        setStatus("Could not hand off this output to the next tool.");
+      } else {
+        trackEvent("tool_workflow_handoff", { sourceMode: "image-cropper", targetToolId });
+      }
+    },
+    [resultDetails],
+  );
+
   return (
     <section className="tool-surface">
       <ToolHeading icon={MonitorUp} title="Image cropper" subtitle="Crop with ratio presets, precision controls, scaling, and instant downloads." />
@@ -6712,7 +6956,24 @@ function ImageCropperTool() {
         <article className="image-card"><h3>Original</h3><div className="image-frame">{sourceUrl ? <NextImage src={sourceUrl} alt="Original crop source" width={sourceDetails?.width ?? 800} height={sourceDetails?.height ?? 600} style={{ width: "100%", height: "100%", objectFit: "contain" }} unoptimized /> : <p className="image-placeholder">Upload an image first.</p>}</div></article>
         <article className="image-card"><h3>Cropped</h3><div className="image-frame">{resultDetails ? <NextImage src={resultDetails.url} alt="Cropped output preview" width={resultDetails.width} height={resultDetails.height} style={{ width: "100%", height: "100%", objectFit: "contain" }} unoptimized /> : <p className="image-placeholder">Crop output appears here.</p>}</div></article>
       </div>
-      {resultDetails ? <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>Download cropped {labelForMimeType(resultDetails.mimeType)}</a> : null}
+      {resultDetails ? (
+        <>
+          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+            Download cropped {labelForMimeType(resultDetails.mimeType)}
+          </a>
+          <div className="button-row">
+            <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("image-compressor")} disabled={processing}>
+              Send to compressor
+            </button>
+            <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("png-to-webp")} disabled={processing || resultDetails?.mimeType !== "image/png"}>
+              Send to PNG -&gt; WebP
+            </button>
+            <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("image-to-pdf")} disabled={processing}>
+              Send to Image -&gt; PDF
+            </button>
+          </div>
+        </>
+      ) : null}
     </section>
   );
 }
@@ -7098,7 +7359,7 @@ async function loadPdfJsModule(): Promise<PdfJsModule> {
   return pdfJsModule;
 }
 
-function ImageToPdfTool() {
+function ImageToPdfTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
   const [items, setItems] = useState<ImageToPdfItem[]>([]);
   const [pdfName, setPdfName] = useState("utiliora-images");
   const [pagePreset, setPagePreset] = useState<PdfPageSizePreset>("a4");
@@ -7113,6 +7374,7 @@ function ImageToPdfTool() {
   const [lastGeneratedPages, setLastGeneratedPages] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsRef = useRef<ImageToPdfItem[]>([]);
+  const incomingTokenRef = useRef("");
 
   useEffect(() => {
     itemsRef.current = items;
@@ -7124,10 +7386,9 @@ function ImageToPdfTool() {
     };
   }, []);
 
-  const handleSelectedFiles = useCallback(async (list: FileList | null) => {
-    if (!list?.length) return;
-
-    const candidates = Array.from(list).filter((file) => file.type.startsWith("image/"));
+  const addFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    const candidates = files.filter((file) => file.type.startsWith("image/"));
     if (!candidates.length) {
       setStatus("Please select image files only.");
       return;
@@ -7162,6 +7423,21 @@ function ImageToPdfTool() {
     setStatus(`Loaded ${nextItems.length} image${nextItems.length > 1 ? "s" : ""}.`);
     trackEvent("tool_image_to_pdf_upload", { count: nextItems.length });
   }, []);
+
+  const handleSelectedFiles = useCallback(
+    async (list: FileList | null) => {
+      if (!list?.length) return;
+      await addFiles(Array.from(list));
+    },
+    [addFiles],
+  );
+
+  useEffect(() => {
+    if (!incomingFile || incomingTokenRef.current === incomingFile.token) return;
+    incomingTokenRef.current = incomingFile.token;
+    setStatus(`Workflow handoff received from ${incomingFile.sourceToolId}.`);
+    void addFiles([incomingFile.file]);
+  }, [addFiles, incomingFile]);
 
   const clearAll = useCallback(() => {
     setItems((previous) => {
@@ -7639,6 +7915,26 @@ function PdfToJpgTool() {
     });
   }, [pages, pdfName]);
 
+  const sendPageToWorkflowTool = useCallback(
+    async (page: PdfJpgPagePreview, targetToolId: ImageToolId) => {
+      const baseName = stripFileExtension(pdfName.trim()) || "document";
+      setStatus(`Sending page ${page.pageNumber} to ${targetToolId}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId: "pdf-to-jpg",
+        targetToolId,
+        fileName: `${baseName}-page-${page.pageNumber}.jpg`,
+        mimeType: "image/jpeg",
+        sourceUrl: page.dataUrl,
+      });
+      if (!ok) {
+        setStatus("Could not hand off selected page.");
+      } else {
+        trackEvent("tool_workflow_handoff", { sourceMode: "pdf-to-jpg", targetToolId });
+      }
+    },
+    [pdfName],
+  );
+
   return (
     <section className="tool-surface">
       <ToolHeading
@@ -7799,6 +8095,16 @@ function PdfToJpgTool() {
                 <Download size={15} />
                 Download page
               </button>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => {
+                  void sendPageToWorkflowTool(page, "image-cropper");
+                }}
+                disabled={processing}
+              >
+                Send to cropper
+              </button>
             </article>
           ))}
         </div>
@@ -7808,6 +8114,13 @@ function PdfToJpgTool() {
 }
 
 function ImageTool({ id }: { id: ImageToolId }) {
+  const [incomingFile, setIncomingFile] = useState<ImageWorkflowIncomingFile | null>(null);
+
+  useEffect(() => {
+    const handoff = consumeImageWorkflowHandoff(id);
+    setIncomingFile(handoff);
+  }, [id]);
+
   switch (id) {
     case "qr-code-generator":
       return <QrCodeGeneratorTool />;
@@ -7816,19 +8129,19 @@ function ImageTool({ id }: { id: ImageToolId }) {
     case "hex-rgb-converter":
       return <HexRgbConverterTool />;
     case "image-resizer":
-      return <ImageTransformTool mode="resize" />;
+      return <ImageTransformTool mode="resize" incomingFile={incomingFile} />;
     case "image-compressor":
-      return <ImageTransformTool mode="compress" />;
+      return <ImageTransformTool mode="compress" incomingFile={incomingFile} />;
     case "jpg-to-png":
-      return <ImageTransformTool mode="jpg-to-png" />;
+      return <ImageTransformTool mode="jpg-to-png" incomingFile={incomingFile} />;
     case "png-to-webp":
-      return <ImageTransformTool mode="png-to-webp" />;
+      return <ImageTransformTool mode="png-to-webp" incomingFile={incomingFile} />;
     case "image-cropper":
-      return <ImageCropperTool />;
+      return <ImageCropperTool incomingFile={incomingFile} />;
     case "barcode-generator":
       return <BarcodeGeneratorTool />;
     case "image-to-pdf":
-      return <ImageToPdfTool />;
+      return <ImageToPdfTool incomingFile={incomingFile} />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

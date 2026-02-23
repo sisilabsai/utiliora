@@ -131,3 +131,4 @@ Status: `Planned`
 - Shipped `Barcode Generator` with multi-format support (CODE128/CODE39/EAN/UPC/ITF), batch values, styling controls, and CSV/PNG export.
 - Shipped `Image to PDF Converter` with multi-image ordering, page size modes (A4/Letter/Legal/fit), margin and quality controls, and direct PDF download.
 - Shipped `PDF to JPG Converter` with page-range parsing, scale/quality tuning, per-page previews, and single/all-page JPG download.
+- Started `Workflow Chaining` with image handoff between tools (resize/compress/convert/crop/pdf) using one-click "Send to next tool" actions.
