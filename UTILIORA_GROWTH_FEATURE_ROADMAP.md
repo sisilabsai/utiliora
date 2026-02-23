@@ -132,3 +132,5 @@ Status: `Planned`
 - Shipped `Image to PDF Converter` with multi-image ordering, page size modes (A4/Letter/Legal/fit), margin and quality controls, and direct PDF download.
 - Shipped `PDF to JPG Converter` with page-range parsing, scale/quality tuning, per-page previews, and single/all-page JPG download.
 - Started `Workflow Chaining` with image handoff between tools (resize/compress/convert/crop/pdf) using one-click "Send to next tool" actions.
+- Shipped `Structured Data Validator` for JSON-LD/schema checks with required-field warnings, block-level issue reports, and formatted export.
+- Shipped `Internal Link Map Helper` to parse HTML anchors, classify internal vs external links, and export internal-link CSV maps.

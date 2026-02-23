@@ -80,6 +80,8 @@ export type TextToolId =
   | "json-formatter"
   | "xml-sitemap-generator"
   | "robots-txt-generator"
+  | "structured-data-validator"
+  | "internal-link-map-helper"
   | "css-minifier"
   | "js-minifier"
   | "base64-encoder-decoder"

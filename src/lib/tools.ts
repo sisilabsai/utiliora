@@ -505,6 +505,28 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Robots.txt Generator"),
   },
   {
+    slug: "structured-data-validator",
+    category: "seo-tools",
+    title: "Structured Data Validator",
+    summary: "Validate JSON-LD schema markup with targeted SEO issue checks.",
+    description:
+      "Paste JSON-LD or script tags to validate schema.org structure, detect missing required fields, and export cleaned markup.",
+    keywords: ["structured data validator", "json-ld validator", "schema markup checker"],
+    engine: { kind: "text-tool", id: "structured-data-validator" },
+    faq: baseFaq("Structured Data Validator"),
+  },
+  {
+    slug: "internal-link-map-helper",
+    category: "seo-tools",
+    title: "Internal Link Map Helper",
+    summary: "Extract and analyze internal/external links from page HTML.",
+    description:
+      "Parse anchor links, classify internal vs external URLs, detect duplicates, and export internal-link maps for SEO audits.",
+    keywords: ["internal link checker", "link map tool", "seo internal links"],
+    engine: { kind: "text-tool", id: "internal-link-map-helper" },
+    faq: baseFaq("Internal Link Map Helper"),
+  },
+  {
     slug: "css-minifier",
     category: "seo-tools",
     title: "CSS Minifier",

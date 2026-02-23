@@ -3057,6 +3057,470 @@ function RobotsTxtGeneratorTool() {
   );
 }
 
+type SchemaIssueSeverity = "error" | "warning";
+
+interface SchemaIssue {
+  severity: SchemaIssueSeverity;
+  message: string;
+  path?: string;
+}
+
+interface StructuredDataBlockAnalysis {
+  index: number;
+  raw: string;
+  pretty: string;
+  issues: SchemaIssue[];
+  typeSummary: string;
+  nodeCount: number;
+}
+
+const REQUIRED_SCHEMA_FIELDS: Record<string, string[]> = {
+  Article: ["headline", "datePublished", "author"],
+  BlogPosting: ["headline", "datePublished", "author"],
+  Product: ["name", "offers"],
+  FAQPage: ["mainEntity"],
+  HowTo: ["name", "step"],
+  LocalBusiness: ["name", "address"],
+  Organization: ["name", "url"],
+  Event: ["name", "startDate", "location"],
+  Recipe: ["name", "recipeIngredient", "recipeInstructions"],
+  BreadcrumbList: ["itemListElement"],
+};
+
+function extractJsonLdSegments(input: string): string[] {
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+
+  const scriptMatches = [...trimmed.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean);
+  if (scriptMatches.length) return scriptMatches;
+
+  return trimmed
+    .split(/\n-{3,}\n/g)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function getSchemaTypes(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  const node = value as Record<string, unknown>;
+  const typeValue = node["@type"];
+  if (typeof typeValue === "string" && typeValue.trim()) return [typeValue.trim()];
+  if (Array.isArray(typeValue)) {
+    return typeValue.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  }
+  return [];
+}
+
+function hasFieldValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+function normalizePath(path: string, segment: string): string {
+  return path === "$" ? `$.${segment}` : `${path}.${segment}`;
+}
+
+function collectSchemaIssues(node: unknown, path: string): SchemaIssue[] {
+  const issues: SchemaIssue[] = [];
+  if (!node || typeof node !== "object") {
+    issues.push({ severity: "error", message: "Schema node must be an object.", path });
+    return issues;
+  }
+
+  const record = node as Record<string, unknown>;
+  const contextValue = record["@context"];
+  const typeList = getSchemaTypes(record);
+  if (!contextValue) {
+    issues.push({ severity: "warning", message: "Missing @context.", path: normalizePath(path, "@context") });
+  } else if (typeof contextValue === "string" && !contextValue.includes("schema.org")) {
+    issues.push({
+      severity: "warning",
+      message: "Use a schema.org @context URL.",
+      path: normalizePath(path, "@context"),
+    });
+  }
+
+  if (!typeList.length) {
+    issues.push({ severity: "error", message: "Missing @type.", path: normalizePath(path, "@type") });
+  }
+
+  typeList.forEach((schemaType) => {
+    const requiredFields = REQUIRED_SCHEMA_FIELDS[schemaType] ?? [];
+    requiredFields.forEach((field) => {
+      if (!hasFieldValue(record[field])) {
+        issues.push({
+          severity: "warning",
+          message: `Recommended field "${field}" is missing for ${schemaType}.`,
+          path: normalizePath(path, field),
+        });
+      }
+    });
+  });
+
+  const urlFieldCandidates = ["url", "sameAs", "image", "logo"];
+  urlFieldCandidates.forEach((field) => {
+    const value = record[field];
+    if (typeof value === "string" && value.trim() && !/^https?:\/\//i.test(value.trim())) {
+      issues.push({
+        severity: "warning",
+        message: `Field "${field}" should usually be an absolute URL.`,
+        path: normalizePath(path, field),
+      });
+    }
+  });
+
+  return issues;
+}
+
+function analyzeStructuredDataInput(input: string): {
+  blocks: StructuredDataBlockAnalysis[];
+  totalErrors: number;
+  totalWarnings: number;
+  totalNodes: number;
+} {
+  const segments = extractJsonLdSegments(input);
+  const blocks: StructuredDataBlockAnalysis[] = segments.map((segment, index) => {
+    try {
+      const parsed = JSON.parse(segment) as unknown;
+      const nodes: unknown[] = [];
+      if (Array.isArray(parsed)) {
+        nodes.push(...parsed);
+      } else if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>)["@graph"])) {
+        nodes.push(...((parsed as Record<string, unknown>)["@graph"] as unknown[]));
+      } else {
+        nodes.push(parsed);
+      }
+
+      const issues = nodes.flatMap((node, nodeIndex) => collectSchemaIssues(node, nodes.length > 1 ? `$[${nodeIndex}]` : "$"));
+      const typeSummary = nodes
+        .flatMap((node) => getSchemaTypes(node))
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(", ");
+
+      return {
+        index: index + 1,
+        raw: segment,
+        pretty: JSON.stringify(parsed, null, 2),
+        issues,
+        typeSummary: typeSummary || "Unknown type",
+        nodeCount: Math.max(1, nodes.length),
+      } satisfies StructuredDataBlockAnalysis;
+    } catch (error) {
+      return {
+        index: index + 1,
+        raw: segment,
+        pretty: segment,
+        issues: [
+          {
+            severity: "error",
+            message: error instanceof Error ? error.message : "Invalid JSON.",
+            path: "$",
+          },
+        ],
+        typeSummary: "Invalid JSON",
+        nodeCount: 0,
+      } satisfies StructuredDataBlockAnalysis;
+    }
+  });
+
+  const totalErrors = blocks.reduce(
+    (sum, block) => sum + block.issues.filter((issue) => issue.severity === "error").length,
+    0,
+  );
+  const totalWarnings = blocks.reduce(
+    (sum, block) => sum + block.issues.filter((issue) => issue.severity === "warning").length,
+    0,
+  );
+  const totalNodes = blocks.reduce((sum, block) => sum + block.nodeCount, 0);
+
+  return { blocks, totalErrors, totalWarnings, totalNodes };
+}
+
+function StructuredDataValidatorTool() {
+  const [input, setInput] = useState(`{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Utiliora launches new SEO toolkit",
+  "datePublished": "2026-02-23",
+  "author": {
+    "@type": "Person",
+    "name": "Utiliora Team"
+  },
+  "url": "https://utiliora.com/blog/seo-toolkit"
+}`);
+  const [copyStatus, setCopyStatus] = useState("");
+  const analysis = useMemo(() => analyzeStructuredDataInput(input), [input]);
+
+  const mergedPrettyOutput = useMemo(
+    () => analysis.blocks.map((block) => block.pretty).join("\n\n"),
+    [analysis.blocks],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Braces}
+        title="Structured data validator"
+        subtitle="Validate JSON-LD schema blocks, detect issues, and export clean markup for SEO pages."
+      />
+      <label className="field">
+        <span>JSON-LD or script tags</span>
+        <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={12} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(mergedPrettyOutput);
+            setCopyStatus(ok ? "Validated markup copied." : "Nothing to copy.");
+            if (ok) {
+              trackEvent("tool_structured_data_copy", {
+                blocks: analysis.blocks.length,
+                errors: analysis.totalErrors,
+                warnings: analysis.totalWarnings,
+              });
+            }
+          }}
+        >
+          <Copy size={15} />
+          Copy formatted output
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("structured-data.json", mergedPrettyOutput, "application/json;charset=utf-8;");
+            trackEvent("tool_structured_data_download", { blocks: analysis.blocks.length });
+          }}
+        >
+          <Download size={15} />
+          Download JSON
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Blocks detected", value: formatNumericValue(analysis.blocks.length) },
+          { label: "Schema nodes", value: formatNumericValue(analysis.totalNodes) },
+          { label: "Errors", value: formatNumericValue(analysis.totalErrors) },
+          { label: "Warnings", value: formatNumericValue(analysis.totalWarnings) },
+        ]}
+      />
+      {analysis.blocks.length ? (
+        <div className="mini-panel">
+          <h3>Validation details</h3>
+          <ul className="plain-list">
+            {analysis.blocks.map((block) => (
+              <li key={block.index}>
+                <strong>Block {block.index}</strong>: {block.typeSummary} ({block.issues.length} issue
+                {block.issues.length === 1 ? "" : "s"})
+                {block.issues.length ? (
+                  <ul className="plain-list">
+                    {block.issues.slice(0, 8).map((issue, issueIndex) => (
+                      <li key={`${block.index}-${issueIndex}`}>
+                        [{issue.severity}] {issue.message}
+                        {issue.path ? ` (${issue.path})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="supporting-text">No issues found in this block.</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="supporting-text">Paste JSON-LD to begin validation.</p>
+      )}
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+    </section>
+  );
+}
+
+interface LinkMapEntry {
+  href: string;
+  resolvedUrl: string;
+  anchorText: string;
+  internal: boolean;
+}
+
+function extractAnchorLinksFromHtml(html: string): Array<{ href: string; anchorText: string }> {
+  const matches = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  return matches.map((match) => ({
+    href: (match[1] ?? "").trim(),
+    anchorText: (match[2] ?? "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  }));
+}
+
+function InternalLinkMapHelperTool() {
+  const [sourceUrl, setSourceUrl] = useState("https://utiliora.com/blog/seo-checklist");
+  const [html, setHtml] = useState(`<p>Read the <a href="/tools">tool index</a> and <a href="/seo-tools/structured-data-validator">schema validator</a>. Visit <a href="https://schema.org">Schema.org</a> too.</p>`);
+  const [status, setStatus] = useState("");
+
+  const analysis = useMemo(() => {
+    const links = extractAnchorLinksFromHtml(html);
+    if (!links.length) {
+      return {
+        entries: [] as LinkMapEntry[],
+        invalid: [] as string[],
+        internalCount: 0,
+        externalCount: 0,
+      };
+    }
+
+    let base: URL | null = null;
+    try {
+      base = new URL(sourceUrl.trim());
+    } catch {
+      base = null;
+    }
+
+    const entries: LinkMapEntry[] = [];
+    const invalid: string[] = [];
+    links.forEach((link) => {
+      const href = link.href.trim();
+      if (!href || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) {
+        invalid.push(href || "(empty)");
+        return;
+      }
+      try {
+        const resolved = base ? new URL(href, base) : new URL(href);
+        if (!/^https?:$/i.test(resolved.protocol)) {
+          invalid.push(href);
+          return;
+        }
+        const resolvedUrl = resolved.toString();
+        const internal = base ? resolved.hostname === base.hostname : false;
+        entries.push({
+          href,
+          resolvedUrl,
+          anchorText: link.anchorText || "(no anchor text)",
+          internal,
+        });
+      } catch {
+        invalid.push(href);
+      }
+    });
+
+    return {
+      entries,
+      invalid,
+      internalCount: entries.filter((entry) => entry.internal).length,
+      externalCount: entries.filter((entry) => !entry.internal).length,
+    };
+  }, [html, sourceUrl]);
+
+  const uniqueInternal = useMemo(() => {
+    const map = new Map<string, { count: number; anchors: Set<string> }>();
+    analysis.entries
+      .filter((entry) => entry.internal)
+      .forEach((entry) => {
+        const existing = map.get(entry.resolvedUrl) ?? { count: 0, anchors: new Set<string>() };
+        existing.count += 1;
+        existing.anchors.add(entry.anchorText);
+        map.set(entry.resolvedUrl, existing);
+      });
+    return [...map.entries()]
+      .map(([url, value]) => ({ url, count: value.count, anchors: [...value.anchors].slice(0, 3) }))
+      .sort((a, b) => b.count - a.count);
+  }, [analysis.entries]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Link2}
+        title="Internal link map helper"
+        subtitle="Parse page HTML, classify links, and export internal-link maps for technical SEO audits."
+      />
+      <label className="field">
+        <span>Source page URL</span>
+        <input type="text" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} />
+      </label>
+      <label className="field">
+        <span>Page HTML snippet</span>
+        <textarea value={html} onChange={(event) => setHtml(event.target.value)} rows={10} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const lines = uniqueInternal.map((entry) => `${entry.url} (${entry.count})`);
+            const ok = await copyTextToClipboard(lines.join("\n"));
+            setStatus(ok ? "Internal link map copied." : "Nothing to copy.");
+            if (ok) {
+              trackEvent("tool_internal_link_map_copy", {
+                internal: analysis.internalCount,
+                external: analysis.externalCount,
+              });
+            }
+          }}
+        >
+          <Copy size={15} />
+          Copy internal map
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const rows = uniqueInternal.map((entry) => [entry.url, entry.count.toString(), entry.anchors.join(" | ")]);
+            downloadCsv("internal-link-map.csv", ["URL", "Occurrences", "Anchor samples"], rows);
+            trackEvent("tool_internal_link_map_download", { internal: analysis.internalCount });
+          }}
+        >
+          <Download size={15} />
+          Export CSV
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Total links", value: formatNumericValue(analysis.entries.length + analysis.invalid.length) },
+          { label: "Internal links", value: formatNumericValue(analysis.internalCount) },
+          { label: "External links", value: formatNumericValue(analysis.externalCount) },
+          { label: "Invalid/skipped", value: formatNumericValue(analysis.invalid.length) },
+        ]}
+      />
+      {uniqueInternal.length ? (
+        <div className="mini-panel">
+          <h3>Internal link map</h3>
+          <ul className="plain-list">
+            {uniqueInternal.slice(0, 20).map((entry) => (
+              <li key={entry.url}>
+                <code>{entry.url}</code> x {entry.count}
+                {entry.anchors.length ? ` | Anchors: ${entry.anchors.join(", ")}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="supporting-text">No internal links detected yet.</p>
+      )}
+      {analysis.invalid.length ? (
+        <div className="mini-panel">
+          <h3>Invalid or skipped links</h3>
+          <ul className="plain-list">
+            {analysis.invalid.slice(0, 10).map((value, index) => (
+              <li key={`${value}-${index}`}>
+                <code>{value}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
+    </section>
+  );
+}
+
 function JsonFormatterTool() {
   const [input, setInput] = useState('{"name":"Utiliora","tools":10}');
   const [sortKeys, setSortKeys] = useState(true);
@@ -3493,6 +3957,10 @@ function TextTool({ id }: { id: TextToolId }) {
       return <XmlSitemapGeneratorTool />;
     case "robots-txt-generator":
       return <RobotsTxtGeneratorTool />;
+    case "structured-data-validator":
+      return <StructuredDataValidatorTool />;
+    case "internal-link-map-helper":
+      return <InternalLinkMapHelperTool />;
     case "css-minifier":
       return <MinifierTool mode="css" />;
     case "js-minifier":
