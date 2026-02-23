@@ -690,16 +690,52 @@ interface ImageWorkflowHandoffPayload {
   mimeType: string;
   dataUrl: string;
   createdAt: number;
+  runContext?: ImageWorkflowRunContext;
 }
 
 interface ImageWorkflowIncomingFile {
   token: string;
   sourceToolId: ImageToolId;
   file: File;
+  runContext?: ImageWorkflowRunContext;
+}
+
+interface ImageWorkflowRunContext {
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  sourceToolId: ImageToolId;
+  steps: ImageToolId[];
+  currentStepIndex: number;
+  startedAt: number;
+}
+
+interface SavedImageWorkflow {
+  id: string;
+  name: string;
+  sourceToolId: ImageToolId;
+  steps: ImageToolId[];
+  createdAt: number;
+  updatedAt: number;
+  runCount: number;
+  lastRunAt: number | null;
+}
+
+interface ImageWorkflowRunHistoryEntry {
+  id: string;
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  sourceToolId: ImageToolId;
+  steps: ImageToolId[];
+  createdAt: number;
 }
 
 const IMAGE_WORKFLOW_STORAGE_KEY = "utiliora-image-workflow-handoff-v1";
 const IMAGE_WORKFLOW_MAX_AGE_MS = 20 * 60 * 1000;
+const IMAGE_WORKFLOW_LIBRARY_STORAGE_KEY = "utiliora-image-workflow-library-v1";
+const IMAGE_WORKFLOW_RUN_HISTORY_STORAGE_KEY = "utiliora-image-workflow-run-history-v1";
+const IMAGE_WORKFLOW_RUN_HISTORY_LIMIT = 40;
 
 const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "qr-code-generator": "qr-code-generator",
@@ -714,6 +750,142 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "image-to-pdf": "image-to-pdf-converter",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
+
+const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
+  "qr-code-generator": "QR Code Generator",
+  "color-picker": "Color Picker",
+  "hex-rgb-converter": "HEX-RGB Converter",
+  "image-resizer": "Image Resizer",
+  "image-compressor": "Image Compressor",
+  "jpg-to-png": "JPG -> PNG",
+  "png-to-webp": "PNG -> WebP",
+  "image-cropper": "Image Cropper",
+  "barcode-generator": "Barcode Generator",
+  "image-to-pdf": "Image -> PDF",
+  "pdf-to-jpg": "PDF -> JPG",
+};
+
+const IMAGE_WORKFLOW_TARGET_OPTIONS: Partial<Record<ImageToolId, ImageToolId[]>> = {
+  "image-resizer": ["image-compressor", "png-to-webp", "image-cropper", "image-to-pdf", "jpg-to-png"],
+  "image-compressor": ["png-to-webp", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "jpg-to-png": ["png-to-webp", "image-cropper", "image-to-pdf", "image-compressor", "image-resizer"],
+  "png-to-webp": ["image-compressor", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "image-cropper": ["image-compressor", "png-to-webp", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "pdf-to-jpg": ["image-cropper", "image-compressor", "png-to-webp", "image-resizer", "image-to-pdf"],
+};
+
+function getImageToolLabel(id: ImageToolId): string {
+  return IMAGE_TOOL_LABELS[id] ?? id;
+}
+
+function getImageWorkflowTargetOptions(sourceToolId: ImageToolId): ImageToolId[] {
+  return IMAGE_WORKFLOW_TARGET_OPTIONS[sourceToolId] ?? [];
+}
+
+function sanitizeImageWorkflowName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/\s+/g, " ").slice(0, 60);
+}
+
+function normalizeWorkflowTargets(sourceToolId: ImageToolId, targets: Array<ImageToolId | "">): ImageToolId[] {
+  const filtered = targets.filter((target): target is ImageToolId => Boolean(target && target !== sourceToolId));
+  return [...new Set(filtered)].slice(0, 5);
+}
+
+function readImageWorkflowLibrary(): SavedImageWorkflow[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(IMAGE_WORKFLOW_LIBRARY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as SavedImageWorkflow[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeImageWorkflowLibrary(next: SavedImageWorkflow[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(IMAGE_WORKFLOW_LIBRARY_STORAGE_KEY, JSON.stringify(next.slice(0, 60)));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readImageWorkflowRunHistory(): ImageWorkflowRunHistoryEntry[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(IMAGE_WORKFLOW_RUN_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ImageWorkflowRunHistoryEntry[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeImageWorkflowRunHistory(next: ImageWorkflowRunHistoryEntry[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(
+      IMAGE_WORKFLOW_RUN_HISTORY_STORAGE_KEY,
+      JSON.stringify(next.slice(0, IMAGE_WORKFLOW_RUN_HISTORY_LIMIT)),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function getNextWorkflowStepContext(
+  runContext: ImageWorkflowRunContext | undefined,
+  currentToolId: ImageToolId,
+): { nextToolId: ImageToolId; nextRunContext: ImageWorkflowRunContext } | null {
+  if (!runContext?.steps?.length) return null;
+  if (runContext.steps[runContext.currentStepIndex] !== currentToolId) return null;
+  const nextStepIndex = runContext.currentStepIndex + 1;
+  if (nextStepIndex >= runContext.steps.length) return null;
+  return {
+    nextToolId: runContext.steps[nextStepIndex],
+    nextRunContext: {
+      ...runContext,
+      currentStepIndex: nextStepIndex,
+    },
+  };
+}
+
+function createImageWorkflowRunContext(
+  workflow: SavedImageWorkflow,
+  targetStepIndex: number,
+): ImageWorkflowRunContext {
+  return {
+    runId: crypto.randomUUID(),
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    sourceToolId: workflow.sourceToolId,
+    steps: workflow.steps,
+    currentStepIndex: targetStepIndex,
+    startedAt: Date.now(),
+  };
+}
+
+function createDefaultWorkflowTargets(sourceToolId: ImageToolId): Array<ImageToolId | ""> {
+  const options = getImageWorkflowTargetOptions(sourceToolId);
+  return [options[0] ?? "", options[1] ?? "", ""];
+}
+
+function getSourceToolIdFromImageMode(mode: ImageMode): ImageToolId {
+  if (mode === "resize") return "image-resizer";
+  if (mode === "compress") return "image-compressor";
+  if (mode === "jpg-to-png") return "jpg-to-png";
+  return "png-to-webp";
+}
+
+function buildSavedWorkflowSteps(sourceToolId: ImageToolId, targets: Array<ImageToolId | "">): ImageToolId[] {
+  const normalizedTargets = normalizeWorkflowTargets(sourceToolId, targets);
+  return [sourceToolId, ...normalizedTargets];
+}
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -756,6 +928,7 @@ async function handoffImageResultToTool(options: {
   fileName: string;
   mimeType: string;
   sourceUrl: string;
+  runContext?: ImageWorkflowRunContext;
 }): Promise<boolean> {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return false;
   try {
@@ -769,6 +942,7 @@ async function handoffImageResultToTool(options: {
       mimeType: options.mimeType || blob.type || "image/png",
       dataUrl,
       createdAt: Date.now(),
+      ...(options.runContext ? { runContext: options.runContext } : {}),
     };
     sessionStorage.setItem(IMAGE_WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
     window.location.assign(`/image-tools/${IMAGE_TOOL_ROUTE_SLUGS[options.targetToolId]}`);
@@ -798,10 +972,19 @@ function consumeImageWorkflowHandoff(targetToolId: ImageToolId): ImageWorkflowIn
   const file = dataUrlToFile(parsed.dataUrl, parsed.fileName, parsed.mimeType);
   if (!file) return null;
 
+  const runContext =
+    parsed.runContext &&
+    typeof parsed.runContext === "object" &&
+    Array.isArray(parsed.runContext.steps) &&
+    typeof parsed.runContext.currentStepIndex === "number"
+      ? (parsed.runContext as ImageWorkflowRunContext)
+      : undefined;
+
   return {
     token: `${parsed.targetToolId}-${parsed.createdAt}-${parsed.fileName}`,
     sourceToolId: parsed.sourceToolId,
     file,
+    ...(runContext ? { runContext } : {}),
   };
 }
 
@@ -6408,6 +6591,709 @@ function SslCheckerTool() {
   );
 }
 
+interface WhoisLookupPayload {
+  ok: boolean;
+  domain?: string;
+  normalizedDomain?: string;
+  unicodeDomain?: string | null;
+  rdapSource?: string;
+  checkedAt?: string;
+  statuses?: string[];
+  nameservers?: string[];
+  dnssecSigned?: boolean | null;
+  registrar?: {
+    name: string | null;
+    handle: string | null;
+    ianaId: string | null;
+  };
+  registrant?: {
+    handle: string;
+    fullName: string | null;
+    organization: string | null;
+    country: string | null;
+    email: string | null;
+    phone: string | null;
+  } | null;
+  contacts?: Array<{
+    handle: string;
+    roles: string[];
+    fullName: string | null;
+    organization: string | null;
+    country: string | null;
+    email: string | null;
+    phone: string | null;
+  }>;
+  events?: {
+    registration: string | null;
+    expiration: string | null;
+    lastChanged: string | null;
+    lastTransfer: string | null;
+    lastRdapUpdate: string | null;
+    daysUntilExpiration: number | null;
+    expired: boolean | null;
+  };
+  notices?: string[];
+  links?: string[];
+  error?: string;
+}
+
+interface WhoisHistoryEntry {
+  id: string;
+  domain: string;
+  registrarName: string;
+  expiration: string | null;
+  checkedAt: number;
+}
+
+function WhoisLookupTool() {
+  const historyStorageKey = "utiliora-whois-history-v1";
+  const [domain, setDomain] = useState("utiliora.com");
+  const [timeoutMs, setTimeoutMs] = useState(9000);
+  const [includeRaw, setIncludeRaw] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("Enter a domain and run WHOIS lookup.");
+  const [result, setResult] = useState<WhoisLookupPayload | null>(null);
+  const [history, setHistory] = useState<WhoisHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as WhoisHistoryEntry[];
+      if (Array.isArray(parsed)) setHistory(parsed.slice(0, 25));
+    } catch {
+      // Ignore malformed history.
+    }
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 25)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  const runLookup = useCallback(
+    async (overrideDomain?: string) => {
+      const targetDomain = (overrideDomain ?? domain).trim();
+      if (!targetDomain) {
+        setStatus("Enter a valid domain.");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("Running WHOIS lookup...");
+      try {
+        const params = new URLSearchParams({
+          domain: targetDomain,
+          timeoutMs: String(timeoutMs),
+          includeRaw: includeRaw ? "true" : "false",
+        });
+        const response = await fetch(`/api/whois?${params.toString()}`, { cache: "no-store" });
+        const payload = (await response.json()) as WhoisLookupPayload;
+        setResult(payload);
+
+        if (!response.ok || !payload.ok) {
+          setStatus(payload.error ?? "WHOIS lookup failed.");
+          trackEvent("tool_whois_lookup", { success: false });
+          return;
+        }
+
+        const days = payload.events?.daysUntilExpiration;
+        setStatus(
+          typeof days !== "number"
+            ? "WHOIS data loaded."
+            : days < 0
+              ? `Domain expired ${formatNumericValue(Math.abs(days))} day(s) ago.`
+              : `Domain expires in ${formatNumericValue(days)} day(s).`,
+        );
+        setHistory((current) => [
+          {
+            id: crypto.randomUUID(),
+            domain: payload.domain ?? targetDomain,
+            registrarName: payload.registrar?.name ?? "Unknown registrar",
+            expiration: payload.events?.expiration ?? null,
+            checkedAt: Date.now(),
+          },
+          ...current,
+        ].slice(0, 25));
+        trackEvent("tool_whois_lookup", {
+          success: true,
+          hasRegistrar: Boolean(payload.registrar?.name),
+          hasExpiration: Boolean(payload.events?.expiration),
+          dnssecSigned: payload.dnssecSigned ?? undefined,
+        });
+      } catch {
+        setStatus("WHOIS lookup request failed.");
+        trackEvent("tool_whois_lookup", { success: false });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [domain, includeRaw, timeoutMs],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Tags}
+        title="WHOIS lookup"
+        subtitle="Inspect registrar details, domain status, DNSSEC flags, nameservers, and lifecycle events."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Domain</span>
+          <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" />
+        </label>
+        <label className="field">
+          <span>Timeout (ms)</span>
+          <input
+            type="number"
+            min={3000}
+            max={20000}
+            step={250}
+            value={timeoutMs}
+            onChange={(event) => setTimeoutMs(Math.max(3000, Math.min(20000, Number(event.target.value) || 9000)))}
+          />
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={includeRaw} onChange={(event) => setIncludeRaw(event.target.checked)} />
+          Include raw RDAP payload
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={loading} onClick={() => void runLookup()}>
+          {loading ? "Checking..." : "Run WHOIS lookup"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(result ? JSON.stringify(result, null, 2) : "");
+            setStatus(ok ? "WHOIS JSON copied." : "No WHOIS result to copy.");
+          }}
+          disabled={!result}
+        >
+          <Copy size={15} />
+          Copy JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              "whois-lookup.json",
+              result ? JSON.stringify(result, null, 2) : "No WHOIS result yet.",
+              "application/json;charset=utf-8;",
+            )
+          }
+          disabled={!result}
+        >
+          <Download size={15} />
+          Export
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {result?.ok ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "Domain", value: result.normalizedDomain ?? result.domain ?? "-" },
+              { label: "Unicode domain", value: result.unicodeDomain ?? "-" },
+              { label: "Registrar", value: result.registrar?.name ?? "-" },
+              { label: "Registrar IANA ID", value: result.registrar?.ianaId ?? "-" },
+              { label: "Statuses", value: formatNumericValue(result.statuses?.length ?? 0) },
+              { label: "Nameservers", value: formatNumericValue(result.nameservers?.length ?? 0) },
+              { label: "DNSSEC signed", value: result.dnssecSigned === null ? "Unknown" : result.dnssecSigned ? "Yes" : "No" },
+              {
+                label: "Days until expiration",
+                value:
+                  result.events?.daysUntilExpiration === null || result.events?.daysUntilExpiration === undefined
+                    ? "Unknown"
+                    : formatNumericValue(result.events.daysUntilExpiration),
+              },
+            ]}
+          />
+          <div className="mini-panel">
+            <h3>Registration timeline</h3>
+            <ResultList
+              rows={[
+                {
+                  label: "Registration date",
+                  value: result.events?.registration ? new Date(result.events.registration).toLocaleString("en-US") : "-",
+                },
+                {
+                  label: "Expiration date",
+                  value: result.events?.expiration ? new Date(result.events.expiration).toLocaleString("en-US") : "-",
+                },
+                {
+                  label: "Last changed",
+                  value: result.events?.lastChanged ? new Date(result.events.lastChanged).toLocaleString("en-US") : "-",
+                },
+                {
+                  label: "Last transfer",
+                  value: result.events?.lastTransfer ? new Date(result.events.lastTransfer).toLocaleString("en-US") : "-",
+                },
+                {
+                  label: "Last RDAP update",
+                  value: result.events?.lastRdapUpdate ? new Date(result.events.lastRdapUpdate).toLocaleString("en-US") : "-",
+                },
+              ]}
+            />
+          </div>
+          {result.statuses?.length ? (
+            <div className="mini-panel">
+              <h3>Domain statuses</h3>
+              <div className="chip-list">
+                {result.statuses.map((entry) => (
+                  <span key={entry} className="chip">
+                    {entry}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {result.nameservers?.length ? (
+            <div className="mini-panel">
+              <h3>Nameservers</h3>
+              <div className="chip-list">
+                {result.nameservers.map((entry) => (
+                  <span key={entry} className="chip">
+                    {entry}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {result.contacts?.length ? (
+            <div className="mini-panel">
+              <h3>RDAP contacts</h3>
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Handle</th>
+                      <th>Roles</th>
+                      <th>Name / Org</th>
+                      <th>Email</th>
+                      <th>Country</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.contacts.slice(0, 25).map((contact) => (
+                      <tr key={`${contact.handle}-${contact.roles.join("-")}`}>
+                        <td>{contact.handle || "-"}</td>
+                        <td>{contact.roles.join(", ") || "-"}</td>
+                        <td>{contact.organization ?? contact.fullName ?? "-"}</td>
+                        <td>{contact.email ?? "-"}</td>
+                        <td>{contact.country ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+          {result.notices?.length ? (
+            <div className="mini-panel">
+              <h3>Registry notices</h3>
+              <ul className="plain-list">
+                {result.notices.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {result.links?.length ? (
+            <div className="mini-panel">
+              <h3>Reference links</h3>
+              <ul className="plain-list">
+                {result.links.slice(0, 10).map((entry) => (
+                  <li key={entry}>
+                    <a href={entry} target="_blank" rel="noreferrer">
+                      {entry}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent WHOIS checks</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No WHOIS history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.domain}</strong>
+                  <span className="supporting-text">
+                    {entry.registrarName} | Expires:{" "}
+                    {entry.expiration ? new Date(entry.expiration).toLocaleDateString("en-US") : "-"} |{" "}
+                    {new Date(entry.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setDomain(entry.domain);
+                      void runLookup(entry.domain);
+                    }}
+                  >
+                    Re-run
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface DnsPropagationPayload {
+  ok: boolean;
+  domain?: string;
+  type?: DnsRecordType;
+  checkedAt?: string;
+  durationMs?: number;
+  timeoutMs?: number;
+  resolvers?: Array<{
+    resolver: string;
+    resolverLabel: string;
+    ok: boolean;
+    status: number;
+    responseTimeMs: number;
+    ad: boolean;
+    tc: boolean;
+    rd: boolean;
+    ra: boolean;
+    answers: DnsAnswerRecord[];
+    authorities: DnsAnswerRecord[];
+    answerSet: string[];
+    answerFingerprint: string;
+    error?: string;
+  }>;
+  summary?: {
+    resolverCount: number;
+    successfulResolvers: number;
+    failedResolvers: number;
+    uniqueAnswerSets: number;
+    majorityCount: number;
+    propagationPercent: number;
+    fullyPropagated: boolean;
+    consensusAnswers: string[];
+    mismatches: Array<{
+      resolver: string;
+      resolverLabel: string;
+      answerSet: string[];
+    }>;
+  };
+  error?: string;
+}
+
+interface DnsPropagationHistoryEntry {
+  id: string;
+  domain: string;
+  type: DnsRecordType;
+  propagationPercent: number;
+  checkedAt: number;
+}
+
+function DnsPropagationCheckerTool() {
+  const historyStorageKey = "utiliora-dns-propagation-history-v1";
+  const [domain, setDomain] = useState("utiliora.com");
+  const [recordType, setRecordType] = useState<DnsRecordType>("A");
+  const [timeoutMs, setTimeoutMs] = useState(6000);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("Select domain and record type to inspect propagation.");
+  const [result, setResult] = useState<DnsPropagationPayload | null>(null);
+  const [history, setHistory] = useState<DnsPropagationHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as DnsPropagationHistoryEntry[];
+      if (Array.isArray(parsed)) setHistory(parsed.slice(0, 25));
+    } catch {
+      // Ignore malformed history.
+    }
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 25)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  const runCheck = useCallback(
+    async (override?: { domain?: string; recordType?: DnsRecordType }) => {
+      const targetDomain = (override?.domain ?? domain).trim();
+      const targetType = override?.recordType ?? recordType;
+      if (!targetDomain) {
+        setStatus("Enter a valid domain.");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("Checking propagation across resolvers...");
+      try {
+        const params = new URLSearchParams({
+          domain: targetDomain,
+          type: targetType,
+          timeoutMs: String(timeoutMs),
+        });
+        const response = await fetch(`/api/dns-propagation?${params.toString()}`, { cache: "no-store" });
+        const payload = (await response.json()) as DnsPropagationPayload;
+        setResult(payload);
+
+        if (!response.ok || !payload.ok) {
+          setStatus(payload.error ?? "Propagation check failed.");
+          trackEvent("tool_dns_propagation_check", { success: false });
+          return;
+        }
+
+        const percent = payload.summary?.propagationPercent ?? 0;
+        const uniqueSets = payload.summary?.uniqueAnswerSets ?? 0;
+        setStatus(
+          uniqueSets <= 1
+            ? `Fully propagated (${percent.toFixed(1)}% resolver consensus).`
+            : `Propagation divergence detected (${percent.toFixed(1)}% consensus).`,
+        );
+        setHistory((current) => [
+          {
+            id: crypto.randomUUID(),
+            domain: payload.domain ?? targetDomain,
+            type: payload.type ?? targetType,
+            propagationPercent: percent,
+            checkedAt: Date.now(),
+          },
+          ...current,
+        ].slice(0, 25));
+        trackEvent("tool_dns_propagation_check", {
+          success: true,
+          type: payload.type ?? targetType,
+          propagationPercent: percent,
+          uniqueSets,
+        });
+      } catch {
+        setStatus("Propagation check request failed.");
+        trackEvent("tool_dns_propagation_check", { success: false });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [domain, recordType, timeoutMs],
+  );
+
+  const exportCsv = () => {
+    if (!result?.resolvers?.length) return;
+    const rows = result.resolvers.map((resolver) => [
+      resolver.resolverLabel,
+      resolver.status.toString(),
+      resolver.responseTimeMs.toString(),
+      resolver.answerSet.join(" | "),
+      resolver.error ?? "",
+    ]);
+    downloadCsv("dns-propagation.csv", ["Resolver", "Status", "Response ms", "Answer set", "Error"], rows);
+  };
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Share2}
+        title="DNS propagation checker"
+        subtitle="Compare DNS answers across major resolvers and quantify propagation consistency."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Domain</span>
+          <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" />
+        </label>
+        <label className="field">
+          <span>Record type</span>
+          <select value={recordType} onChange={(event) => setRecordType(event.target.value as DnsRecordType)}>
+            {DNS_RECORD_TYPE_OPTIONS.map((entry) => (
+              <option key={entry} value={entry}>
+                {entry}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Timeout (ms)</span>
+          <input
+            type="number"
+            min={2000}
+            max={12000}
+            step={250}
+            value={timeoutMs}
+            onChange={(event) => setTimeoutMs(Math.max(2000, Math.min(12000, Number(event.target.value) || 6000)))}
+          />
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={loading} onClick={() => void runCheck()}>
+          {loading ? "Checking..." : "Run propagation check"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(result ? JSON.stringify(result, null, 2) : "");
+            setStatus(ok ? "Propagation result copied as JSON." : "No result to copy.");
+          }}
+          disabled={!result}
+        >
+          <Copy size={15} />
+          Copy JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!result?.resolvers?.length}>
+          <Download size={15} />
+          Export CSV
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {result?.ok ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "Domain", value: result.domain ?? "-" },
+              { label: "Record type", value: result.type ?? "-" },
+              {
+                label: "Consensus",
+                value: `${(result.summary?.propagationPercent ?? 0).toFixed(1)}%`,
+              },
+              {
+                label: "Unique answer sets",
+                value: formatNumericValue(result.summary?.uniqueAnswerSets ?? 0),
+              },
+              {
+                label: "Successful resolvers",
+                value: formatNumericValue(result.summary?.successfulResolvers ?? 0),
+              },
+              {
+                label: "Check duration",
+                value: `${formatNumericValue(result.durationMs ?? 0)} ms`,
+              },
+            ]}
+          />
+          {result.summary?.consensusAnswers?.length ? (
+            <div className="mini-panel">
+              <h3>Consensus answer set</h3>
+              <div className="chip-list">
+                {result.summary.consensusAnswers.map((entry) => (
+                  <span key={entry} className="chip">
+                    {entry}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="mini-panel">
+            <h3>Resolver results</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Resolver</th>
+                    <th>Status</th>
+                    <th>Response ms</th>
+                    <th>Answers</th>
+                    <th>AD</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.resolvers?.map((entry) => (
+                    <tr key={entry.resolver}>
+                      <td>{entry.resolverLabel}</td>
+                      <td>{entry.status}</td>
+                      <td>{formatNumericValue(entry.responseTimeMs)}</td>
+                      <td>{entry.answerSet.join(" | ") || "-"}</td>
+                      <td>{entry.ad ? "Yes" : "No"}</td>
+                      <td>{entry.error ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {result.summary?.mismatches?.length ? (
+            <div className="mini-panel">
+              <h3>Propagation mismatches</h3>
+              <ul className="plain-list">
+                {result.summary.mismatches.map((entry) => (
+                  <li key={entry.resolver}>
+                    <strong>{entry.resolverLabel}</strong>: {entry.answerSet.join(" | ") || "(no answer)"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="supporting-text">No propagation mismatches across checked resolvers.</p>
+          )}
+        </>
+      ) : null}
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent propagation checks</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No propagation history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>
+                    {entry.domain} ({entry.type})
+                  </strong>
+                  <span className="supporting-text">
+                    Consensus: {entry.propagationPercent.toFixed(1)}% |{" "}
+                    {new Date(entry.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setDomain(entry.domain);
+                      setRecordType(entry.type);
+                      void runCheck({ domain: entry.domain, recordType: entry.type });
+                    }}
+                  >
+                    Re-run
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DeveloperTool({ id }: { id: DeveloperToolId }) {
   switch (id) {
     case "uuid-generator":
@@ -6430,6 +7316,10 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
       return <DnsLookupTool />;
     case "ssl-checker":
       return <SslCheckerTool />;
+    case "whois-lookup":
+      return <WhoisLookupTool />;
+    case "dns-propagation-checker":
+      return <DnsPropagationCheckerTool />;
     default:
       return <p>Developer tool unavailable.</p>;
   }
@@ -6671,6 +7561,8 @@ function ImageTransformTool({
   incomingFile?: ImageWorkflowIncomingFile | null;
 }) {
   const config = IMAGE_MODE_CONFIG[mode];
+  const sourceToolId = getSourceToolIdFromImageMode(mode);
+  const workflowTargetOptions = getImageWorkflowTargetOptions(sourceToolId);
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
@@ -6687,6 +7579,13 @@ function ImageTransformTool({
   const resultUrlRef = useRef("");
   const processingRunRef = useRef(0);
   const incomingTokenRef = useRef("");
+  const [workflowLibrary, setWorkflowLibrary] = useState<SavedImageWorkflow[]>([]);
+  const [workflowRunHistory, setWorkflowRunHistory] = useState<ImageWorkflowRunHistoryEntry[]>([]);
+  const [workflowName, setWorkflowName] = useState(() => `${getImageToolLabel(sourceToolId)} chain`);
+  const [workflowTargets, setWorkflowTargets] = useState<(ImageToolId | "")[]>(
+    () => createDefaultWorkflowTargets(sourceToolId),
+  );
+  const incomingRunContext = incomingFile?.runContext;
 
   const resolvedOutputMimeType: OutputMimeType = useMemo(() => {
     if (config.fixedOutput) return config.fixedOutput;
@@ -6715,12 +7614,40 @@ function ImageTransformTool({
     return `Increased by ${formatBytes(delta)} (${percentage.toFixed(1)}%)`;
   }, [sourceDetails, resultDetails]);
 
+  const savedWorkflows = useMemo(
+    () => workflowLibrary.filter((workflow) => workflow.sourceToolId === sourceToolId),
+    [sourceToolId, workflowLibrary],
+  );
+
+  const runHistory = useMemo(
+    () =>
+      workflowRunHistory
+        .filter((entry) => entry.sourceToolId === sourceToolId)
+        .slice(0, 12),
+    [sourceToolId, workflowRunHistory],
+  );
+
+  const nextWorkflowStep = useMemo(
+    () => getNextWorkflowStepContext(incomingRunContext, sourceToolId),
+    [incomingRunContext, sourceToolId],
+  );
+
   useEffect(() => {
     return () => {
       if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
       if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setWorkflowLibrary(readImageWorkflowLibrary());
+    setWorkflowRunHistory(readImageWorkflowRunHistory());
+  }, []);
+
+  useEffect(() => {
+    setWorkflowTargets(createDefaultWorkflowTargets(sourceToolId));
+    setWorkflowName(`${getImageToolLabel(sourceToolId)} chain`);
+  }, [setWorkflowName, setWorkflowTargets, sourceToolId]);
 
   const clearOutput = useCallback(() => {
     if (resultUrlRef.current) {
@@ -6904,32 +7831,15 @@ function ImageTransformTool({
     return () => clearTimeout(timeout);
   }, [autoPreview, file, processImage, quality, sourceDetails, targetWidth, outputChoice]);
 
-  const sendToWorkflowTool = useCallback(
-    async (targetToolId: ImageToolId) => {
-      if (!resultDetails) return;
-      setStatus(`Sending output to ${targetToolId}...`);
-      const ok = await handoffImageResultToTool({
-        sourceToolId:
-          mode === "resize"
-            ? "image-resizer"
-            : mode === "compress"
-              ? "image-compressor"
-              : mode === "jpg-to-png"
-                ? "jpg-to-png"
-                : "png-to-webp",
-        targetToolId,
-        fileName: resultDetails.downloadName,
-        mimeType: resultDetails.mimeType,
-        sourceUrl: resultDetails.url,
-      });
-      if (!ok) {
-        setStatus("Could not hand off this output to the next tool.");
-      } else {
-        trackEvent("tool_workflow_handoff", { sourceMode: mode, targetToolId });
-      }
-    },
-    [mode, resultDetails],
-  );
+  const persistWorkflowLibrary = useCallback((nextLibrary: SavedImageWorkflow[]) => {
+    setWorkflowLibrary(nextLibrary);
+    writeImageWorkflowLibrary(nextLibrary);
+  }, []);
+
+  const persistWorkflowRunHistory = useCallback((nextHistory: ImageWorkflowRunHistoryEntry[]) => {
+    setWorkflowRunHistory(nextHistory);
+    writeImageWorkflowRunHistory(nextHistory);
+  }, []);
 
   const canSendToWorkflowTool = useCallback(
     (targetToolId: ImageToolId): boolean => {
@@ -6940,6 +7850,167 @@ function ImageTransformTool({
     },
     [resultDetails],
   );
+
+  const saveWorkflow = useCallback(() => {
+    const normalizedName = sanitizeImageWorkflowName(workflowName);
+    const steps = buildSavedWorkflowSteps(sourceToolId, workflowTargets);
+    if (!normalizedName) {
+      setStatus("Add a workflow name before saving.");
+      return;
+    }
+    if (steps.length < 2) {
+      setStatus("Choose at least one next tool for this workflow.");
+      return;
+    }
+
+    const now = Date.now();
+    const existing = workflowLibrary.find(
+      (entry) => entry.sourceToolId === sourceToolId && entry.name.toLowerCase() === normalizedName.toLowerCase(),
+    );
+
+    const nextWorkflow: SavedImageWorkflow = existing
+      ? {
+          ...existing,
+          steps,
+          updatedAt: now,
+        }
+      : {
+          id: crypto.randomUUID(),
+          name: normalizedName,
+          sourceToolId,
+          steps,
+          createdAt: now,
+          updatedAt: now,
+          runCount: 0,
+          lastRunAt: null,
+        };
+
+    const nextLibrary = [nextWorkflow, ...workflowLibrary.filter((entry) => entry.id !== nextWorkflow.id)].slice(0, 60);
+    persistWorkflowLibrary(nextLibrary);
+    setStatus(`Workflow "${nextWorkflow.name}" saved.`);
+    trackEvent("tool_workflow_save", { sourceToolId, steps: steps.length });
+  }, [persistWorkflowLibrary, sourceToolId, workflowLibrary, workflowName, workflowTargets]);
+
+  const deleteWorkflow = useCallback(
+    (workflowId: string) => {
+      const nextLibrary = workflowLibrary.filter((entry) => entry.id !== workflowId);
+      persistWorkflowLibrary(nextLibrary);
+      setStatus("Workflow removed.");
+    },
+    [persistWorkflowLibrary, workflowLibrary],
+  );
+
+  const markWorkflowRun = useCallback(
+    (workflow: SavedImageWorkflow, runContext: ImageWorkflowRunContext) => {
+      const now = Date.now();
+      const nextLibrary = workflowLibrary.map((entry) =>
+        entry.id === workflow.id
+          ? {
+              ...entry,
+              runCount: entry.runCount + 1,
+              lastRunAt: now,
+              updatedAt: now,
+            }
+          : entry,
+      );
+      persistWorkflowLibrary(nextLibrary);
+
+      const historyEntry: ImageWorkflowRunHistoryEntry = {
+        id: crypto.randomUUID(),
+        runId: runContext.runId,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        sourceToolId: workflow.sourceToolId,
+        steps: workflow.steps,
+        createdAt: now,
+      };
+      const nextHistory = [historyEntry, ...workflowRunHistory].slice(0, IMAGE_WORKFLOW_RUN_HISTORY_LIMIT);
+      persistWorkflowRunHistory(nextHistory);
+    },
+    [persistWorkflowLibrary, persistWorkflowRunHistory, workflowLibrary, workflowRunHistory],
+  );
+
+  const runSavedWorkflow = useCallback(
+    async (workflow: SavedImageWorkflow) => {
+      if (!resultDetails) return;
+      if (workflow.steps.length < 2) {
+        setStatus("This workflow has no next step.");
+        return;
+      }
+
+      const targetToolId = workflow.steps[1];
+      if (!canSendToWorkflowTool(targetToolId)) {
+        setStatus(`Current output format cannot be sent to ${getImageToolLabel(targetToolId)}.`);
+        return;
+      }
+
+      const runContext = createImageWorkflowRunContext(workflow, 1);
+      setStatus(`Running workflow "${workflow.name}"...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId,
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+        runContext,
+      });
+      if (!ok) {
+        setStatus("Could not start saved workflow.");
+      } else {
+        markWorkflowRun(workflow, runContext);
+        trackEvent("tool_workflow_run", { sourceToolId, workflowId: workflow.id, steps: workflow.steps.length });
+      }
+    },
+    [canSendToWorkflowTool, markWorkflowRun, resultDetails, sourceToolId],
+  );
+
+  const rerunWorkflowFromHistory = useCallback(
+    async (entry: ImageWorkflowRunHistoryEntry) => {
+      const libraryWorkflow = workflowLibrary.find((workflow) => workflow.id === entry.workflowId);
+      const fallbackWorkflow: SavedImageWorkflow = {
+        id: entry.workflowId,
+        name: entry.workflowName,
+        sourceToolId: entry.sourceToolId,
+        steps: entry.steps,
+        createdAt: entry.createdAt,
+        updatedAt: entry.createdAt,
+        runCount: 0,
+        lastRunAt: null,
+      };
+      await runSavedWorkflow(libraryWorkflow ?? fallbackWorkflow);
+    },
+    [runSavedWorkflow, workflowLibrary],
+  );
+
+  const sendToWorkflowTool = useCallback(
+    async (targetToolId: ImageToolId, runContext?: ImageWorkflowRunContext) => {
+      if (!resultDetails) return;
+      setStatus(`Sending output to ${getImageToolLabel(targetToolId)}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId,
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+        ...(runContext ? { runContext } : {}),
+      });
+      if (!ok) {
+        setStatus("Could not hand off this output to the next tool.");
+      } else {
+        trackEvent("tool_workflow_handoff", { sourceMode: mode, targetToolId, inWorkflowRun: Boolean(runContext) });
+      }
+    },
+    [mode, resultDetails, sourceToolId],
+  );
+
+  const continueWorkflowRun = useCallback(async () => {
+    if (!nextWorkflowStep) return;
+    if (!canSendToWorkflowTool(nextWorkflowStep.nextToolId)) {
+      setStatus(`Current output format cannot be sent to ${getImageToolLabel(nextWorkflowStep.nextToolId)}.`);
+      return;
+    }
+    await sendToWorkflowTool(nextWorkflowStep.nextToolId, nextWorkflowStep.nextRunContext);
+  }, [canSendToWorkflowTool, nextWorkflowStep, sendToWorkflowTool]);
 
   return (
     <section className="tool-surface">
@@ -7144,8 +8215,143 @@ function ImageTransformTool({
               </button>
             ))}
           </div>
+          {nextWorkflowStep ? (
+            <div className="button-row">
+              <button
+                className="action-button secondary"
+                type="button"
+                disabled={processing || !canSendToWorkflowTool(nextWorkflowStep.nextToolId)}
+                onClick={() => {
+                  void continueWorkflowRun();
+                }}
+              >
+                Continue workflow -&gt; {getImageToolLabel(nextWorkflowStep.nextToolId)}
+              </button>
+            </div>
+          ) : incomingRunContext && incomingRunContext.steps[incomingRunContext.currentStepIndex] === sourceToolId ? (
+            <p className="supporting-text">
+              Workflow &quot;{incomingRunContext.workflowName}&quot; completed at {getImageToolLabel(sourceToolId)}.
+            </p>
+          ) : null}
         </>
       ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Workflow chaining</h3>
+          <span className="supporting-text">Save reusable chains and rerun them in one click.</span>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Workflow name</span>
+            <input
+              type="text"
+              value={workflowName}
+              onChange={(event) => setWorkflowName(event.target.value)}
+              placeholder={`${getImageToolLabel(sourceToolId)} chain`}
+            />
+          </label>
+          {[0, 1, 2].map((index) => (
+            <label key={index} className="field">
+              <span>Step {index + 1}</span>
+              <select
+                value={workflowTargets[index]}
+                onChange={(event) => {
+                  const value = event.target.value as ImageToolId | "";
+                  setWorkflowTargets((current) => {
+                    const next = [...current];
+                    next[index] = value;
+                    return next as Array<ImageToolId | "">;
+                  });
+                }}
+              >
+                <option value="">None</option>
+                {workflowTargetOptions.map((target) => (
+                  <option key={target} value={target}>
+                    {getImageToolLabel(target)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={saveWorkflow}>
+            Save workflow
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => setWorkflowTargets(createDefaultWorkflowTargets(sourceToolId))}
+          >
+            Reset steps
+          </button>
+        </div>
+
+        {savedWorkflows.length === 0 ? (
+          <p className="supporting-text">No saved workflows for this tool yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {savedWorkflows.map((workflow) => (
+              <li key={workflow.id}>
+                <div className="history-line">
+                  <strong>{workflow.name}</strong>
+                  <span className="supporting-text">
+                    {workflow.steps.map((step) => getImageToolLabel(step)).join(" -> ")} | Runs:{" "}
+                    {formatNumericValue(workflow.runCount)}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    disabled={!resultDetails || processing}
+                    onClick={() => {
+                      void runSavedWorkflow(workflow);
+                    }}
+                  >
+                    Run now
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={() => deleteWorkflow(workflow.id)}>
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <h3>Run history</h3>
+        {runHistory.length === 0 ? (
+          <p className="supporting-text">No workflow runs yet for this tool.</p>
+        ) : (
+          <ul className="plain-list">
+            {runHistory.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.workflowName}</strong>
+                  <span className="supporting-text">
+                    {entry.steps.map((step) => getImageToolLabel(step)).join(" -> ")} |{" "}
+                    {new Date(entry.createdAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    disabled={!resultDetails || processing}
+                    onClick={() => {
+                      void rerunWorkflowFromHistory(entry);
+                    }}
+                  >
+                    Re-run from history
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
@@ -7214,6 +8420,8 @@ function createCenteredCrop(details: ImageDetails, aspectRatio: number | null, f
 }
 
 function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
+  const sourceToolId: ImageToolId = "image-cropper";
+  const workflowTargetOptions = getImageWorkflowTargetOptions(sourceToolId);
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
@@ -7233,14 +8441,44 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
   const runIdRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const incomingTokenRef = useRef("");
+  const [workflowLibrary, setWorkflowLibrary] = useState<SavedImageWorkflow[]>([]);
+  const [workflowRunHistory, setWorkflowRunHistory] = useState<ImageWorkflowRunHistoryEntry[]>([]);
+  const [workflowName, setWorkflowName] = useState(() => `${getImageToolLabel(sourceToolId)} chain`);
+  const [workflowTargets, setWorkflowTargets] = useState<(ImageToolId | "")[]>(
+    () => createDefaultWorkflowTargets(sourceToolId),
+  );
+  const incomingRunContext = incomingFile?.runContext;
 
   const lossyOutput = outputMimeType === "image/jpeg" || outputMimeType === "image/webp";
+
+  const savedWorkflows = useMemo(
+    () => workflowLibrary.filter((workflow) => workflow.sourceToolId === sourceToolId),
+    [sourceToolId, workflowLibrary],
+  );
+
+  const runHistory = useMemo(
+    () =>
+      workflowRunHistory
+        .filter((entry) => entry.sourceToolId === sourceToolId)
+        .slice(0, 12),
+    [sourceToolId, workflowRunHistory],
+  );
+
+  const nextWorkflowStep = useMemo(
+    () => getNextWorkflowStepContext(incomingRunContext, sourceToolId),
+    [incomingRunContext, sourceToolId],
+  );
 
   useEffect(() => {
     return () => {
       if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
       if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    setWorkflowLibrary(readImageWorkflowLibrary());
+    setWorkflowRunHistory(readImageWorkflowRunHistory());
   }, []);
 
   const clearOutput = useCallback(() => {
@@ -7364,25 +8602,188 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
     return () => clearTimeout(timeout);
   }, [autoPreview, crop, file, outputMimeType, processCrop, quality, scalePercent, sourceDetails]);
 
-  const sendToWorkflowTool = useCallback(
-    async (targetToolId: ImageToolId) => {
+  const persistWorkflowLibrary = useCallback((nextLibrary: SavedImageWorkflow[]) => {
+    setWorkflowLibrary(nextLibrary);
+    writeImageWorkflowLibrary(nextLibrary);
+  }, []);
+
+  const persistWorkflowRunHistory = useCallback((nextHistory: ImageWorkflowRunHistoryEntry[]) => {
+    setWorkflowRunHistory(nextHistory);
+    writeImageWorkflowRunHistory(nextHistory);
+  }, []);
+
+  const canSendToWorkflowTool = useCallback(
+    (targetToolId: ImageToolId): boolean => {
+      if (!resultDetails) return false;
+      if (targetToolId === "png-to-webp") return resultDetails.mimeType === "image/png";
+      if (targetToolId === "jpg-to-png") return resultDetails.mimeType === "image/jpeg";
+      return true;
+    },
+    [resultDetails],
+  );
+
+  const saveWorkflow = useCallback(() => {
+    const normalizedName = sanitizeImageWorkflowName(workflowName);
+    const steps = buildSavedWorkflowSteps(sourceToolId, workflowTargets);
+    if (!normalizedName) {
+      setStatus("Add a workflow name before saving.");
+      return;
+    }
+    if (steps.length < 2) {
+      setStatus("Choose at least one next tool for this workflow.");
+      return;
+    }
+
+    const now = Date.now();
+    const existing = workflowLibrary.find(
+      (entry) => entry.sourceToolId === sourceToolId && entry.name.toLowerCase() === normalizedName.toLowerCase(),
+    );
+
+    const nextWorkflow: SavedImageWorkflow = existing
+      ? {
+          ...existing,
+          steps,
+          updatedAt: now,
+        }
+      : {
+          id: crypto.randomUUID(),
+          name: normalizedName,
+          sourceToolId,
+          steps,
+          createdAt: now,
+          updatedAt: now,
+          runCount: 0,
+          lastRunAt: null,
+        };
+
+    const nextLibrary = [nextWorkflow, ...workflowLibrary.filter((entry) => entry.id !== nextWorkflow.id)].slice(0, 60);
+    persistWorkflowLibrary(nextLibrary);
+    setStatus(`Workflow "${nextWorkflow.name}" saved.`);
+    trackEvent("tool_workflow_save", { sourceToolId, steps: steps.length });
+  }, [persistWorkflowLibrary, sourceToolId, workflowLibrary, workflowName, workflowTargets]);
+
+  const deleteWorkflow = useCallback(
+    (workflowId: string) => {
+      const nextLibrary = workflowLibrary.filter((entry) => entry.id !== workflowId);
+      persistWorkflowLibrary(nextLibrary);
+      setStatus("Workflow removed.");
+    },
+    [persistWorkflowLibrary, workflowLibrary],
+  );
+
+  const markWorkflowRun = useCallback(
+    (workflow: SavedImageWorkflow, runContext: ImageWorkflowRunContext) => {
+      const now = Date.now();
+      const nextLibrary = workflowLibrary.map((entry) =>
+        entry.id === workflow.id
+          ? {
+              ...entry,
+              runCount: entry.runCount + 1,
+              lastRunAt: now,
+              updatedAt: now,
+            }
+          : entry,
+      );
+      persistWorkflowLibrary(nextLibrary);
+
+      const historyEntry: ImageWorkflowRunHistoryEntry = {
+        id: crypto.randomUUID(),
+        runId: runContext.runId,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+        sourceToolId: workflow.sourceToolId,
+        steps: workflow.steps,
+        createdAt: now,
+      };
+      const nextHistory = [historyEntry, ...workflowRunHistory].slice(0, IMAGE_WORKFLOW_RUN_HISTORY_LIMIT);
+      persistWorkflowRunHistory(nextHistory);
+    },
+    [persistWorkflowLibrary, persistWorkflowRunHistory, workflowLibrary, workflowRunHistory],
+  );
+
+  const runSavedWorkflow = useCallback(
+    async (workflow: SavedImageWorkflow) => {
       if (!resultDetails) return;
-      setStatus(`Sending output to ${targetToolId}...`);
+      if (workflow.steps.length < 2) {
+        setStatus("This workflow has no next step.");
+        return;
+      }
+      const targetToolId = workflow.steps[1];
+      if (!canSendToWorkflowTool(targetToolId)) {
+        setStatus(`Current output format cannot be sent to ${getImageToolLabel(targetToolId)}.`);
+        return;
+      }
+      const runContext = createImageWorkflowRunContext(workflow, 1);
+      setStatus(`Running workflow "${workflow.name}"...`);
       const ok = await handoffImageResultToTool({
-        sourceToolId: "image-cropper",
+        sourceToolId,
         targetToolId,
         fileName: resultDetails.downloadName,
         mimeType: resultDetails.mimeType,
         sourceUrl: resultDetails.url,
+        runContext,
+      });
+      if (!ok) {
+        setStatus("Could not start saved workflow.");
+      } else {
+        markWorkflowRun(workflow, runContext);
+        trackEvent("tool_workflow_run", { sourceToolId, workflowId: workflow.id, steps: workflow.steps.length });
+      }
+    },
+    [canSendToWorkflowTool, markWorkflowRun, resultDetails, sourceToolId],
+  );
+
+  const rerunWorkflowFromHistory = useCallback(
+    async (entry: ImageWorkflowRunHistoryEntry) => {
+      const libraryWorkflow = workflowLibrary.find((workflow) => workflow.id === entry.workflowId);
+      const fallbackWorkflow: SavedImageWorkflow = {
+        id: entry.workflowId,
+        name: entry.workflowName,
+        sourceToolId: entry.sourceToolId,
+        steps: entry.steps,
+        createdAt: entry.createdAt,
+        updatedAt: entry.createdAt,
+        runCount: 0,
+        lastRunAt: null,
+      };
+      await runSavedWorkflow(libraryWorkflow ?? fallbackWorkflow);
+    },
+    [runSavedWorkflow, workflowLibrary],
+  );
+
+  const sendToWorkflowTool = useCallback(
+    async (targetToolId: ImageToolId, runContext?: ImageWorkflowRunContext) => {
+      if (!resultDetails) return;
+      setStatus(`Sending output to ${getImageToolLabel(targetToolId)}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId,
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+        ...(runContext ? { runContext } : {}),
       });
       if (!ok) {
         setStatus("Could not hand off this output to the next tool.");
       } else {
-        trackEvent("tool_workflow_handoff", { sourceMode: "image-cropper", targetToolId });
+        trackEvent("tool_workflow_handoff", {
+          sourceMode: "image-cropper",
+          targetToolId,
+          inWorkflowRun: Boolean(runContext),
+        });
       }
     },
-    [resultDetails],
+    [resultDetails, sourceToolId],
   );
+
+  const continueWorkflowRun = useCallback(async () => {
+    if (!nextWorkflowStep) return;
+    if (!canSendToWorkflowTool(nextWorkflowStep.nextToolId)) {
+      setStatus(`Current output format cannot be sent to ${getImageToolLabel(nextWorkflowStep.nextToolId)}.`);
+      return;
+    }
+    await sendToWorkflowTool(nextWorkflowStep.nextToolId, nextWorkflowStep.nextRunContext);
+  }, [canSendToWorkflowTool, nextWorkflowStep, sendToWorkflowTool]);
 
   return (
     <section className="tool-surface">
@@ -7433,15 +8834,150 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
             <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("image-compressor")} disabled={processing}>
               Send to compressor
             </button>
-            <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("png-to-webp")} disabled={processing || resultDetails?.mimeType !== "image/png"}>
+            <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("png-to-webp")} disabled={processing || !canSendToWorkflowTool("png-to-webp")}>
               Send to PNG -&gt; WebP
             </button>
             <button className="action-button secondary" type="button" onClick={() => void sendToWorkflowTool("image-to-pdf")} disabled={processing}>
               Send to Image -&gt; PDF
             </button>
           </div>
+          {nextWorkflowStep ? (
+            <div className="button-row">
+              <button
+                className="action-button secondary"
+                type="button"
+                disabled={processing || !canSendToWorkflowTool(nextWorkflowStep.nextToolId)}
+                onClick={() => {
+                  void continueWorkflowRun();
+                }}
+              >
+                Continue workflow -&gt; {getImageToolLabel(nextWorkflowStep.nextToolId)}
+              </button>
+            </div>
+          ) : incomingRunContext && incomingRunContext.steps[incomingRunContext.currentStepIndex] === sourceToolId ? (
+            <p className="supporting-text">
+              Workflow &quot;{incomingRunContext.workflowName}&quot; completed at {getImageToolLabel(sourceToolId)}.
+            </p>
+          ) : null}
         </>
       ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Workflow chaining</h3>
+          <span className="supporting-text">Save reusable chains and rerun them in one click.</span>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Workflow name</span>
+            <input
+              type="text"
+              value={workflowName}
+              onChange={(event) => setWorkflowName(event.target.value)}
+              placeholder={`${getImageToolLabel(sourceToolId)} chain`}
+            />
+          </label>
+          {[0, 1, 2].map((index) => (
+            <label key={index} className="field">
+              <span>Step {index + 1}</span>
+              <select
+                value={workflowTargets[index]}
+                onChange={(event) => {
+                  const value = event.target.value as ImageToolId | "";
+                  setWorkflowTargets((current) => {
+                    const next = [...current];
+                    next[index] = value;
+                    return next as Array<ImageToolId | "">;
+                  });
+                }}
+              >
+                <option value="">None</option>
+                {workflowTargetOptions.map((target) => (
+                  <option key={target} value={target}>
+                    {getImageToolLabel(target)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={saveWorkflow}>
+            Save workflow
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => setWorkflowTargets(createDefaultWorkflowTargets(sourceToolId))}
+          >
+            Reset steps
+          </button>
+        </div>
+
+        {savedWorkflows.length === 0 ? (
+          <p className="supporting-text">No saved workflows for this tool yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {savedWorkflows.map((workflow) => (
+              <li key={workflow.id}>
+                <div className="history-line">
+                  <strong>{workflow.name}</strong>
+                  <span className="supporting-text">
+                    {workflow.steps.map((step) => getImageToolLabel(step)).join(" -> ")} | Runs:{" "}
+                    {formatNumericValue(workflow.runCount)}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    disabled={!resultDetails || processing}
+                    onClick={() => {
+                      void runSavedWorkflow(workflow);
+                    }}
+                  >
+                    Run now
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={() => deleteWorkflow(workflow.id)}>
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <h3>Run history</h3>
+        {runHistory.length === 0 ? (
+          <p className="supporting-text">No workflow runs yet for this tool.</p>
+        ) : (
+          <ul className="plain-list">
+            {runHistory.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.workflowName}</strong>
+                  <span className="supporting-text">
+                    {entry.steps.map((step) => getImageToolLabel(step)).join(" -> ")} |{" "}
+                    {new Date(entry.createdAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    disabled={!resultDetails || processing}
+                    onClick={() => {
+                      void rerunWorkflowFromHistory(entry);
+                    }}
+                  >
+                    Re-run from history
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }

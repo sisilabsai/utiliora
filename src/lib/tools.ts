@@ -811,6 +811,28 @@ const developerTools: ToolDefinition[] = [
     engine: { kind: "developer-tool", id: "ssl-checker" },
     faq: baseFaq("SSL Checker"),
   },
+  {
+    slug: "whois-lookup",
+    category: "developer-tools",
+    title: "WHOIS Lookup",
+    summary: "Inspect domain registration, registrar details, statuses, and key lifecycle dates.",
+    description:
+      "Run RDAP-powered WHOIS lookups to view registrar identity, expiration timeline, nameserver delegation, DNSSEC flags, and contact role metadata.",
+    keywords: ["whois lookup", "domain whois", "domain registrar checker", "domain expiry lookup"],
+    engine: { kind: "developer-tool", id: "whois-lookup" },
+    faq: baseFaq("WHOIS Lookup"),
+  },
+  {
+    slug: "dns-propagation-checker",
+    category: "developer-tools",
+    title: "DNS Propagation Checker",
+    summary: "Compare record propagation across global DNS resolvers with consensus analysis.",
+    description:
+      "Check how A, AAAA, CNAME, MX, TXT, NS, SOA, or CAA values resolve across major resolvers and quantify propagation consistency.",
+    keywords: ["dns propagation checker", "dns propagation", "global dns check", "dns resolver compare"],
+    engine: { kind: "developer-tool", id: "dns-propagation-checker" },
+    faq: baseFaq("DNS Propagation Checker"),
+  },
 ];
 
 const productivityTools: ToolDefinition[] = [

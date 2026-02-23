@@ -134,3 +134,6 @@ Status: `Planned`
 - Started `Workflow Chaining` with image handoff between tools (resize/compress/convert/crop/pdf) using one-click "Send to next tool" actions.
 - Shipped `Structured Data Validator` for JSON-LD/schema checks with required-field warnings, block-level issue reports, and formatted export.
 - Shipped `Internal Link Map Helper` to parse HTML anchors, classify internal vs external links, and export internal-link CSV maps.
+- Shipped `WHOIS Lookup` with registrar/contact extraction, domain lifecycle dates, DNSSEC/status insights, and RDAP-backed history/export.
+- Shipped `DNS Propagation Checker` comparing major public resolvers with consensus scoring, mismatch surfacing, and check history.
+- Deepened `Workflow Chaining` with saved reusable multi-step workflows, workflow run history, and one-click rerun from history in image processing tools.

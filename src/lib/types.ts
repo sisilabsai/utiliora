@@ -98,7 +98,9 @@ export type DeveloperToolId =
   | "cron-expression-generator"
   | "http-status-checker"
   | "dns-lookup"
-  | "ssl-checker";
+  | "ssl-checker"
+  | "whois-lookup"
+  | "dns-propagation-checker";
 
 export type ImageToolId =
   | "qr-code-generator"
