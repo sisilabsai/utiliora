@@ -697,9 +697,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "pomodoro-timer",
     category: "productivity-tools",
     title: "Pomodoro Timer",
-    summary: "Smart focus timer with presets, auto transitions, and daily productivity stats.",
+    summary: "Advanced focus timer with presets, alerts, mini window mode, and daily productivity stats.",
     description:
-      "Run structured focus and break cycles with custom durations, auto-start options, phase controls, and local progress tracking.",
+      "Run structured focus and break cycles with custom durations, auto-start options, warning alerts, system notifications, wake-lock support, and local progress tracking.",
     keywords: ["pomodoro timer", "focus timer", "productivity timer"],
     engine: { kind: "productivity-tool", id: "pomodoro-timer" },
     faq: baseFaq("Pomodoro Timer"),

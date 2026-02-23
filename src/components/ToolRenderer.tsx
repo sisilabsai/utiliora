@@ -3,6 +3,8 @@
 import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Bell,
+  BellOff,
   Binary,
   Briefcase,
   Calculator,
@@ -14,6 +16,7 @@ import {
   GraduationCap,
   Hash,
   Link2,
+  MonitorUp,
   Plus,
   Printer,
   RefreshCw,
@@ -24,6 +27,8 @@ import {
   Tags,
   Trash2,
   Type,
+  Volume2,
+  VolumeX,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -4724,11 +4729,24 @@ function ImageTool({ id }: { id: ImageToolId }) {
 
 function PomodoroTool() {
   type PomodoroMode = "focus" | "short-break" | "long-break";
-  type PomodoroStats = { dateKey: string; completedFocusSessions: number; focusMinutes: number };
+  type PomodoroStats = {
+    dateKey: string;
+    completedFocusSessions: number;
+    focusMinutes: number;
+    completedBreaks: number;
+    breakMinutes: number;
+  };
 
-  const settingsKey = "utiliora-pomodoro-settings-v2";
+  const settingsKey = "utiliora-pomodoro-settings-v3";
+  const legacySettingsKey = "utiliora-pomodoro-settings-v2";
   const statsKey = "utiliora-pomodoro-stats-v2";
   const todayKey = new Date().toISOString().slice(0, 10);
+  const popupRef = useRef<Window | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    "unsupported",
+  );
 
   const [focusMinutes, setFocusMinutes] = useState(25);
   const [shortBreakMinutes, setShortBreakMinutes] = useState(5);
@@ -4736,6 +4754,13 @@ function PomodoroTool() {
   const [sessionsBeforeLongBreak, setSessionsBeforeLongBreak] = useState(4);
   const [autoStartBreaks, setAutoStartBreaks] = useState(false);
   const [autoStartFocus, setAutoStartFocus] = useState(false);
+  const [enableSystemNotifications, setEnableSystemNotifications] = useState(false);
+  const [enableSoundAlerts, setEnableSoundAlerts] = useState(true);
+  const [enableWarnings, setEnableWarnings] = useState(true);
+  const [warningSeconds, setWarningSeconds] = useState(60);
+  const [keepScreenAwake, setKeepScreenAwake] = useState(false);
+  const [showMiniWindow, setShowMiniWindow] = useState(false);
+  const [needsAttention, setNeedsAttention] = useState(false);
   const [mode, setMode] = useState<PomodoroMode>("focus");
   const [secondsLeft, setSecondsLeft] = useState(25 * 60);
   const [running, setRunning] = useState(false);
@@ -4746,6 +4771,8 @@ function PomodoroTool() {
     dateKey: todayKey,
     completedFocusSessions: 0,
     focusMinutes: 0,
+    completedBreaks: 0,
+    breakMinutes: 0,
   });
 
   const durationForMode = useCallback(
@@ -4759,10 +4786,143 @@ function PomodoroTool() {
 
   const totalPhaseSeconds = useMemo(() => Math.max(1, durationForMode(mode) * 60), [durationForMode, mode]);
   const progressPercent = Math.min(100, Math.max(0, ((totalPhaseSeconds - secondsLeft) / totalPhaseSeconds) * 100));
+  const secondsElapsed = Math.max(0, totalPhaseSeconds - secondsLeft);
+
+  const ensureAudioContext = useCallback(() => {
+    if (audioContextRef.current) return audioContextRef.current;
+    const ContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!ContextCtor) return null;
+    const next = new ContextCtor();
+    audioContextRef.current = next;
+    return next;
+  }, []);
+
+  const playBeepPattern = useCallback(
+    (kind: "warning" | "complete") => {
+      if (!enableSoundAlerts) return;
+      const context = ensureAudioContext();
+      if (!context) return;
+      const start = context.currentTime + 0.02;
+      const beeps =
+        kind === "warning"
+          ? [
+              { frequency: 660, offset: 0, duration: 0.12 },
+              { frequency: 780, offset: 0.16, duration: 0.12 },
+            ]
+          : [
+              { frequency: 523, offset: 0, duration: 0.14 },
+              { frequency: 659, offset: 0.16, duration: 0.14 },
+              { frequency: 784, offset: 0.32, duration: 0.14 },
+            ];
+
+      beeps.forEach((beep) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = beep.frequency;
+        gain.gain.setValueAtTime(0.0001, start + beep.offset);
+        gain.gain.exponentialRampToValueAtTime(0.06, start + beep.offset + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + beep.offset + beep.duration);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(start + beep.offset);
+        oscillator.stop(start + beep.offset + beep.duration + 0.03);
+      });
+    },
+    [enableSoundAlerts, ensureAudioContext],
+  );
+
+  const pushSystemNotification = useCallback(
+    (title: string, body: string, requireInteraction = false) => {
+      if (!enableSystemNotifications) return;
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      const notification = new Notification(title, {
+        body,
+        tag: "utiliora-pomodoro",
+        requireInteraction,
+      });
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+    },
+    [enableSystemNotifications],
+  );
+
+  const releaseWakeLock = useCallback(async () => {
+    if (!wakeLockRef.current) return;
+    try {
+      await wakeLockRef.current.release();
+    } catch {
+      // Ignore wake lock release failures.
+    } finally {
+      wakeLockRef.current = null;
+    }
+  }, []);
+
+  const openMiniWindow = useCallback(() => {
+    const popup = window.open("", "utiliora-pomodoro-mini", "noopener,noreferrer,width=320,height=240");
+    if (!popup) {
+      setStatus("Enable popups to open mini timer window.");
+      return false;
+    }
+    popup.document.open();
+    popup.document.write(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pomodoro Mini Timer</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #f7fafc;
+      color: #1a1f27;
+      padding: 16px;
+      display: grid;
+      gap: 10px;
+    }
+    .mode { color: #445569; font-weight: 600; font-size: 14px; }
+    .time { font-size: 42px; font-weight: 700; line-height: 1; font-family: Consolas, monospace; }
+    .task { color: #445569; min-height: 18px; }
+    .bar { width: 100%; height: 9px; border-radius: 999px; overflow: hidden; border: 1px solid #c8d2df; background: #e8eef5; }
+    .bar > span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #1f6ad8, #1c4ca4); }
+  </style>
+</head>
+<body>
+  <div class="mode" id="mini-mode">Focus</div>
+  <div class="time" id="mini-time">00:00</div>
+  <div class="task" id="mini-task"></div>
+  <div class="bar"><span id="mini-progress"></span></div>
+</body>
+</html>`);
+    popup.document.close();
+    popupRef.current = popup;
+    setStatus("Mini timer opened. Keep it above other windows if your OS allows.");
+    return true;
+  }, []);
+
+  const updateMiniWindow = useCallback(
+    (modeLabel: string, mm: string, ss: string) => {
+      const popup = popupRef.current;
+      if (!popup || popup.closed) return;
+      const modeNode = popup.document.getElementById("mini-mode");
+      const timeNode = popup.document.getElementById("mini-time");
+      const taskNode = popup.document.getElementById("mini-task");
+      const progressNode = popup.document.getElementById("mini-progress");
+      if (modeNode) modeNode.textContent = `${modeLabel} ${running ? "(running)" : "(paused)"}`;
+      if (timeNode) timeNode.textContent = `${mm}:${ss}`;
+      if (taskNode) taskNode.textContent = currentTask.trim() ? `Task: ${currentTask.trim()}` : "Task: none";
+      if (progressNode) (progressNode as HTMLElement).style.width = `${progressPercent}%`;
+    },
+    [currentTask, progressPercent, running],
+  );
 
   useEffect(() => {
     try {
-      const rawSettings = localStorage.getItem(settingsKey);
+      const rawSettings = localStorage.getItem(settingsKey) ?? localStorage.getItem(legacySettingsKey);
       if (rawSettings) {
         const parsed = JSON.parse(rawSettings) as {
           focusMinutes?: number;
@@ -4771,6 +4931,11 @@ function PomodoroTool() {
           sessionsBeforeLongBreak?: number;
           autoStartBreaks?: boolean;
           autoStartFocus?: boolean;
+          enableSystemNotifications?: boolean;
+          enableSoundAlerts?: boolean;
+          enableWarnings?: boolean;
+          warningSeconds?: number;
+          keepScreenAwake?: boolean;
         };
         setFocusMinutes(Math.max(10, Math.min(90, Math.round(parsed.focusMinutes ?? 25))));
         setShortBreakMinutes(Math.max(3, Math.min(30, Math.round(parsed.shortBreakMinutes ?? 5))));
@@ -4778,20 +4943,40 @@ function PomodoroTool() {
         setSessionsBeforeLongBreak(Math.max(2, Math.min(8, Math.round(parsed.sessionsBeforeLongBreak ?? 4))));
         setAutoStartBreaks(Boolean(parsed.autoStartBreaks));
         setAutoStartFocus(Boolean(parsed.autoStartFocus));
+        setEnableSystemNotifications(Boolean(parsed.enableSystemNotifications));
+        setEnableSoundAlerts(parsed.enableSoundAlerts ?? true);
+        setEnableWarnings(parsed.enableWarnings ?? true);
+        setWarningSeconds(Math.max(10, Math.min(300, Math.round(parsed.warningSeconds ?? 60))));
+        setKeepScreenAwake(Boolean(parsed.keepScreenAwake));
       }
       const rawStats = localStorage.getItem(statsKey);
       if (rawStats) {
-        const parsedStats = JSON.parse(rawStats) as PomodoroStats;
-        setStats(
-          parsedStats.dateKey === todayKey
-            ? parsedStats
-            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0 },
-        );
+        const parsedStats = JSON.parse(rawStats) as Partial<PomodoroStats>;
+        if (parsedStats.dateKey === todayKey) {
+          setStats({
+            dateKey: todayKey,
+            completedFocusSessions: Math.max(0, Math.round(parsedStats.completedFocusSessions ?? 0)),
+            focusMinutes: Math.max(0, Math.round(parsedStats.focusMinutes ?? 0)),
+            completedBreaks: Math.max(0, Math.round(parsedStats.completedBreaks ?? 0)),
+            breakMinutes: Math.max(0, Math.round(parsedStats.breakMinutes ?? 0)),
+          });
+        } else {
+          setStats({
+            dateKey: todayKey,
+            completedFocusSessions: 0,
+            focusMinutes: 0,
+            completedBreaks: 0,
+            breakMinutes: 0,
+          });
+        }
       }
     } catch {
       // Ignore malformed local data.
     }
-  }, [statsKey, settingsKey, todayKey]);
+    if ("Notification" in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, [legacySettingsKey, statsKey, settingsKey, todayKey]);
 
   useEffect(() => {
     try {
@@ -4804,6 +4989,11 @@ function PomodoroTool() {
           sessionsBeforeLongBreak,
           autoStartBreaks,
           autoStartFocus,
+          enableSystemNotifications,
+          enableSoundAlerts,
+          enableWarnings,
+          warningSeconds,
+          keepScreenAwake,
         }),
       );
     } catch {
@@ -4817,6 +5007,11 @@ function PomodoroTool() {
     sessionsBeforeLongBreak,
     settingsKey,
     shortBreakMinutes,
+    enableSystemNotifications,
+    enableSoundAlerts,
+    enableWarnings,
+    warningSeconds,
+    keepScreenAwake,
   ]);
 
   useEffect(() => {
@@ -4839,8 +5034,64 @@ function PomodoroTool() {
     return () => window.clearTimeout(timer);
   }, [running, secondsLeft]);
 
+  useEffect(() => {
+    if (!keepScreenAwake || !running) {
+      void releaseWakeLock();
+      return;
+    }
+    const nav = navigator as Navigator & {
+      wakeLock?: { request(type: "screen"): Promise<{ release(): Promise<void> }> };
+    };
+    if (!nav.wakeLock?.request) return;
+    let cancelled = false;
+    nav.wakeLock
+      .request("screen")
+      .then((sentinel) => {
+        if (cancelled) {
+          void sentinel.release();
+          return;
+        }
+        wakeLockRef.current = sentinel;
+      })
+      .catch(() => {
+        setStatus("Wake lock request blocked. Keep this tab in foreground.");
+      });
+    return () => {
+      cancelled = true;
+      void releaseWakeLock();
+    };
+  }, [keepScreenAwake, releaseWakeLock, running]);
+
+  useEffect(() => {
+    const baseTitle = "Utiliora";
+    const modeLabel = mode === "focus" ? "Focus" : mode === "short-break" ? "Short Break" : "Long Break";
+    const mm = Math.floor(secondsLeft / 60)
+      .toString()
+      .padStart(2, "0");
+    const ss = (secondsLeft % 60).toString().padStart(2, "0");
+    document.title = needsAttention ? `Time up - ${modeLabel} | ${baseTitle}` : `${mm}:${ss} ${modeLabel} | ${baseTitle}`;
+    return () => {
+      document.title = baseTitle;
+    };
+  }, [mode, needsAttention, secondsLeft]);
+
+  useEffect(() => {
+    if (!showMiniWindow) {
+      if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+      popupRef.current = null;
+      return;
+    }
+    if (!popupRef.current || popupRef.current.closed) {
+      const opened = openMiniWindow();
+      if (!opened) {
+        setShowMiniWindow(false);
+      }
+    }
+  }, [openMiniWindow, showMiniWindow]);
+
   const completePhase = useCallback(() => {
     setRunning(false);
+    setNeedsAttention(true);
     if (mode === "focus") {
       const nextCount = completedFocusInCycle + 1;
       const nextMode: PomodoroMode = nextCount % sessionsBeforeLongBreak === 0 ? "long-break" : "short-break";
@@ -4849,16 +5100,24 @@ function PomodoroTool() {
       setMode(nextMode);
       setSecondsLeft(durationForMode(nextMode) * 60);
       setRunning(autoStartBreaks);
+      playBeepPattern("complete");
       setStatus(
         nextMode === "long-break"
           ? "Focus complete. Long break started."
           : "Focus complete. Short break started.",
       );
+      pushSystemNotification(
+        "Focus session completed",
+        nextMode === "long-break"
+          ? "Time for a long break."
+          : "Time for a short break.",
+        true,
+      );
       setStats((current) => {
         const safeCurrent =
           current.dateKey === todayKey
             ? current
-            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0 };
+            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0, completedBreaks: 0, breakMinutes: 0 };
         return {
           ...safeCurrent,
           completedFocusSessions: safeCurrent.completedFocusSessions + 1,
@@ -4869,7 +5128,20 @@ function PomodoroTool() {
       setMode("focus");
       setSecondsLeft(durationForMode("focus") * 60);
       setRunning(autoStartFocus);
+      playBeepPattern("complete");
       setStatus("Break complete. Back to focus.");
+      pushSystemNotification("Break complete", "Back to focus mode.", true);
+      setStats((current) => {
+        const safeCurrent =
+          current.dateKey === todayKey
+            ? current
+            : { dateKey: todayKey, completedFocusSessions: 0, focusMinutes: 0, completedBreaks: 0, breakMinutes: 0 };
+        return {
+          ...safeCurrent,
+          completedBreaks: safeCurrent.completedBreaks + 1,
+          breakMinutes: safeCurrent.breakMinutes + durationForMode(mode),
+        };
+      });
     }
   }, [
     autoStartBreaks,
@@ -4877,6 +5149,8 @@ function PomodoroTool() {
     completedFocusInCycle,
     durationForMode,
     mode,
+    playBeepPattern,
+    pushSystemNotification,
     sessionsBeforeLongBreak,
     todayKey,
   ]);
@@ -4887,6 +5161,69 @@ function PomodoroTool() {
       trackEvent("pomodoro_phase_complete", { mode });
     }
   }, [completePhase, mode, running, secondsLeft]);
+
+  useEffect(() => {
+    if (!running || !enableWarnings) return;
+    if (secondsLeft !== warningSeconds) return;
+    if (secondsLeft <= 0) return;
+    const warningMessage = mode === "focus" ? "Focus session ending soon." : "Break ending soon.";
+    setStatus(warningMessage);
+    playBeepPattern("warning");
+    pushSystemNotification(
+      mode === "focus" ? "Focus warning" : "Break warning",
+      `${Math.max(1, Math.round(warningSeconds / 60))} minute warning.`,
+    );
+  }, [enableWarnings, mode, playBeepPattern, pushSystemNotification, running, secondsLeft, warningSeconds]);
+
+  useEffect(() => {
+    const target = popupRef.current;
+    if (!showMiniWindow || !target || target.closed) return;
+    const modeLabel = mode === "focus" ? "Focus" : mode === "short-break" ? "Short Break" : "Long Break";
+    const mm = Math.floor(secondsLeft / 60)
+      .toString()
+      .padStart(2, "0");
+    const ss = (secondsLeft % 60).toString().padStart(2, "0");
+    updateMiniWindow(modeLabel, mm, ss);
+  }, [mode, secondsLeft, showMiniWindow, updateMiniWindow]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        setRunning((current) => !current);
+        setNeedsAttention(false);
+      } else if (event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        completePhase();
+        setStatus("Skipped current phase.");
+      } else if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        setRunning(false);
+        setMode("focus");
+        setSecondsLeft(durationForMode("focus") * 60);
+        setNeedsAttention(false);
+        setStatus("Timer reset to focus phase.");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [completePhase, durationForMode]);
+
+  useEffect(() => {
+    return () => {
+      if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+      void releaseWakeLock();
+      if (audioContextRef.current) {
+        void audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+    };
+  }, [releaseWakeLock]);
 
   const modeLabel =
     mode === "focus" ? "Focus" : mode === "short-break" ? "Short Break" : "Long Break";
@@ -4901,7 +5238,7 @@ function PomodoroTool() {
       <ToolHeading
         icon={RefreshCw}
         title="Pomodoro timer"
-        subtitle="Cycle focus and break sessions with auto transitions, daily stats, and preset workflows."
+        subtitle="Advanced focus timer with alerts, warning cues, wake lock, mini window mode, and keyboard shortcuts."
       />
       <div className="preset-row">
         <span className="supporting-text">Presets:</span>
@@ -4930,6 +5267,19 @@ function PomodoroTool() {
           }}
         >
           Deep Work 50/10
+        </button>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setFocusMinutes(90);
+            setShortBreakMinutes(15);
+            setLongBreakMinutes(25);
+            setSessionsBeforeLongBreak(2);
+            setStatus("Applied maker block preset.");
+          }}
+        >
+          Maker 90/15
         </button>
       </div>
       <div className="field-grid">
@@ -4979,6 +5329,17 @@ function PomodoroTool() {
             }
           />
         </label>
+        <label className="field">
+          <span>Warning before phase ends (seconds)</span>
+          <input
+            type="number"
+            min={10}
+            max={300}
+            step={5}
+            value={warningSeconds}
+            onChange={(event) => setWarningSeconds(Math.max(10, Math.min(300, Number(event.target.value) || 60)))}
+          />
+        </label>
       </div>
       <label className="field">
         <span>Current focus task</span>
@@ -5006,6 +5367,79 @@ function PomodoroTool() {
           />
           Auto-start focus
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={enableWarnings}
+            onChange={(event) => setEnableWarnings(event.target.checked)}
+          />
+          Warning alerts
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={enableSoundAlerts}
+            onChange={(event) => setEnableSoundAlerts(event.target.checked)}
+          />
+          Sound alerts
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={keepScreenAwake}
+            onChange={(event) => setKeepScreenAwake(event.target.checked)}
+          />
+          Keep screen awake
+        </label>
+      </div>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            if (!("Notification" in window)) {
+              setStatus("System notifications are not supported in this browser.");
+              setNotificationPermission("unsupported");
+              return;
+            }
+            const permission = await Notification.requestPermission();
+            setNotificationPermission(permission);
+            if (permission === "granted") {
+              setEnableSystemNotifications(true);
+              setStatus("System notifications enabled.");
+            } else {
+              setEnableSystemNotifications(false);
+              setStatus("System notifications are blocked.");
+            }
+          }}
+        >
+          {notificationPermission === "granted" ? <Bell size={15} /> : <BellOff size={15} />}
+          {notificationPermission === "granted" ? "Notifications ready" : "Enable notifications"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const next = !showMiniWindow;
+            setShowMiniWindow(next);
+            if (!next) setStatus("Mini timer closed.");
+          }}
+        >
+          <MonitorUp size={15} />
+          {showMiniWindow ? "Close mini timer" : "Open mini timer"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            playBeepPattern("warning");
+            setStatus("Played test alert sound.");
+          }}
+          disabled={!enableSoundAlerts}
+        >
+          {enableSoundAlerts ? <Volume2 size={15} /> : <VolumeX size={15} />}
+          Test sound
+        </button>
       </div>
       <div className="timer-value" aria-live="polite">
         {mm}:{ss}
@@ -5019,15 +5453,75 @@ function PomodoroTool() {
         rows={[
           { label: "Current phase", value: modeLabel },
           { label: "Task", value: currentTask.trim() || "No task set" },
+          { label: "Progress", value: `${progressPercent.toFixed(0)}%` },
+          { label: "Elapsed this phase", value: `${formatNumericValue(secondsElapsed)} sec` },
           { label: "Completed focus sessions today", value: formatNumericValue(stats.completedFocusSessions) },
           { label: "Focused minutes today", value: formatNumericValue(stats.focusMinutes) },
+          { label: "Completed breaks today", value: formatNumericValue(stats.completedBreaks) },
+          { label: "Break minutes today", value: formatNumericValue(stats.breakMinutes) },
+          { label: "System notifications", value: notificationPermission },
+          { label: "Wake lock", value: keepScreenAwake ? "Enabled" : "Disabled" },
         ]}
       />
       <div className="button-row">
-        <button className="action-button" type="button" onClick={() => setRunning(true)}>
+        <span className="supporting-text">Jump to phase:</span>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setRunning(false);
+            setMode("focus");
+            setSecondsLeft(durationForMode("focus") * 60);
+            setNeedsAttention(false);
+          }}
+        >
+          Focus
+        </button>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setRunning(false);
+            setMode("short-break");
+            setSecondsLeft(durationForMode("short-break") * 60);
+            setNeedsAttention(false);
+          }}
+        >
+          Short break
+        </button>
+        <button
+          className="chip-button"
+          type="button"
+          onClick={() => {
+            setRunning(false);
+            setMode("long-break");
+            setSecondsLeft(durationForMode("long-break") * 60);
+            setNeedsAttention(false);
+          }}
+        >
+          Long break
+        </button>
+      </div>
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => {
+            setRunning(true);
+            setNeedsAttention(false);
+            if (enableSoundAlerts) ensureAudioContext();
+          }}
+        >
           Start
         </button>
-        <button className="action-button secondary" type="button" onClick={() => setRunning(false)}>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setRunning(false);
+            setNeedsAttention(false);
+          }}
+        >
           Pause
         </button>
         <button
@@ -5038,7 +5532,7 @@ function PomodoroTool() {
             setStatus("Skipped current phase.");
           }}
         >
-          Skip phase
+          Skip phase (S)
         </button>
         <button
           className="action-button secondary"
@@ -5047,19 +5541,25 @@ function PomodoroTool() {
             setRunning(false);
             setMode("focus");
             setSecondsLeft(durationForMode("focus") * 60);
+            setNeedsAttention(false);
             setStatus("Timer reset to focus phase.");
           }}
         >
-          Reset
+          Reset (R)
         </button>
       </div>
-      <p className="supporting-text">{status}</p>
+      <p className="supporting-text">
+        {status} Shortcuts: `Space` start/pause, `S` skip, `R` reset.
+      </p>
+      {needsAttention ? (
+        <p className="status-badge warn">Timer needs attention. Next phase is ready.</p>
+      ) : null}
     </section>
   );
 }
 
 type TodoPriority = "high" | "medium" | "low";
-type TodoFilter = "all" | "active" | "completed" | "overdue";
+type TodoFilter = "all" | "active" | "completed" | "overdue" | "today";
 const TODO_PRIORITY_WEIGHT: Record<TodoPriority, number> = { high: 3, medium: 2, low: 1 };
 
 interface TodoItem {
@@ -5074,6 +5574,8 @@ interface TodoItem {
 
 function TodoListTool() {
   const storageKey = "utiliora-todos-v2";
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const todayKey = new Date().toISOString().slice(0, 10);
   const [value, setValue] = useState("");
   const [priority, setPriority] = useState<TodoPriority>("medium");
   const [dueDate, setDueDate] = useState("");
@@ -5118,6 +5620,7 @@ function TodoListTool() {
         if (filter === "active" && item.done) return false;
         if (filter === "completed" && !item.done) return false;
         if (filter === "overdue" && !isOverdue(item)) return false;
+        if (filter === "today" && item.dueDate !== todayKey) return false;
         if (!searchTerm) return true;
         return item.text.toLowerCase().includes(searchTerm);
       })
@@ -5131,14 +5634,16 @@ function TodoListTool() {
         if (right.dueDate) return 1;
         return right.createdAt - left.createdAt;
       });
-  }, [filter, isOverdue, items, search]);
+  }, [filter, isOverdue, items, search, todayKey]);
 
   const stats = useMemo(() => {
     const completed = items.filter((item) => item.done).length;
     const active = items.length - completed;
     const overdue = items.filter((item) => isOverdue(item)).length;
-    return { completed, active, overdue, total: items.length };
-  }, [isOverdue, items]);
+    const dueToday = items.filter((item) => item.dueDate === todayKey && !item.done).length;
+    const completionRate = items.length ? (completed / items.length) * 100 : 0;
+    return { completed, active, overdue, total: items.length, dueToday, completionRate };
+  }, [isOverdue, items, todayKey]);
 
   const addTask = () => {
     const text = value.trim();
@@ -5246,6 +5751,61 @@ function TodoListTool() {
           <Download size={15} />
           CSV
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile("todo-backup.json", JSON.stringify(items, null, 2), "application/json;charset=utf-8;")
+          }
+          disabled={items.length === 0}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => importRef.current?.click()}
+        >
+          <Plus size={15} />
+          Import JSON
+        </button>
+        <input
+          ref={importRef}
+          type="file"
+          hidden
+          accept=".json,application/json"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              const parsed = JSON.parse(await file.text()) as Partial<TodoItem>[];
+              if (!Array.isArray(parsed)) throw new Error("Invalid");
+              const sanitized = parsed
+                .filter((item) => item && typeof item === "object")
+                .map((item) => ({
+                  id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+                  text: typeof item.text === "string" ? item.text : "",
+                  done: Boolean(item.done),
+                  priority:
+                    item.priority === "high" || item.priority === "medium" || item.priority === "low"
+                      ? item.priority
+                      : "medium",
+                  dueDate: typeof item.dueDate === "string" ? item.dueDate : "",
+                  createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+                  completedAt: typeof item.completedAt === "number" ? item.completedAt : undefined,
+                }))
+                .filter((item) => item.text.trim());
+              if (!sanitized.length) throw new Error("Empty");
+              setItems((current) => [...sanitized, ...current]);
+              setStatus(`Imported ${sanitized.length} task${sanitized.length === 1 ? "" : "s"}.`);
+            } catch {
+              setStatus("Could not import tasks from that file.");
+            } finally {
+              event.target.value = "";
+            }
+          }}
+        />
       </div>
       <div className="field-grid">
         <label className="field">
@@ -5255,6 +5815,7 @@ function TodoListTool() {
             <option value="active">Active</option>
             <option value="completed">Completed</option>
             <option value="overdue">Overdue</option>
+            <option value="today">Due today</option>
           </select>
         </label>
         <label className="field">
@@ -5274,6 +5835,8 @@ function TodoListTool() {
           { label: "Active tasks", value: formatNumericValue(stats.active) },
           { label: "Completed tasks", value: formatNumericValue(stats.completed) },
           { label: "Overdue tasks", value: formatNumericValue(stats.overdue) },
+          { label: "Due today", value: formatNumericValue(stats.dueToday) },
+          { label: "Completion rate", value: `${stats.completionRate.toFixed(1)}%` },
         ]}
       />
       <ul className="todo-list">
@@ -7356,6 +7919,19 @@ function InvoiceGeneratorTool() {
     return `Due in ${diffDays} day${diffDays === 1 ? "" : "s"}`;
   }, [invoice.dueDate]);
 
+  const buildInvoiceNumber = useCallback(() => {
+    const now = new Date();
+    return `INV-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
+  }, []);
+
+  const reminderMessage = useMemo(() => {
+    return `Hi ${invoice.clientName || "there"}, this is a friendly reminder that invoice ${
+      invoice.invoiceNumber || ""
+    } for ${formatCurrencyWithCode(financials.total, invoice.currency)} is due on ${
+      invoice.dueDate || "the due date"
+    }. Please let me know if you need anything from me to process payment.`;
+  }, [financials.total, invoice.clientName, invoice.currency, invoice.dueDate, invoice.invoiceNumber]);
+
   const printInvoice = () => {
     const rowsHtml = invoice.items
       .map((item) => {
@@ -7453,6 +8029,28 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
         >
           <Download size={15} />
           CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const copied = await copyTextToClipboard(reminderMessage);
+            setStatus(copied ? "Payment reminder copied." : "Unable to copy payment reminder.");
+          }}
+        >
+          <Copy size={15} />
+          Copy reminder
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            updateInvoice("invoiceNumber", buildInvoiceNumber());
+            setStatus("Generated a new invoice number.");
+          }}
+        >
+          <RefreshCw size={15} />
+          New number
         </button>
       </div>
       <div className="split-panel">
