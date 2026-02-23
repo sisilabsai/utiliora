@@ -591,22 +591,49 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   ],
 };
 
-const calculatorCurrencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
+const CALCULATORS_WITH_DISPLAY_CURRENCY = new Set<CalculatorId>([
+  "loan-emi-calculator",
+  "mortgage-calculator",
+  "compound-interest-calculator",
+  "simple-interest-calculator",
+  "inflation-calculator",
+  "crypto-profit-calculator",
+  "credit-card-payoff-calculator",
+  "salary-after-tax-calculator",
+  "roi-calculator",
+  "profit-margin-calculator",
+  "markup-calculator",
+  "vat-calculator",
+  "savings-goal-calculator",
+  "break-even-calculator",
+  "startup-cost-estimator",
+  "freelance-rate-calculator",
+]);
+
+const MONEY_LABEL_PATTERN = /\(USD\)\s*$/i;
+const CURRENCY_CODE_PATTERN = /^[A-Z]{3}$/;
 
 const calculatorNumberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
-function formatCurrencyValue(value: number): string {
-  return calculatorCurrencyFormatter.format(value);
+function formatCurrencyValue(value: number, currency = "USD"): string {
+  return formatCurrencyWithCode(value, currency);
 }
 
 function formatNumericValue(value: number): string {
   return calculatorNumberFormatter.format(value);
+}
+
+function sanitizeCalculatorCurrencyCode(value: string | undefined): string {
+  if (!value) return "USD";
+  const normalized = value.trim().toUpperCase();
+  return CURRENCY_CODE_PATTERN.test(normalized) ? normalized : "USD";
+}
+
+function formatCalculatorFieldLabel(field: CalculatorField, currency: string): string {
+  if (!MONEY_LABEL_PATTERN.test(field.label)) return field.label;
+  return `${field.label.replace(MONEY_LABEL_PATTERN, "").trim()} (${currency})`;
 }
 
 function safeNumberValue(value: unknown): number {
@@ -728,57 +755,206 @@ function openPrintWindow(title: string, bodyHtml: string, extraCss = ""): boolea
 
 function CalculatorTool({ id }: { id: CalculatorId }) {
   const fields = calculatorFields[id];
+  const supportsDisplayCurrency = CALCULATORS_WITH_DISPLAY_CURRENCY.has(id);
   const defaultValues = useMemo(() => Object.fromEntries(fields.map((field) => [field.name, field.defaultValue])), [fields]);
   const storageKey = `utiliora-calculator-values-${id}`;
   const autoModeKey = `utiliora-calculator-auto-${id}`;
+  const currencyStorageKey = `utiliora-calculator-currency-${id}`;
+  const isCurrencyConverter = id === "currency-converter-calculator";
   const [values, setValues] = useState<Record<string, string>>(defaultValues);
-  const [resultRows, setResultRows] = useState<ResultRow[]>(runCalculator(id, defaultValues));
+  const [selectedCurrency, setSelectedCurrency] = useState("USD");
+  const [currencyOptions, setCurrencyOptions] = useState<CurrencyOption[]>(INVOICE_LOCAL_CURRENCIES);
+  const [currencySource, setCurrencySource] = useState("local-fallback");
+  const [resultRows, setResultRows] = useState<ResultRow[]>(runCalculator(id, defaultValues, { currency: "USD" }));
   const [autoCalculate, setAutoCalculate] = useState(true);
   const [copyStatus, setCopyStatus] = useState("");
   const [showFullTable, setShowFullTable] = useState(false);
+  const [rateStatus, setRateStatus] = useState("");
+  const [rateMeta, setRateMeta] = useState<{ source: string; date: string } | null>(null);
   const presets = calculatorPresets[id] ?? [];
+  const formatCalculatorCurrency = useCallback(
+    (amount: number) => formatCurrencyValue(amount, selectedCurrency),
+    [selectedCurrency],
+  );
+
+  const currencySelectOptions = useMemo(
+    () => currencyOptions.map((currency) => ({ label: `${currency.code} - ${currency.name}`, value: currency.code })),
+    [currencyOptions],
+  );
+
+  const renderFields = useMemo(() => {
+    if (!isCurrencyConverter) return fields;
+    return fields.map((field) => {
+      if (field.name !== "fromCurrency" && field.name !== "toCurrency") return field;
+      return {
+        ...field,
+        options: currencySelectOptions.length ? currencySelectOptions : field.options,
+      };
+    });
+  }, [currencySelectOptions, fields, isCurrencyConverter]);
 
   useEffect(() => {
     setValues(defaultValues);
-    setResultRows(runCalculator(id, defaultValues));
+    setSelectedCurrency("USD");
+    setResultRows(runCalculator(id, defaultValues, { currency: "USD" }));
     setShowFullTable(false);
+    setRateStatus("");
+    setRateMeta(null);
   }, [defaultValues, id]);
 
   useEffect(() => {
     try {
       const savedValues = localStorage.getItem(storageKey);
       const savedAutoMode = localStorage.getItem(autoModeKey);
+      const savedCurrency = localStorage.getItem(currencyStorageKey);
+      const nextValues: Record<string, string> = { ...defaultValues };
+      let nextAutoCalculate = true;
+      let nextCurrency = sanitizeCalculatorCurrencyCode(savedCurrency ?? undefined);
+
       if (savedValues) {
         const parsed = JSON.parse(savedValues) as Record<string, string>;
-        setValues((current) => ({ ...current, ...parsed }));
+        Object.assign(nextValues, parsed);
       }
       if (savedAutoMode !== null) {
-        setAutoCalculate(savedAutoMode === "true");
+        nextAutoCalculate = savedAutoMode === "true";
       }
+
+      const params = new URLSearchParams(window.location.search);
+      const encodedState = params.get("state");
+      if (encodedState) {
+        const decoded = decodeBase64Url(encodedState);
+        if (decoded) {
+          try {
+            const parsed = JSON.parse(decoded) as Partial<{
+              values: Record<string, string>;
+              currency: string;
+              autoCalculate: boolean;
+            }>;
+            if (parsed.values && typeof parsed.values === "object") {
+              Object.assign(nextValues, parsed.values);
+            }
+            if (typeof parsed.currency === "string") {
+              nextCurrency = sanitizeCalculatorCurrencyCode(parsed.currency);
+            }
+            if (typeof parsed.autoCalculate === "boolean") {
+              nextAutoCalculate = parsed.autoCalculate;
+            }
+          } catch {
+            // Ignore malformed share payload and continue with saved/local values.
+          }
+        }
+      }
+
+      fields.forEach((field) => {
+        const queryValue = params.get(field.name);
+        if (queryValue !== null) {
+          nextValues[field.name] = queryValue;
+        }
+      });
+      const queryCurrency = params.get("displayCurrency");
+      if (queryCurrency) {
+        nextCurrency = sanitizeCalculatorCurrencyCode(queryCurrency);
+      }
+
+      setValues(nextValues);
+      setAutoCalculate(nextAutoCalculate);
+      setSelectedCurrency(nextCurrency);
+      setResultRows(runCalculator(id, nextValues, { currency: nextCurrency }));
     } catch {
       // Ignore malformed storage values and continue with defaults.
     }
-  }, [autoModeKey, storageKey]);
+  }, [autoModeKey, currencyStorageKey, defaultValues, fields, id, storageKey]);
 
   useEffect(() => {
     try {
       localStorage.setItem(storageKey, JSON.stringify(values));
       localStorage.setItem(autoModeKey, autoCalculate ? "true" : "false");
+      localStorage.setItem(currencyStorageKey, selectedCurrency);
     } catch {
       // Ignore storage failures.
     }
-  }, [autoCalculate, autoModeKey, storageKey, values]);
+  }, [autoCalculate, autoModeKey, currencyStorageKey, selectedCurrency, storageKey, values]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const loadCurrencies = async () => {
+      try {
+        const response = await fetch("/api/currencies", { signal: controller.signal });
+        if (!response.ok) throw new Error("Currency API unavailable");
+        const payload = (await response.json()) as {
+          ok?: boolean;
+          source?: string;
+          currencies?: Array<{ code?: string; name?: string }>;
+        };
+        const normalized = (payload.currencies ?? [])
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            code: typeof item.code === "string" ? item.code.trim().toUpperCase() : "",
+            name: typeof item.name === "string" ? item.name.trim() : "",
+          }))
+          .filter((item) => CURRENCY_CODE_PATTERN.test(item.code) && item.name)
+          .sort((left, right) => left.code.localeCompare(right.code));
+        if (!normalized.length) throw new Error("No currencies returned");
+        if (!cancelled) {
+          setCurrencyOptions(mergeCurrencyOptions(normalized, INVOICE_AFRICAN_PRIORITY));
+          setCurrencySource(payload.source || "api");
+        }
+      } catch {
+        if (!cancelled) {
+          setCurrencyOptions(INVOICE_LOCAL_CURRENCIES);
+          setCurrencySource("local-fallback");
+        }
+      }
+    };
+    void loadCurrencies();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supportsDisplayCurrency || !currencyOptions.length) return;
+    if (currencyOptions.some((item) => item.code === selectedCurrency)) return;
+    const fallbackCurrency = currencyOptions[0].code;
+    setSelectedCurrency(fallbackCurrency);
+    if (!autoCalculate) {
+      setResultRows(runCalculator(id, values, { currency: fallbackCurrency }));
+    }
+  }, [autoCalculate, currencyOptions, id, selectedCurrency, supportsDisplayCurrency, values]);
+
+  useEffect(() => {
+    if (!isCurrencyConverter || !currencyOptions.length) return;
+    const fallbackFrom = currencyOptions.find((item) => item.code === "USD")?.code ?? currencyOptions[0].code;
+    const fallbackTo = currencyOptions.find((item) => item.code === "EUR")?.code ?? currencyOptions[Math.min(1, currencyOptions.length - 1)].code;
+    let didChange = false;
+    const nextValues = { ...values };
+    if (!currencyOptions.some((item) => item.code === values.fromCurrency)) {
+      nextValues.fromCurrency = fallbackFrom;
+      didChange = true;
+    }
+    if (!currencyOptions.some((item) => item.code === values.toCurrency)) {
+      nextValues.toCurrency = fallbackTo;
+      didChange = true;
+    }
+    if (!didChange) return;
+    setValues(nextValues);
+    if (!autoCalculate) {
+      setResultRows(runCalculator(id, nextValues, { currency: selectedCurrency }));
+    }
+  }, [autoCalculate, currencyOptions, id, isCurrencyConverter, selectedCurrency, values]);
 
   const calculate = useCallback(
     (
       trigger: "manual" | "auto" | "preset" | "reset" = "manual",
       nextValues: Record<string, string> = values,
     ) => {
-      const rows = runCalculator(id, nextValues);
+      const rows = runCalculator(id, nextValues, { currency: selectedCurrency });
       setResultRows(rows);
       trackEvent("tool_calculate", { tool: id, trigger });
     },
-    [id, values],
+    [id, selectedCurrency, values],
   );
 
   useEffect(() => {
@@ -786,7 +962,88 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     calculate("auto");
   }, [autoCalculate, calculate]);
 
-  const insights = useMemo(() => getCalculatorInsights(id, values), [id, values]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        calculate("manual");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [calculate]);
+
+  const fetchLiveExchangeRate = useCallback(async () => {
+    if (!isCurrencyConverter) return;
+    const fromCurrency = sanitizeCalculatorCurrencyCode(values.fromCurrency);
+    const toCurrency = sanitizeCalculatorCurrencyCode(values.toCurrency);
+    if (!fromCurrency || !toCurrency) {
+      setRateStatus("Choose both currencies first.");
+      return;
+    }
+
+    if (fromCurrency === toCurrency) {
+      const nextValues = { ...values, exchangeRate: "1" };
+      setValues(nextValues);
+      setRateMeta({ source: "local", date: new Date().toISOString().slice(0, 10) });
+      setRateStatus("From and to currencies are identical. Rate set to 1.");
+      if (!autoCalculate) {
+        calculate("manual", nextValues);
+      }
+      return;
+    }
+
+    setRateStatus(`Fetching live rate ${fromCurrency} -> ${toCurrency}...`);
+    try {
+      const response = await fetch(
+        `/api/exchange-rate?from=${encodeURIComponent(fromCurrency)}&to=${encodeURIComponent(toCurrency)}`,
+      );
+      if (!response.ok) throw new Error("Rate request failed");
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        source?: string;
+        date?: string;
+        rate?: number;
+      };
+      if (!payload.ok || typeof payload.rate !== "number" || !Number.isFinite(payload.rate) || payload.rate <= 0) {
+        throw new Error("Invalid live rate payload");
+      }
+      const normalizedRate = payload.rate.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+      const nextValues = { ...values, exchangeRate: normalizedRate || payload.rate.toString() };
+      setValues(nextValues);
+      setRateMeta({
+        source: payload.source ?? "api",
+        date: payload.date ?? new Date().toISOString().slice(0, 10),
+      });
+      setRateStatus(`Live rate updated: 1 ${fromCurrency} = ${nextValues.exchangeRate} ${toCurrency}.`);
+      trackEvent("calculator_live_rate_fetch", { tool: id, fromCurrency, toCurrency });
+      if (!autoCalculate) {
+        calculate("manual", nextValues);
+      }
+    } catch {
+      setRateStatus("Live rate unavailable right now. You can still input your own exchange rate.");
+    }
+  }, [autoCalculate, calculate, id, isCurrencyConverter, values]);
+
+  const swapConverterCurrencies = useCallback(() => {
+    if (!isCurrencyConverter) return;
+    const nextValues = {
+      ...values,
+      fromCurrency: values.toCurrency || "USD",
+      toCurrency: values.fromCurrency || "EUR",
+    };
+    setValues(nextValues);
+    setRateStatus("Swapped from and to currencies.");
+    trackEvent("calculator_currency_swap", { tool: id });
+    if (!autoCalculate) {
+      calculate("manual", nextValues);
+    }
+  }, [autoCalculate, calculate, id, isCurrencyConverter, values]);
+
+  const insights = useMemo(
+    () => getCalculatorInsights(id, values, { currency: selectedCurrency }),
+    [id, selectedCurrency, values],
+  );
   const loanSchedule = useMemo(() => {
     if (id === "loan-emi-calculator") {
       return getLoanAmortizationSchedule(values);
@@ -843,10 +1100,70 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         </div>
       ) : null}
 
+      {(supportsDisplayCurrency || isCurrencyConverter) ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>{isCurrencyConverter ? "Currency configuration" : "Display currency"}</h3>
+            {isCurrencyConverter ? (
+              <div className="button-row">
+                <button className="action-button secondary" type="button" onClick={swapConverterCurrencies}>
+                  <RefreshCw size={15} />
+                  Swap
+                </button>
+                <button className="action-button secondary" type="button" onClick={() => void fetchLiveExchangeRate()}>
+                  <MonitorUp size={15} />
+                  Fetch live rate
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="field-grid">
+            {supportsDisplayCurrency ? (
+              <label className="field">
+                <span>Result currency</span>
+                <select
+                  value={selectedCurrency}
+                  onChange={(event) => {
+                    const nextCurrency = sanitizeCalculatorCurrencyCode(event.target.value);
+                    setSelectedCurrency(nextCurrency);
+                    if (!autoCalculate) {
+                      setResultRows(runCalculator(id, values, { currency: nextCurrency }));
+                    }
+                  }}
+                >
+                  {currencySelectOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {isCurrencyConverter ? (
+              <p className="supporting-text">
+                Source: {currencySource}. Loaded {formatNumericValue(currencyOptions.length)} currencies.
+                {rateMeta ? ` Last rate source: ${rateMeta.source} (${rateMeta.date}).` : ""}
+              </p>
+            ) : null}
+          </div>
+          {isCurrencyConverter && rateStatus ? <p className="supporting-text">{rateStatus}</p> : null}
+          {supportsDisplayCurrency ? (
+            <>
+              <p className="supporting-text">
+                Currency list source: {currencySource}. Loaded {formatNumericValue(currencyOptions.length)} options.
+              </p>
+              <p className="supporting-text">
+                Values stay the same, but all money outputs are shown in {selectedCurrency} for your region.
+              </p>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="field-grid">
-        {fields.map((field) => (
+        {renderFields.map((field) => (
           <label key={field.name} className="field">
-            <span>{field.label}</span>
+            <span>{supportsDisplayCurrency ? formatCalculatorFieldLabel(field, selectedCurrency) : field.label}</span>
             {field.type === "select" ? (
               <select
                 value={values[field.name] ?? field.defaultValue}
@@ -857,6 +1174,9 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                     {option.label}
                   </option>
                 ))}
+                {!field.options?.some((option) => option.value === (values[field.name] ?? field.defaultValue)) ? (
+                  <option value={values[field.name] ?? field.defaultValue}>{values[field.name] ?? field.defaultValue}</option>
+                ) : null}
               </select>
             ) : (
               <input
@@ -898,6 +1218,28 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         >
           <Copy size={15} />
           Copy results
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const encoded = encodeBase64Url(
+              JSON.stringify({
+                values,
+                currency: selectedCurrency,
+                autoCalculate,
+              }),
+            );
+            const shareUrl = `${window.location.origin}${window.location.pathname}?state=${encoded}`;
+            const ok = await copyTextToClipboard(shareUrl);
+            setCopyStatus(ok ? "Share link copied." : "Could not copy share link.");
+            if (ok) {
+              trackEvent("calculator_share_link", { tool: id });
+            }
+          }}
+        >
+          <Link2 size={15} />
+          Copy share link
         </button>
         <label className="checkbox">
           <input
@@ -973,10 +1315,10 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                 {visibleLoanRows.map((row) => (
                   <tr key={`loan-row-${row.period}`}>
                     <td>{row.period}</td>
-                    <td>{formatCurrencyValue(row.payment)}</td>
-                    <td>{formatCurrencyValue(row.principal)}</td>
-                    <td>{formatCurrencyValue(row.interest)}</td>
-                    <td>{formatCurrencyValue(row.balance)}</td>
+                    <td>{formatCalculatorCurrency(row.payment)}</td>
+                    <td>{formatCalculatorCurrency(row.principal)}</td>
+                    <td>{formatCalculatorCurrency(row.interest)}</td>
+                    <td>{formatCalculatorCurrency(row.balance)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1021,8 +1363,8 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                 {compoundTimeline.map((row) => (
                   <tr key={`growth-${row.periodYears}`}>
                     <td>{Number.isInteger(row.periodYears) ? row.periodYears : row.periodYears.toFixed(1)}</td>
-                    <td>{formatCurrencyValue(row.value)}</td>
-                    <td>{formatCurrencyValue(row.gain)}</td>
+                    <td>{formatCalculatorCurrency(row.value)}</td>
+                    <td>{formatCalculatorCurrency(row.gain)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1069,9 +1411,9 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                 {savingsTimeline.map((row) => (
                   <tr key={`savings-${row.periodYears}`}>
                     <td>{Number.isInteger(row.periodYears) ? row.periodYears : row.periodYears.toFixed(1)}</td>
-                    <td>{formatCurrencyValue(row.accountValue)}</td>
-                    <td>{formatCurrencyValue(row.contributed)}</td>
-                    <td>{formatCurrencyValue(row.growth)}</td>
+                    <td>{formatCalculatorCurrency(row.accountValue)}</td>
+                    <td>{formatCalculatorCurrency(row.contributed)}</td>
+                    <td>{formatCalculatorCurrency(row.growth)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1100,10 +1442,10 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                   return (
                     <tr key={`break-even-${labels[index]}`}>
                       <td>{labels[index] ?? `${index + 1}`}</td>
-                      <td>{formatCurrencyValue(row.unitPrice)}</td>
-                      <td>{formatCurrencyValue(row.contributionPerUnit)}</td>
+                      <td>{formatCalculatorCurrency(row.unitPrice)}</td>
+                      <td>{formatCalculatorCurrency(row.contributionPerUnit)}</td>
                       <td>{Number.isFinite(row.units) ? formatNumericValue(row.units) : "Not reachable"}</td>
-                      <td>{Number.isFinite(row.revenue) ? formatCurrencyValue(row.revenue) : "Not reachable"}</td>
+                      <td>{Number.isFinite(row.revenue) ? formatCalculatorCurrency(row.revenue) : "Not reachable"}</td>
                     </tr>
                   );
                 })}
@@ -1124,11 +1466,11 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
               },
               {
                 label: "Estimated day rate (8h)",
-                value: formatCurrencyValue((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 8),
+                value: formatCalculatorCurrency((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 8),
               },
               {
                 label: "Estimated week rate (40h)",
-                value: formatCurrencyValue((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 40),
+                value: formatCalculatorCurrency((safeNumberValue(values.targetMonthlyIncome) + safeNumberValue(values.monthlyExpenses)) / Math.max(1, safeNumberValue(values.billableHoursPerMonth)) * (1 + safeNumberValue(values.desiredProfitPercent) / 100) * 40),
               },
             ]}
           />

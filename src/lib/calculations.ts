@@ -34,11 +34,12 @@ export interface BreakEvenScenarioRow {
   revenue: number;
 }
 
-const moneyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
+export interface CalculatorOutputOptions {
+  currency?: string;
+}
+
+const DEFAULT_OUTPUT_CURRENCY = "USD";
+const moneyFormatterCache = new Map<string, Intl.NumberFormat>();
 
 const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
@@ -57,8 +58,34 @@ function toNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function formatMoney(value: number): string {
-  return moneyFormatter.format(value);
+function sanitizeCurrencyCode(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_OUTPUT_CURRENCY;
+  const code = value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : DEFAULT_OUTPUT_CURRENCY;
+}
+
+function getMoneyFormatter(currency: string): Intl.NumberFormat | null {
+  const code = sanitizeCurrencyCode(currency);
+  const cached = moneyFormatterCache.get(code);
+  if (cached) return cached;
+
+  try {
+    const formatter = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 2,
+    });
+    moneyFormatterCache.set(code, formatter);
+    return formatter;
+  } catch {
+    return null;
+  }
+}
+
+function formatMoneyValue(value: number, currency = DEFAULT_OUTPUT_CURRENCY): string {
+  const formatter = getMoneyFormatter(currency);
+  if (formatter) return formatter.format(value);
+  return `${formatNumber(value)} ${sanitizeCurrencyCode(currency)}`;
 }
 
 function formatNumber(value: number): string {
@@ -71,6 +98,10 @@ function formatPercent(value: number): string {
 
 function formatDate(value: Date): string {
   return dateFormatter.format(value);
+}
+
+function resolveDisplayCurrency(options?: CalculatorOutputOptions): string {
+  return sanitizeCurrencyCode(options?.currency);
 }
 
 interface LoanMetrics {
@@ -733,7 +764,14 @@ export function getBreakEvenScenarios(rawValues: Record<string, unknown>): Break
   });
 }
 
-export function getCalculatorInsights(id: CalculatorId, rawValues: Record<string, unknown>): string[] {
+export function getCalculatorInsights(
+  id: CalculatorId,
+  rawValues: Record<string, unknown>,
+  options?: CalculatorOutputOptions,
+): string[] {
+  const currency = resolveDisplayCurrency(options);
+  const formatMoney = (value: number): string => formatMoneyValue(value, currency);
+
   switch (id) {
     case "loan-emi-calculator": {
       const metrics = loanMetrics(rawValues);
@@ -893,7 +931,14 @@ export function getCalculatorInsights(id: CalculatorId, rawValues: Record<string
   }
 }
 
-export function runCalculator(id: CalculatorId, rawValues: Record<string, unknown>): ResultRow[] {
+export function runCalculator(
+  id: CalculatorId,
+  rawValues: Record<string, unknown>,
+  options?: CalculatorOutputOptions,
+): ResultRow[] {
+  const currency = resolveDisplayCurrency(options);
+  const formatMoney = (value: number): string => formatMoneyValue(value, currency);
+
   switch (id) {
     case "loan-emi-calculator": {
       const metrics = loanMetrics(rawValues);
@@ -950,7 +995,7 @@ export function runCalculator(id: CalculatorId, rawValues: Record<string, unknow
       return [
         { label: "Current Amount", value: formatMoney(metrics.amount) },
         { label: "Inflation-adjusted Future Cost", value: formatMoney(metrics.futureCost) },
-        { label: "Future Purchasing Power (in today's dollars)", value: formatMoney(metrics.purchasingPower) },
+        { label: "Future Purchasing Power (in today's money)", value: formatMoney(metrics.purchasingPower) },
         { label: "Purchasing Power Loss", value: formatPercent(metrics.purchasingPowerLossPercent) },
       ];
     }
