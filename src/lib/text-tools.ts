@@ -33,6 +33,31 @@ export interface JsonFormatResult {
   sizeAfter?: number;
 }
 
+export type SitemapChangeFrequency =
+  | "always"
+  | "hourly"
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "yearly"
+  | "never";
+
+export interface SitemapUrlEntry {
+  url: string;
+  lastmod?: string;
+  changefreq?: SitemapChangeFrequency;
+  priority?: number;
+}
+
+export interface RobotsTxtOptions {
+  userAgent?: string;
+  allowPaths?: string[];
+  disallowPaths?: string[];
+  crawlDelay?: number | null;
+  sitemapUrls?: string[];
+  host?: string;
+}
+
 const STOP_WORDS = new Set([
   "a",
   "about",
@@ -323,6 +348,144 @@ export function markdownToHtml(markdown: string): string {
 
   if (listOpen) output.push("</ul>");
   return output.join("\n");
+}
+
+const VOID_HTML_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+export function beautifyHtml(value: string, indentSize = 2): string {
+  const source = value.trim();
+  if (!source) return "";
+
+  const normalized = source.replace(/>\s+</g, "><");
+  const tokens = normalized.match(/<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<\/?[^>]+>|[^<]+/gi) ?? [];
+  const indent = " ".repeat(Math.max(0, Math.min(8, Math.round(indentSize))));
+  const output: string[] = [];
+  let depth = 0;
+
+  for (const token of tokens) {
+    const trimmed = token.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith("</")) {
+      depth = Math.max(0, depth - 1);
+    }
+
+    if (!trimmed.startsWith("<")) {
+      const compactText = trimmed.replace(/\s+/g, " ");
+      output.push(`${indent.repeat(depth)}${compactText}`);
+      continue;
+    }
+
+    output.push(`${indent.repeat(depth)}${trimmed}`);
+
+    const isDoctype = /^<!doctype/i.test(trimmed);
+    const isComment = /^<!--/.test(trimmed);
+    const isClosingTag = /^<\//.test(trimmed);
+    const isSelfClosing = /\/>$/.test(trimmed);
+    const tagMatch = trimmed.match(/^<\s*([a-zA-Z0-9:-]+)/);
+    const tag = tagMatch?.[1]?.toLowerCase() ?? "";
+
+    if (!isDoctype && !isComment && !isClosingTag && !isSelfClosing && !VOID_HTML_TAGS.has(tag)) {
+      depth += 1;
+    }
+  }
+
+  return output.join("\n");
+}
+
+export function generateSitemapXml(entries: SitemapUrlEntry[]): string {
+  const validEntries = entries
+    .map((entry) => ({
+      url: entry.url.trim(),
+      lastmod: entry.lastmod?.trim(),
+      changefreq: entry.changefreq,
+      priority:
+        typeof entry.priority === "number" && Number.isFinite(entry.priority)
+          ? Math.max(0, Math.min(1, entry.priority))
+          : undefined,
+    }))
+    .filter((entry) => entry.url.length > 0 && isValidHttpUrl(entry.url));
+
+  const urls = validEntries
+    .map((entry) => {
+      const lines = [
+        "  <url>",
+        `    <loc>${xmlEscape(entry.url)}</loc>`,
+      ];
+      if (entry.lastmod) lines.push(`    <lastmod>${xmlEscape(entry.lastmod)}</lastmod>`);
+      if (entry.changefreq) lines.push(`    <changefreq>${entry.changefreq}</changefreq>`);
+      if (typeof entry.priority === "number") lines.push(`    <priority>${entry.priority.toFixed(1)}</priority>`);
+      lines.push("  </url>");
+      return lines.join("\n");
+    })
+    .join("\n");
+
+  const body = urls ? `\n${urls}\n` : "\n";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${body}</urlset>`;
+}
+
+export function generateRobotsTxt(options: RobotsTxtOptions): string {
+  const userAgent = options.userAgent?.trim() || "*";
+  const allowPaths = (options.allowPaths ?? []).map((item) => item.trim()).filter(Boolean);
+  const disallowPaths = (options.disallowPaths ?? []).map((item) => item.trim()).filter(Boolean);
+  const sitemapUrls = (options.sitemapUrls ?? []).map((item) => item.trim()).filter(Boolean);
+  const host = options.host?.trim() || "";
+  const crawlDelay =
+    typeof options.crawlDelay === "number" && Number.isFinite(options.crawlDelay) && options.crawlDelay > 0
+      ? Math.round(options.crawlDelay)
+      : null;
+
+  const lines: string[] = [];
+  lines.push(`User-agent: ${userAgent}`);
+
+  if (!allowPaths.length && !disallowPaths.length) {
+    lines.push("Allow: /");
+  } else {
+    allowPaths.forEach((path) => lines.push(`Allow: ${path}`));
+    disallowPaths.forEach((path) => lines.push(`Disallow: ${path}`));
+  }
+
+  if (crawlDelay !== null) lines.push(`Crawl-delay: ${crawlDelay}`);
+  if (host) lines.push(`Host: ${host}`);
+  if (sitemapUrls.length) {
+    lines.push("");
+    sitemapUrls.forEach((url) => lines.push(`Sitemap: ${url}`));
+  }
+
+  return lines.join("\n");
 }
 
 export function generateLoremIpsum(paragraphs: number): string {

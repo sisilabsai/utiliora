@@ -462,6 +462,17 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Open Graph Generator"),
   },
   {
+    slug: "html-beautifier",
+    category: "seo-tools",
+    title: "HTML Beautifier",
+    summary: "Format messy HTML into clean, readable code with adjustable indentation.",
+    description:
+      "Beautify raw HTML markup for easier debugging, collaboration, and publishing workflows.",
+    keywords: ["html beautifier", "format html", "html formatter"],
+    engine: { kind: "text-tool", id: "html-beautifier" },
+    faq: baseFaq("HTML Beautifier"),
+  },
+  {
     slug: "json-formatter",
     category: "seo-tools",
     title: "JSON Formatter",
@@ -470,6 +481,28 @@ const seoTools: ToolDefinition[] = [
     keywords: ["json formatter", "json pretty print", "json validator"],
     engine: { kind: "text-tool", id: "json-formatter" },
     faq: baseFaq("JSON Formatter"),
+  },
+  {
+    slug: "xml-sitemap-generator",
+    category: "seo-tools",
+    title: "XML Sitemap Generator",
+    summary: "Generate XML sitemaps from page paths or full URLs in seconds.",
+    description:
+      "Build valid sitemap.xml files with lastmod, changefreq, and priority controls for technical SEO.",
+    keywords: ["xml sitemap generator", "sitemap.xml tool", "seo sitemap builder"],
+    engine: { kind: "text-tool", id: "xml-sitemap-generator" },
+    faq: baseFaq("XML Sitemap Generator"),
+  },
+  {
+    slug: "robots-txt-generator",
+    category: "seo-tools",
+    title: "Robots.txt Generator",
+    summary: "Create robots.txt rules with allow/disallow, host, and sitemap directives.",
+    description:
+      "Generate production-ready robots.txt files for crawler control and indexing workflows.",
+    keywords: ["robots.txt generator", "robots file builder", "seo crawl control"],
+    engine: { kind: "text-tool", id: "robots-txt-generator" },
+    faq: baseFaq("Robots.txt Generator"),
   },
   {
     slug: "css-minifier",
@@ -689,6 +722,28 @@ const developerTools: ToolDefinition[] = [
     keywords: ["http status checker", "url status code", "website status"],
     engine: { kind: "developer-tool", id: "http-status-checker" },
     faq: baseFaq("HTTP Status Checker"),
+  },
+  {
+    slug: "dns-lookup",
+    category: "developer-tools",
+    title: "DNS Lookup",
+    summary: "Run deep DNS queries across major record types with resolver controls and diagnostics.",
+    description:
+      "Inspect A, AAAA, CNAME, MX, TXT, NS, SOA, and CAA records with DNSSEC indicators, response metadata, and exportable lookup history.",
+    keywords: ["dns lookup", "dns checker", "dns records", "mx lookup", "txt lookup"],
+    engine: { kind: "developer-tool", id: "dns-lookup" },
+    faq: baseFaq("DNS Lookup"),
+  },
+  {
+    slug: "ssl-checker",
+    category: "developer-tools",
+    title: "SSL Checker",
+    summary: "Inspect TLS certificates, chain details, expiry risk, and handshake metadata.",
+    description:
+      "Validate certificate trust, SAN coverage, expiry windows, protocol/cipher negotiation, and chain structure for production endpoints.",
+    keywords: ["ssl checker", "tls certificate checker", "certificate expiry", "https certificate"],
+    engine: { kind: "developer-tool", id: "ssl-checker" },
+    faq: baseFaq("SSL Checker"),
   },
 ];
 

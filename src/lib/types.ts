@@ -76,7 +76,10 @@ export type TextToolId =
   | "slug-generator"
   | "meta-tag-generator"
   | "open-graph-generator"
+  | "html-beautifier"
   | "json-formatter"
+  | "xml-sitemap-generator"
+  | "robots-txt-generator"
   | "css-minifier"
   | "js-minifier"
   | "base64-encoder-decoder"
@@ -91,7 +94,9 @@ export type DeveloperToolId =
   | "user-agent-checker"
   | "ip-address-checker"
   | "cron-expression-generator"
-  | "http-status-checker";
+  | "http-status-checker"
+  | "dns-lookup"
+  | "ssl-checker";
 
 export type ImageToolId =
   | "qr-code-generator"

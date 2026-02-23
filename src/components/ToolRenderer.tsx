@@ -43,9 +43,12 @@ import {
 import { trackEvent } from "@/lib/analytics";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
+  beautifyHtml,
   countCharacters,
   countWords,
   generateLoremIpsum,
+  generateRobotsTxt,
+  generateSitemapXml,
   keywordDensity,
   markdownToHtml,
   minifyCss,
@@ -751,6 +754,34 @@ function openPrintWindow(title: string, bodyHtml: string, extraCss = ""): boolea
     printWindow.print();
   }, 300);
   return true;
+}
+
+function splitNonEmptyLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function resolveUrlFromBase(baseUrl: string, pathOrUrl: string): string | null {
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return null;
+
+  try {
+    const full = new URL(trimmed);
+    if (full.protocol !== "http:" && full.protocol !== "https:") return null;
+    return full.toString();
+  } catch {
+    try {
+      const normalizedBase = baseUrl.trim() || "https://example.com";
+      const normalizedPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+      const joined = new URL(normalizedPath, normalizedBase.endsWith("/") ? normalizedBase : `${normalizedBase}/`);
+      if (joined.protocol !== "http:" && joined.protocol !== "https:") return null;
+      return joined.toString();
+    } catch {
+      return null;
+    }
+  }
 }
 
 function CalculatorTool({ id }: { id: CalculatorId }) {
@@ -2559,6 +2590,341 @@ function OpenGraphGeneratorTool() {
   );
 }
 
+const SITEMAP_CHANGEFREQUENCIES = [
+  "always",
+  "hourly",
+  "daily",
+  "weekly",
+  "monthly",
+  "yearly",
+  "never",
+] as const;
+
+type SitemapChangeFrequency = (typeof SITEMAP_CHANGEFREQUENCIES)[number];
+
+function HtmlBeautifierTool() {
+  const [input, setInput] = useState(
+    "<!doctype html><html><head><title>Utiliora</title></head><body><main><h1>Simple tools. Instant results.</h1><p>Format this HTML for readability.</p></main></body></html>",
+  );
+  const [indentSize, setIndentSize] = useState(2);
+  const [output, setOutput] = useState(() => beautifyHtml(input, 2));
+  const [status, setStatus] = useState("");
+
+  const runBeautifier = () => {
+    const formatted = beautifyHtml(input, indentSize);
+    setOutput(formatted);
+    setStatus(formatted ? "Formatted HTML ready." : "Enter HTML to beautify.");
+    trackEvent("tool_html_beautifier_run", { indentSize, hasInput: Boolean(input.trim()) });
+  };
+
+  const lineCount = output ? output.split("\n").length : 0;
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="HTML beautifier"
+        subtitle="Format compressed or messy HTML into readable, indented markup."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Indent size</span>
+          <input
+            type="number"
+            min={0}
+            max={8}
+            step={1}
+            value={indentSize}
+            onChange={(event) => setIndentSize(Math.max(0, Math.min(8, Number(event.target.value) || 2)))}
+          />
+        </label>
+      </div>
+      <label className="field">
+        <span>Input HTML</span>
+        <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={8} />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={runBeautifier}>
+          Beautify HTML
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setStatus(ok ? "Beautified HTML copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("formatted.html", output, "text/html;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Download HTML
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Input size", value: `${input.length} chars` },
+          { label: "Output size", value: `${output.length} chars` },
+          { label: "Output lines", value: lineCount.toString() },
+        ]}
+      />
+      <label className="field">
+        <span>Beautified output</span>
+        <textarea value={output} readOnly rows={12} />
+      </label>
+      {status ? <p className="supporting-text">{status}</p> : null}
+    </section>
+  );
+}
+
+function XmlSitemapGeneratorTool() {
+  const [baseUrl, setBaseUrl] = useState("https://utiliora.com");
+  const [rawPaths, setRawPaths] = useState("/\n/tools\n/seo-tools/xml-sitemap-generator\n/blog/launch-checklist");
+  const [includeLastmod, setIncludeLastmod] = useState(true);
+  const [changefreq, setChangefreq] = useState<SitemapChangeFrequency>("weekly");
+  const [priority, setPriority] = useState("0.7");
+  const [copyStatus, setCopyStatus] = useState("");
+
+  const generation = useMemo(() => {
+    const requestedPriority = Number.parseFloat(priority);
+    const normalizedPriority = Number.isFinite(requestedPriority)
+      ? Math.max(0, Math.min(1, requestedPriority))
+      : 0.7;
+    const today = new Date().toISOString().slice(0, 10);
+    const seen = new Set<string>();
+    const invalidLines: string[] = [];
+    const entries = splitNonEmptyLines(rawPaths)
+      .map((line) => ({ line, resolved: resolveUrlFromBase(baseUrl, line) }))
+      .filter((entry) => {
+        if (!entry.resolved) {
+          invalidLines.push(entry.line);
+          return false;
+        }
+        if (seen.has(entry.resolved)) return false;
+        seen.add(entry.resolved);
+        return true;
+      })
+      .map((entry) => ({
+        url: entry.resolved as string,
+        lastmod: includeLastmod ? today : undefined,
+        changefreq,
+        priority: normalizedPriority,
+      }));
+
+    const xml = generateSitemapXml(entries);
+    return {
+      xml,
+      entries,
+      invalidLines,
+      priority: normalizedPriority,
+    };
+  }, [baseUrl, changefreq, includeLastmod, priority, rawPaths]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Link2}
+        title="XML sitemap generator"
+        subtitle="Generate a valid sitemap.xml from paths or full URLs with SEO-friendly metadata."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Base URL</span>
+          <input type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Change frequency</span>
+          <select value={changefreq} onChange={(event) => setChangefreq(event.target.value as SitemapChangeFrequency)}>
+            {SITEMAP_CHANGEFREQUENCIES.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Priority (0.0 to 1.0)</span>
+          <input type="number" min={0} max={1} step={0.1} value={priority} onChange={(event) => setPriority(event.target.value)} />
+        </label>
+      </div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={includeLastmod}
+          onChange={(event) => setIncludeLastmod(event.target.checked)}
+        />
+        Include today&apos;s <code>lastmod</code> for all entries
+      </label>
+      <label className="field">
+        <span>Paths or URLs (one per line)</span>
+        <textarea value={rawPaths} onChange={(event) => setRawPaths(event.target.value)} rows={8} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(generation.xml);
+            setCopyStatus(ok ? "Sitemap XML copied." : "Nothing to copy.");
+            if (ok) {
+              trackEvent("tool_xml_sitemap_copy", {
+                urls: generation.entries.length,
+                invalid: generation.invalidLines.length,
+              });
+            }
+          }}
+        >
+          <Copy size={15} />
+          Copy sitemap
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("sitemap.xml", generation.xml, "application/xml;charset=utf-8;");
+            trackEvent("tool_xml_sitemap_download", { urls: generation.entries.length });
+          }}
+        >
+          <Download size={15} />
+          Download sitemap.xml
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Valid URLs", value: generation.entries.length.toString() },
+          { label: "Invalid lines", value: generation.invalidLines.length.toString() },
+          { label: "Priority used", value: generation.priority.toFixed(1) },
+        ]}
+      />
+      {generation.invalidLines.length ? (
+        <div className="mini-panel">
+          <h3>Skipped lines</h3>
+          <ul className="plain-list">
+            {generation.invalidLines.slice(0, 10).map((line) => (
+              <li key={line}>
+                <code>{line}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <label className="field">
+        <span>Generated sitemap.xml</span>
+        <textarea value={generation.xml} readOnly rows={12} />
+      </label>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+    </section>
+  );
+}
+
+function RobotsTxtGeneratorTool() {
+  const [userAgent, setUserAgent] = useState("*");
+  const [allowPaths, setAllowPaths] = useState("/");
+  const [disallowPaths, setDisallowPaths] = useState("");
+  const [crawlDelay, setCrawlDelay] = useState("");
+  const [host, setHost] = useState("utiliora.com");
+  const [sitemaps, setSitemaps] = useState("https://utiliora.com/sitemap.xml");
+  const [status, setStatus] = useState("");
+
+  const output = useMemo(() => {
+    const crawlDelayValue = Number.parseInt(crawlDelay, 10);
+    return generateRobotsTxt({
+      userAgent,
+      allowPaths: splitNonEmptyLines(allowPaths),
+      disallowPaths: splitNonEmptyLines(disallowPaths),
+      crawlDelay: Number.isFinite(crawlDelayValue) ? crawlDelayValue : null,
+      host,
+      sitemapUrls: splitNonEmptyLines(sitemaps),
+    });
+  }, [allowPaths, crawlDelay, disallowPaths, host, sitemaps, userAgent]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="Robots.txt generator"
+        subtitle="Build crawl directives with allow/disallow rules plus host and sitemap lines."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>User-agent</span>
+          <input type="text" value={userAgent} onChange={(event) => setUserAgent(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Crawl delay (optional)</span>
+          <input type="number" min={1} step={1} value={crawlDelay} onChange={(event) => setCrawlDelay(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Host (optional)</span>
+          <input type="text" value={host} onChange={(event) => setHost(event.target.value)} />
+        </label>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Allow paths (one per line)</span>
+          <textarea value={allowPaths} onChange={(event) => setAllowPaths(event.target.value)} rows={5} />
+        </label>
+        <label className="field">
+          <span>Disallow paths (one per line)</span>
+          <textarea value={disallowPaths} onChange={(event) => setDisallowPaths(event.target.value)} rows={5} />
+        </label>
+      </div>
+      <label className="field">
+        <span>Sitemap URLs (one per line)</span>
+        <textarea value={sitemaps} onChange={(event) => setSitemaps(event.target.value)} rows={3} />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setStatus(ok ? "robots.txt copied." : "Nothing to copy.");
+            if (ok) {
+              trackEvent("tool_robots_txt_copy", {
+                allowCount: splitNonEmptyLines(allowPaths).length,
+                disallowCount: splitNonEmptyLines(disallowPaths).length,
+              });
+            }
+          }}
+        >
+          <Copy size={15} />
+          Copy robots.txt
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("robots.txt", output, "text/plain;charset=utf-8;");
+            trackEvent("tool_robots_txt_download", { hasHost: Boolean(host.trim()) });
+          }}
+        >
+          <Download size={15} />
+          Download robots.txt
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Allow rules", value: splitNonEmptyLines(allowPaths).length.toString() },
+          { label: "Disallow rules", value: splitNonEmptyLines(disallowPaths).length.toString() },
+          { label: "Sitemap lines", value: splitNonEmptyLines(sitemaps).length.toString() },
+        ]}
+      />
+      <label className="field">
+        <span>Generated robots.txt</span>
+        <textarea value={output} readOnly rows={10} />
+      </label>
+      {status ? <p className="supporting-text">{status}</p> : null}
+    </section>
+  );
+}
+
 function JsonFormatterTool() {
   const [input, setInput] = useState('{"name":"Utiliora","tools":10}');
   const [sortKeys, setSortKeys] = useState(true);
@@ -2987,8 +3353,14 @@ function TextTool({ id }: { id: TextToolId }) {
       return <MetaTagGeneratorTool />;
     case "open-graph-generator":
       return <OpenGraphGeneratorTool />;
+    case "html-beautifier":
+      return <HtmlBeautifierTool />;
     case "json-formatter":
       return <JsonFormatterTool />;
+    case "xml-sitemap-generator":
+      return <XmlSitemapGeneratorTool />;
+    case "robots-txt-generator":
+      return <RobotsTxtGeneratorTool />;
     case "css-minifier":
       return <MinifierTool mode="css" />;
     case "js-minifier":
@@ -4404,6 +4776,757 @@ function HttpStatusCheckerTool() {
   );
 }
 
+type DnsResolver = "google" | "cloudflare";
+
+type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "SOA" | "CAA";
+
+interface DnsAnswerRecord {
+  name: string;
+  type: string;
+  ttl: number | null;
+  data: string;
+}
+
+interface DnsTypeResult {
+  ok: boolean;
+  status: number;
+  rd: boolean;
+  ra: boolean;
+  ad: boolean;
+  tc: boolean;
+  comment?: string;
+  responseTimeMs: number;
+  answers: DnsAnswerRecord[];
+  authorities: DnsAnswerRecord[];
+  error?: string;
+}
+
+interface DnsLookupPayload {
+  ok: boolean;
+  domain?: string;
+  resolver?: DnsResolver;
+  checkedAt?: string;
+  durationMs?: number;
+  timeoutMs?: number;
+  types?: DnsRecordType[];
+  results?: Partial<Record<DnsRecordType, DnsTypeResult>>;
+  dmarc?: DnsTypeResult;
+  insights?: {
+    hasA: boolean;
+    hasAAAA: boolean;
+    hasMx: boolean;
+    hasTxt: boolean;
+    hasNs: boolean;
+    hasCaa: boolean;
+    hasSpf: boolean;
+    hasDmarc: boolean;
+    hasDnssecSignal: boolean;
+    totalAnswers: number;
+    mxHosts: string[];
+    nameservers: string[];
+  };
+  error?: string;
+}
+
+interface DnsLookupHistoryEntry {
+  id: string;
+  domain: string;
+  resolver: DnsResolver;
+  types: DnsRecordType[];
+  answerCount: number;
+  checkedAt: number;
+}
+
+const DNS_RECORD_TYPE_OPTIONS: DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"];
+
+const DNS_PRESETS: Array<{ label: string; types: DnsRecordType[] }> = [
+  { label: "All", types: [...DNS_RECORD_TYPE_OPTIONS] },
+  { label: "Web stack", types: ["A", "AAAA", "CNAME", "TXT", "CAA"] },
+  { label: "Email stack", types: ["MX", "TXT", "NS", "SOA", "CAA"] },
+  { label: "Routing core", types: ["A", "AAAA", "CNAME", "NS"] },
+];
+
+function DnsLookupTool() {
+  const historyStorageKey = "utiliora-dns-lookup-history-v1";
+  const [domain, setDomain] = useState("utiliora.com");
+  const [resolver, setResolver] = useState<DnsResolver>("google");
+  const [selectedTypes, setSelectedTypes] = useState<DnsRecordType[]>(["A", "AAAA", "MX", "TXT", "NS", "CAA"]);
+  const [timeoutMs, setTimeoutMs] = useState(6000);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("Select record types and run a lookup.");
+  const [result, setResult] = useState<DnsLookupPayload | null>(null);
+  const [history, setHistory] = useState<DnsLookupHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as DnsLookupHistoryEntry[];
+      if (Array.isArray(parsed)) {
+        setHistory(parsed.slice(0, 25));
+      }
+    } catch {
+      // Ignore malformed history.
+    }
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 25)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  const runLookup = useCallback(
+    async (override?: { domain?: string; resolver?: DnsResolver; types?: DnsRecordType[] }) => {
+      const targetDomain = (override?.domain ?? domain).trim();
+      const targetResolver = override?.resolver ?? resolver;
+      const targetTypes = override?.types ?? selectedTypes;
+
+      if (!targetDomain) {
+        setStatus("Enter a domain to run DNS lookup.");
+        return;
+      }
+
+      if (!targetTypes.length) {
+        setStatus("Choose at least one record type.");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("Running DNS lookup...");
+
+      try {
+        const params = new URLSearchParams({
+          domain: targetDomain,
+          resolver: targetResolver,
+          types: targetTypes.join(","),
+          timeoutMs: String(timeoutMs),
+        });
+        const response = await fetch(`/api/dns-lookup?${params.toString()}`, { cache: "no-store" });
+        const payload = (await response.json()) as DnsLookupPayload;
+        setResult(payload);
+
+        if (!response.ok || !payload.ok) {
+          setStatus(payload.error ?? "DNS lookup failed.");
+          return;
+        }
+
+        const answerCount = payload.insights?.totalAnswers ?? 0;
+        setStatus(`Lookup complete. ${formatNumericValue(answerCount)} answers found.`);
+        setHistory((current) => {
+          const nextEntry: DnsLookupHistoryEntry = {
+            id: crypto.randomUUID(),
+            domain: payload.domain ?? targetDomain,
+            resolver: payload.resolver ?? targetResolver,
+            types: payload.types ?? targetTypes,
+            answerCount,
+            checkedAt: Date.now(),
+          };
+          return [nextEntry, ...current].slice(0, 25);
+        });
+        trackEvent("tool_dns_lookup", {
+          resolver: payload.resolver ?? targetResolver,
+          types: (payload.types ?? targetTypes).length,
+          answers: answerCount,
+          hasSpf: payload.insights?.hasSpf ?? false,
+          hasDmarc: payload.insights?.hasDmarc ?? false,
+        });
+      } catch {
+        setStatus("Lookup request failed. Check network connectivity and try again.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [domain, resolver, selectedTypes, timeoutMs],
+  );
+
+  const toggleType = (type: DnsRecordType) => {
+    setSelectedTypes((current) => {
+      if (current.includes(type)) return current.filter((entry) => entry !== type);
+      return [...current, type];
+    });
+  };
+
+  const exportCsv = () => {
+    if (!result?.results) return;
+    const rows = DNS_RECORD_TYPE_OPTIONS.flatMap((type) => {
+      const bucket = result.results?.[type];
+      if (!bucket?.answers?.length) return [];
+      return bucket.answers.map((answer) => [
+        type,
+        answer.name,
+        answer.type,
+        answer.ttl !== null ? String(answer.ttl) : "",
+        answer.data,
+      ]);
+    });
+
+    downloadCsv("dns-lookup.csv", ["Query Type", "Name", "Record Type", "TTL", "Data"], rows);
+  };
+
+  const renderedTypes = result?.types ?? selectedTypes;
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="DNS lookup"
+        subtitle="Inspect DNS records with resolver controls, DNSSEC signals, email checks, history, and exports."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Domain</span>
+          <input type="text" value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" />
+        </label>
+        <label className="field">
+          <span>Resolver</span>
+          <select value={resolver} onChange={(event) => setResolver(event.target.value as DnsResolver)}>
+            <option value="google">Google DNS over HTTPS</option>
+            <option value="cloudflare">Cloudflare DNS over HTTPS</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Timeout (ms)</span>
+          <input
+            type="number"
+            min={2000}
+            max={12000}
+            step={250}
+            value={timeoutMs}
+            onChange={(event) =>
+              setTimeoutMs(Math.max(2000, Math.min(12000, Number(event.target.value) || 6000)))
+            }
+          />
+        </label>
+      </div>
+      <div className="preset-row">
+        <span className="supporting-text">Record presets:</span>
+        {DNS_PRESETS.map((preset) => (
+          <button key={preset.label} className="chip-button" type="button" onClick={() => setSelectedTypes(preset.types)}>
+            {preset.label}
+          </button>
+        ))}
+      </div>
+      <div className="chip-list">
+        {DNS_RECORD_TYPE_OPTIONS.map((type) => (
+          <button
+            key={type}
+            className="chip-button"
+            type="button"
+            aria-pressed={selectedTypes.includes(type)}
+            onClick={() => toggleType(type)}
+          >
+            {type}
+          </button>
+        ))}
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void runLookup()} disabled={loading}>
+          {loading ? "Looking up..." : "Run lookup"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(result ? JSON.stringify(result, null, 2) : "");
+            setStatus(ok ? "DNS result copied as JSON." : "No DNS result to copy.");
+          }}
+          disabled={!result}
+        >
+          <Copy size={15} />
+          Copy JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!result?.results}>
+          <Download size={15} />
+          Export CSV
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {result?.ok ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "Checked domain", value: result.domain ?? "-" },
+              { label: "Resolver", value: result.resolver ?? "-" },
+              { label: "Total answers", value: formatNumericValue(result.insights?.totalAnswers ?? 0) },
+              { label: "Response time", value: `${formatNumericValue(result.durationMs ?? 0)} ms` },
+              { label: "SPF detected", value: result.insights?.hasSpf ? "Yes" : "No" },
+              { label: "DMARC detected", value: result.insights?.hasDmarc ? "Yes" : "No" },
+              { label: "DNSSEC AD signal", value: result.insights?.hasDnssecSignal ? "Yes" : "No" },
+            ]}
+          />
+          {renderedTypes.map((type) => {
+            const bucket = result.results?.[type];
+            if (!bucket) return null;
+            const tone = bucket.error ? "bad" : bucket.ok ? "ok" : "warn";
+            return (
+              <div key={type} className="mini-panel">
+                <div className="panel-head">
+                  <h3>{type} records</h3>
+                  <span className={`status-badge ${tone}`}>
+                    {bucket.error ? "Error" : bucket.ok ? "OK" : `Status ${bucket.status}`}
+                  </span>
+                </div>
+                <p className="supporting-text">
+                  Answers: {formatNumericValue(bucket.answers.length)} | Authorities:{" "}
+                  {formatNumericValue(bucket.authorities.length)} | Resolver time:{" "}
+                  {formatNumericValue(bucket.responseTimeMs)} ms
+                </p>
+                {bucket.error ? <p className="error-text">{bucket.error}</p> : null}
+                {bucket.answers.length ? (
+                  <div className="table-scroll">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Type</th>
+                          <th>TTL</th>
+                          <th>Data</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bucket.answers.map((answer, index) => (
+                          <tr key={`${answer.data}-${index}`}>
+                            <td>{answer.name || "-"}</td>
+                            <td>{answer.type}</td>
+                            <td>{answer.ttl !== null ? formatNumericValue(answer.ttl) : "-"}</td>
+                            <td>{answer.data}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="supporting-text">No answers returned for this type.</p>
+                )}
+              </div>
+            );
+          })}
+        </>
+      ) : null}
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent lookups</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No DNS lookup history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.domain}</strong>
+                  <span className="supporting-text">
+                    {entry.resolver} | {entry.types.join(", ")} | {formatNumericValue(entry.answerCount)} answers |{" "}
+                    {new Date(entry.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setDomain(entry.domain);
+                      setResolver(entry.resolver);
+                      setSelectedTypes(entry.types);
+                      void runLookup({ domain: entry.domain, resolver: entry.resolver, types: entry.types });
+                    }}
+                  >
+                    Re-run
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface SslChainRow {
+  depth: number;
+  subject: string;
+  issuer: string;
+  validFrom: string | null;
+  validTo: string | null;
+  serialNumber: string | null;
+  fingerprint256: string | null;
+  selfSigned: boolean;
+}
+
+interface SslCheckPayload {
+  ok: boolean;
+  target?: string;
+  host?: string;
+  port?: number;
+  normalizedTarget?: string;
+  checkedAt?: string;
+  timeoutMs?: number;
+  resolvedAddresses?: string[];
+  timingMs?: number;
+  protocol?: string;
+  alpnProtocol?: string;
+  authorized?: boolean;
+  authorizationError?: string | null;
+  cipher?: {
+    name?: string;
+    version?: string;
+    standardName?: string;
+  };
+  certificate?: {
+    subject: string;
+    issuer: string;
+    serialNumber: string | null;
+    fingerprint256: string | null;
+    fingerprint: string | null;
+    validFrom: string | null;
+    validTo: string | null;
+    daysRemaining: number | null;
+    isExpired: boolean;
+    expiresSoon: boolean;
+    subjectAltNames: string[];
+    subjectAltNameCount: number;
+    infoAccess: string[];
+    extKeyUsage: string[];
+    pem?: string;
+  };
+  chain?: SslChainRow[];
+  error?: string;
+}
+
+interface SslHistoryEntry {
+  id: string;
+  target: string;
+  host: string;
+  daysRemaining: number | null;
+  checkedAt: number;
+}
+
+function SslCheckerTool() {
+  const historyStorageKey = "utiliora-ssl-check-history-v1";
+  const [target, setTarget] = useState("https://utiliora.com");
+  const [timeoutMs, setTimeoutMs] = useState(9000);
+  const [includePem, setIncludePem] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("Enter a host or URL and run SSL inspection.");
+  const [result, setResult] = useState<SslCheckPayload | null>(null);
+  const [history, setHistory] = useState<SslHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as SslHistoryEntry[];
+      if (Array.isArray(parsed)) setHistory(parsed.slice(0, 25));
+    } catch {
+      // Ignore malformed history.
+    }
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 25)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  const runCheck = useCallback(
+    async (overrideTarget?: string) => {
+      const nextTarget = (overrideTarget ?? target).trim();
+      if (!nextTarget) {
+        setStatus("Enter a valid target before running SSL inspection.");
+        return;
+      }
+
+      setLoading(true);
+      setStatus("Inspecting TLS certificate...");
+      try {
+        const params = new URLSearchParams({
+          target: nextTarget,
+          timeoutMs: String(timeoutMs),
+          includePem: includePem ? "true" : "false",
+        });
+        const response = await fetch(`/api/ssl-check?${params.toString()}`, { cache: "no-store" });
+        const payload = (await response.json()) as SslCheckPayload;
+        setResult(payload);
+
+        if (!response.ok || !payload.ok) {
+          setStatus(payload.error ?? "SSL inspection failed.");
+          trackEvent("tool_ssl_check", { success: false });
+          return;
+        }
+
+        const days = payload.certificate?.daysRemaining ?? null;
+        setStatus(
+          days === null
+            ? "SSL inspection completed."
+            : days < 0
+              ? "Certificate has expired."
+              : `Certificate valid. ${formatNumericValue(days)} day(s) remaining.`,
+        );
+
+        setHistory((current) => [
+          {
+            id: crypto.randomUUID(),
+            target: payload.target ?? nextTarget,
+            host: payload.host ?? "unknown",
+            daysRemaining: days,
+            checkedAt: Date.now(),
+          },
+          ...current,
+        ].slice(0, 25));
+
+        trackEvent("tool_ssl_check", {
+          success: true,
+          authorized: payload.authorized ?? false,
+          expiresSoon: payload.certificate?.expiresSoon ?? false,
+          expired: payload.certificate?.isExpired ?? false,
+        });
+      } catch {
+        setStatus("SSL inspection request failed.");
+        trackEvent("tool_ssl_check", { success: false });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [includePem, target, timeoutMs],
+  );
+
+  const certificateTone =
+    !result?.ok || !result.certificate
+      ? "info"
+      : result.certificate.isExpired
+        ? "bad"
+        : result.certificate.expiresSoon
+          ? "warn"
+          : "ok";
+
+  const summaryText =
+    !result?.ok || !result.certificate
+      ? "No certificate analyzed yet."
+      : result.certificate.isExpired
+        ? "Expired certificate"
+        : result.certificate.expiresSoon
+          ? "Expiring soon"
+          : "Certificate healthy";
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={MonitorUp}
+        title="SSL checker"
+        subtitle="Inspect certificate chain, TLS handshake metadata, SAN coverage, trust status, and expiry risk."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Target host or URL</span>
+          <input type="text" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="https://example.com" />
+        </label>
+        <label className="field">
+          <span>Timeout (ms)</span>
+          <input
+            type="number"
+            min={3000}
+            max={20000}
+            step={250}
+            value={timeoutMs}
+            onChange={(event) =>
+              setTimeoutMs(Math.max(3000, Math.min(20000, Number(event.target.value) || 9000)))
+            }
+          />
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={includePem} onChange={(event) => setIncludePem(event.target.checked)} />
+          Include leaf certificate PEM in output
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void runCheck()} disabled={loading}>
+          {loading ? "Inspecting..." : "Run SSL check"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(result ? JSON.stringify(result, null, 2) : "");
+            setStatus(ok ? "SSL result copied as JSON." : "No SSL result to copy.");
+          }}
+          disabled={!result}
+        >
+          <Copy size={15} />
+          Copy JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              "ssl-summary.txt",
+              result ? JSON.stringify(result, null, 2) : "No SSL result yet.",
+              "text/plain;charset=utf-8;",
+            )
+          }
+          disabled={!result}
+        >
+          <Download size={15} />
+          Export
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <p className={`status-badge ${certificateTone}`}>{summaryText}</p>
+      {result?.ok ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "Host", value: result.host ?? "-" },
+              { label: "Port", value: result.port ? String(result.port) : "-" },
+              { label: "TLS protocol", value: result.protocol ?? "-" },
+              { label: "ALPN", value: result.alpnProtocol ?? "-" },
+              { label: "Cipher", value: result.cipher?.standardName ?? result.cipher?.name ?? "-" },
+              { label: "Handshake time", value: `${formatNumericValue(result.timingMs ?? 0)} ms` },
+              { label: "Trust status", value: result.authorized ? "Trusted chain" : "Untrusted / warning" },
+              { label: "Authorization error", value: result.authorizationError ?? "None" },
+              {
+                label: "Days until expiry",
+                value:
+                  result.certificate?.daysRemaining !== null && result.certificate?.daysRemaining !== undefined
+                    ? formatNumericValue(result.certificate.daysRemaining)
+                    : "Unknown",
+              },
+              { label: "SAN entries", value: formatNumericValue(result.certificate?.subjectAltNameCount ?? 0) },
+              { label: "Chain depth", value: formatNumericValue(result.chain?.length ?? 0) },
+            ]}
+          />
+          {result.resolvedAddresses?.length ? (
+            <div className="mini-panel">
+              <h3>Resolved addresses</h3>
+              <div className="chip-list">
+                {result.resolvedAddresses.map((address) => (
+                  <span key={address} className="chip">
+                    {address}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="mini-panel">
+            <h3>Certificate details</h3>
+            <p className="supporting-text">
+              <strong>Subject:</strong> {result.certificate?.subject ?? "-"}
+            </p>
+            <p className="supporting-text">
+              <strong>Issuer:</strong> {result.certificate?.issuer ?? "-"}
+            </p>
+            <p className="supporting-text">
+              <strong>Valid from:</strong>{" "}
+              {result.certificate?.validFrom ? new Date(result.certificate.validFrom).toLocaleString("en-US") : "-"}
+            </p>
+            <p className="supporting-text">
+              <strong>Valid to:</strong>{" "}
+              {result.certificate?.validTo ? new Date(result.certificate.validTo).toLocaleString("en-US") : "-"}
+            </p>
+            <p className="supporting-text">
+              <strong>SHA-256:</strong> {result.certificate?.fingerprint256 ?? "-"}
+            </p>
+          </div>
+          {result.certificate?.subjectAltNames?.length ? (
+            <div className="mini-panel">
+              <h3>Subject Alternative Names</h3>
+              <div className="chip-list">
+                {result.certificate.subjectAltNames.slice(0, 40).map((entry) => (
+                  <span key={entry} className="chip">
+                    {entry}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {result.chain?.length ? (
+            <div className="mini-panel">
+              <h3>Certificate chain</h3>
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Depth</th>
+                      <th>Subject</th>
+                      <th>Issuer</th>
+                      <th>Valid To</th>
+                      <th>Self-signed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.chain.map((entry) => (
+                      <tr key={`${entry.depth}-${entry.subject}`}>
+                        <td>{entry.depth}</td>
+                        <td>{entry.subject}</td>
+                        <td>{entry.issuer}</td>
+                        <td>{entry.validTo ? new Date(entry.validTo).toLocaleDateString("en-US") : "-"}</td>
+                        <td>{entry.selfSigned ? "Yes" : "No"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+          {includePem && result.certificate?.pem ? (
+            <label className="field">
+              <span>Leaf certificate PEM</span>
+              <textarea value={result.certificate.pem} readOnly rows={10} />
+            </label>
+          ) : null}
+        </>
+      ) : null}
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent SSL checks</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No SSL check history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.target}</strong>
+                  <span className="supporting-text">
+                    Host: {entry.host} | Days remaining:{" "}
+                    {entry.daysRemaining === null ? "-" : formatNumericValue(entry.daysRemaining)} |{" "}
+                    {new Date(entry.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setTarget(entry.target);
+                      void runCheck(entry.target);
+                    }}
+                  >
+                    Re-run
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DeveloperTool({ id }: { id: DeveloperToolId }) {
   switch (id) {
     case "uuid-generator":
@@ -4422,6 +5545,10 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
       return <CronGeneratorTool />;
     case "http-status-checker":
       return <HttpStatusCheckerTool />;
+    case "dns-lookup":
+      return <DnsLookupTool />;
+    case "ssl-checker":
+      return <SslCheckerTool />;
     default:
       return <p>Developer tool unavailable.</p>;
   }
