@@ -108,6 +108,40 @@ function parseSanList(rawSan: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function extractCommonName(subject: unknown): string | null {
+  if (!subject || typeof subject !== "object") return null;
+  const raw = (subject as { CN?: unknown }).CN;
+  if (typeof raw === "string") return raw.trim() || null;
+  if (Array.isArray(raw)) {
+    const first = raw.find((value) => typeof value === "string" && value.trim().length > 0);
+    return typeof first === "string" ? first.trim() : null;
+  }
+  return null;
+}
+
+function normalizeHostForMatch(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function matchesHostnamePattern(host: string, pattern: string): boolean {
+  const normalizedHost = normalizeHostForMatch(host);
+  const normalizedPattern = normalizeHostForMatch(pattern);
+  if (!normalizedHost || !normalizedPattern) return false;
+
+  const hostIpVersion = net.isIP(normalizedHost);
+  const patternIpVersion = net.isIP(normalizedPattern);
+  if (hostIpVersion > 0 || patternIpVersion > 0) {
+    return hostIpVersion > 0 && patternIpVersion > 0 && normalizedHost === normalizedPattern;
+  }
+
+  if (normalizedPattern === normalizedHost) return true;
+  if (!normalizedPattern.startsWith("*.")) return false;
+
+  const baseDomain = normalizedPattern.slice(2);
+  if (!baseDomain || !normalizedHost.endsWith(`.${baseDomain}`)) return false;
+  return normalizedHost.split(".").length === baseDomain.split(".").length + 1;
+}
+
 function toIsoDate(rawValue: string | undefined): string | null {
   if (!rawValue) return null;
   const date = new Date(rawValue);
@@ -181,6 +215,7 @@ async function inspectTlsCertificate(target: ParsedTarget, timeoutMs: number, in
     cipher: tls.CipherNameAndProtocol;
     certificate: {
       subject: string;
+      commonName: string | null;
       issuer: string;
       serialNumber: string | null;
       fingerprint256: string | null;
@@ -192,6 +227,8 @@ async function inspectTlsCertificate(target: ParsedTarget, timeoutMs: number, in
       expiresSoon: boolean;
       subjectAltNames: string[];
       subjectAltNameCount: number;
+      hostnameMatches: boolean;
+      hostnameMatchSource: "san" | "common-name" | "none";
       infoAccess: string[];
       extKeyUsage: string[];
       pem?: string;
@@ -242,6 +279,15 @@ async function inspectTlsCertificate(target: ParsedTarget, timeoutMs: number, in
       const isExpired = typeof daysRemaining === "number" ? daysRemaining < 0 : false;
       const expiresSoon = typeof daysRemaining === "number" ? daysRemaining >= 0 && daysRemaining <= 30 : false;
       const sans = parseSanList(peer.subjectaltname);
+      const commonName = extractCommonName(peer.subject);
+      const sanMatch = sans.find((entry) => matchesHostnamePattern(target.host, entry)) ?? null;
+      const commonNameMatch = commonName ? matchesHostnamePattern(target.host, commonName) : false;
+      const hostnameMatches = Boolean(sanMatch || commonNameMatch);
+      const hostnameMatchSource: "san" | "common-name" | "none" = sanMatch
+        ? "san"
+        : commonNameMatch
+          ? "common-name"
+          : "none";
       const infoAccess = peer.infoAccess
         ? Object.entries(peer.infoAccess).flatMap(([label, values]) =>
             (values ?? []).map((value) => `${label}: ${value}`),
@@ -265,6 +311,7 @@ async function inspectTlsCertificate(target: ParsedTarget, timeoutMs: number, in
         cipher: socket.getCipher(),
         certificate: {
           subject: formatDistinguishedName(peer.subject),
+          commonName,
           issuer: formatDistinguishedName(peer.issuer),
           serialNumber: peer.serialNumber || null,
           fingerprint256: peer.fingerprint256 || null,
@@ -276,6 +323,8 @@ async function inspectTlsCertificate(target: ParsedTarget, timeoutMs: number, in
           expiresSoon,
           subjectAltNames: sans,
           subjectAltNameCount: sans.length,
+          hostnameMatches,
+          hostnameMatchSource,
           infoAccess,
           extKeyUsage: Array.isArray(peer.ext_key_usage) ? peer.ext_key_usage : [],
           ...(includePem ? { pem: toPem(peer.raw) ?? undefined } : {}),

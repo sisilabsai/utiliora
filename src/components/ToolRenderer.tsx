@@ -4837,6 +4837,20 @@ interface DnsLookupHistoryEntry {
   checkedAt: number;
 }
 
+interface DnsResolverComparisonRow {
+  type: DnsRecordType;
+  primaryAnswers: number;
+  secondaryAnswers: number;
+  primaryStatus: string;
+  secondaryStatus: string;
+}
+
+interface DnsResolverComparison {
+  secondaryResolver: DnsResolver;
+  secondaryPayload: DnsLookupPayload;
+  differences: DnsResolverComparisonRow[];
+}
+
 const DNS_RECORD_TYPE_OPTIONS: DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "CAA"];
 
 const DNS_PRESETS: Array<{ label: string; types: DnsRecordType[] }> = [
@@ -4846,15 +4860,21 @@ const DNS_PRESETS: Array<{ label: string; types: DnsRecordType[] }> = [
   { label: "Routing core", types: ["A", "AAAA", "CNAME", "NS"] },
 ];
 
+function getAlternateResolver(resolver: DnsResolver): DnsResolver {
+  return resolver === "google" ? "cloudflare" : "google";
+}
+
 function DnsLookupTool() {
   const historyStorageKey = "utiliora-dns-lookup-history-v1";
   const [domain, setDomain] = useState("utiliora.com");
   const [resolver, setResolver] = useState<DnsResolver>("google");
   const [selectedTypes, setSelectedTypes] = useState<DnsRecordType[]>(["A", "AAAA", "MX", "TXT", "NS", "CAA"]);
   const [timeoutMs, setTimeoutMs] = useState(6000);
+  const [compareResolvers, setCompareResolvers] = useState(true);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("Select record types and run a lookup.");
   const [result, setResult] = useState<DnsLookupPayload | null>(null);
+  const [comparison, setComparison] = useState<DnsResolverComparison | null>(null);
   const [history, setHistory] = useState<DnsLookupHistoryEntry[]>([]);
 
   useEffect(() => {
@@ -4896,19 +4916,24 @@ function DnsLookupTool() {
 
       setLoading(true);
       setStatus("Running DNS lookup...");
+      setComparison(null);
 
       try {
-        const params = new URLSearchParams({
-          domain: targetDomain,
-          resolver: targetResolver,
-          types: targetTypes.join(","),
-          timeoutMs: String(timeoutMs),
-        });
-        const response = await fetch(`/api/dns-lookup?${params.toString()}`, { cache: "no-store" });
-        const payload = (await response.json()) as DnsLookupPayload;
+        const runSingleLookup = async (selectedResolver: DnsResolver): Promise<DnsLookupPayload> => {
+          const params = new URLSearchParams({
+            domain: targetDomain,
+            resolver: selectedResolver,
+            types: targetTypes.join(","),
+            timeoutMs: String(timeoutMs),
+          });
+          const response = await fetch(`/api/dns-lookup?${params.toString()}`, { cache: "no-store" });
+          return (await response.json()) as DnsLookupPayload;
+        };
+
+        const payload = await runSingleLookup(targetResolver);
         setResult(payload);
 
-        if (!response.ok || !payload.ok) {
+        if (!payload.ok) {
           setStatus(payload.error ?? "DNS lookup failed.");
           return;
         }
@@ -4933,13 +4958,62 @@ function DnsLookupTool() {
           hasSpf: payload.insights?.hasSpf ?? false,
           hasDmarc: payload.insights?.hasDmarc ?? false,
         });
+
+        if (compareResolvers) {
+          const secondaryResolver = getAlternateResolver(payload.resolver ?? targetResolver);
+          const secondaryPayload = await runSingleLookup(secondaryResolver);
+
+          if (secondaryPayload.ok) {
+            const differences = DNS_RECORD_TYPE_OPTIONS.filter((type) =>
+              (payload.types ?? targetTypes).includes(type),
+            )
+              .map((type) => {
+                const primaryBucket = payload.results?.[type];
+                const secondaryBucket = secondaryPayload.results?.[type];
+                const primaryStatus = primaryBucket?.error
+                  ? "error"
+                  : primaryBucket
+                    ? String(primaryBucket.status)
+                    : "n/a";
+                const secondaryStatus = secondaryBucket?.error
+                  ? "error"
+                  : secondaryBucket
+                    ? String(secondaryBucket.status)
+                    : "n/a";
+                return {
+                  type,
+                  primaryAnswers: primaryBucket?.answers.length ?? 0,
+                  secondaryAnswers: secondaryBucket?.answers.length ?? 0,
+                  primaryStatus,
+                  secondaryStatus,
+                };
+              })
+              .filter(
+                (entry) =>
+                  entry.primaryAnswers !== entry.secondaryAnswers ||
+                  entry.primaryStatus !== entry.secondaryStatus,
+              );
+
+            setComparison({
+              secondaryResolver,
+              secondaryPayload,
+              differences,
+            });
+
+            trackEvent("tool_dns_lookup_compare", {
+              primaryResolver: payload.resolver ?? targetResolver,
+              secondaryResolver,
+              differences: differences.length,
+            });
+          }
+        }
       } catch {
         setStatus("Lookup request failed. Check network connectivity and try again.");
       } finally {
         setLoading(false);
       }
     },
-    [domain, resolver, selectedTypes, timeoutMs],
+    [compareResolvers, domain, resolver, selectedTypes, timeoutMs],
   );
 
   const toggleType = (type: DnsRecordType) => {
@@ -5000,6 +5074,14 @@ function DnsLookupTool() {
             }
           />
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={compareResolvers}
+            onChange={(event) => setCompareResolvers(event.target.checked)}
+          />
+          Compare with secondary resolver
+        </label>
       </div>
       <div className="preset-row">
         <span className="supporting-text">Record presets:</span>
@@ -5057,6 +5139,115 @@ function DnsLookupTool() {
               { label: "DNSSEC AD signal", value: result.insights?.hasDnssecSignal ? "Yes" : "No" },
             ]}
           />
+          <div className="mini-panel">
+            <h3>Email + zone insights</h3>
+            <ResultList
+              rows={[
+                { label: "MX hosts", value: formatNumericValue(result.insights?.mxHosts.length ?? 0) },
+                { label: "Nameservers", value: formatNumericValue(result.insights?.nameservers.length ?? 0) },
+                {
+                  label: "DMARC TXT rows",
+                  value: formatNumericValue(result.dmarc?.answers.length ?? 0),
+                },
+                { label: "SPF present", value: result.insights?.hasSpf ? "Yes" : "No" },
+                { label: "DMARC present", value: result.insights?.hasDmarc ? "Yes" : "No" },
+              ]}
+            />
+            {result.insights?.mxHosts.length ? (
+              <div className="chip-list">
+                {result.insights.mxHosts.slice(0, 12).map((host) => (
+                  <span key={host} className="chip">
+                    MX: {host}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {result.insights?.nameservers.length ? (
+              <div className="chip-list">
+                {result.insights.nameservers.slice(0, 12).map((host) => (
+                  <span key={host} className="chip">
+                    NS: {host}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {result.dmarc?.answers.length ? (
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>DMARC Name</th>
+                      <th>TTL</th>
+                      <th>TXT Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.dmarc.answers.map((entry, index) => (
+                      <tr key={`${entry.data}-${index}`}>
+                        <td>{entry.name || "-"}</td>
+                        <td>{entry.ttl !== null ? formatNumericValue(entry.ttl) : "-"}</td>
+                        <td>{entry.data}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </div>
+          {comparison?.secondaryPayload.ok ? (
+            <div className="mini-panel">
+              <div className="panel-head">
+                <h3>Resolver comparison</h3>
+                <span className="supporting-text">
+                  {result.resolver ?? resolver} vs {comparison.secondaryResolver}
+                </span>
+              </div>
+              <ResultList
+                rows={[
+                  {
+                    label: `${result.resolver ?? resolver} answers`,
+                    value: formatNumericValue(result.insights?.totalAnswers ?? 0),
+                  },
+                  {
+                    label: `${comparison.secondaryResolver} answers`,
+                    value: formatNumericValue(comparison.secondaryPayload.insights?.totalAnswers ?? 0),
+                  },
+                  {
+                    label: "Differences",
+                    value: formatNumericValue(comparison.differences.length),
+                  },
+                ]}
+              />
+              {comparison.differences.length ? (
+                <div className="table-scroll">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>{result.resolver ?? resolver} answers</th>
+                        <th>{comparison.secondaryResolver} answers</th>
+                        <th>{result.resolver ?? resolver} status</th>
+                        <th>{comparison.secondaryResolver} status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparison.differences.map((row) => (
+                        <tr key={row.type}>
+                          <td>{row.type}</td>
+                          <td>{formatNumericValue(row.primaryAnswers)}</td>
+                          <td>{formatNumericValue(row.secondaryAnswers)}</td>
+                          <td>{row.primaryStatus}</td>
+                          <td>{row.secondaryStatus}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="supporting-text">No resolver differences detected for selected record types.</p>
+              )}
+            </div>
+          ) : null}
           {renderedTypes.map((type) => {
             const bucket = result.results?.[type];
             if (!bucket) return null;
@@ -5181,6 +5372,7 @@ interface SslCheckPayload {
   };
   certificate?: {
     subject: string;
+    commonName: string | null;
     issuer: string;
     serialNumber: string | null;
     fingerprint256: string | null;
@@ -5192,6 +5384,8 @@ interface SslCheckPayload {
     expiresSoon: boolean;
     subjectAltNames: string[];
     subjectAltNameCount: number;
+    hostnameMatches: boolean;
+    hostnameMatchSource: "san" | "common-name" | "none";
     infoAccess: string[];
     extKeyUsage: string[];
     pem?: string;
@@ -5206,6 +5400,55 @@ interface SslHistoryEntry {
   host: string;
   daysRemaining: number | null;
   checkedAt: number;
+}
+
+function getSslHealth(payload: SslCheckPayload | null): {
+  score: number | null;
+  grade: string;
+  tone: "ok" | "warn" | "bad" | "info";
+  notes: string[];
+} {
+  if (!payload?.ok || !payload.certificate) {
+    return { score: null, grade: "N/A", tone: "info", notes: ["No certificate data yet."] };
+  }
+
+  let score = 100;
+  const notes: string[] = [];
+  if (!payload.authorized) {
+    score -= 30;
+    notes.push("Certificate chain is not fully trusted.");
+  }
+  if (!payload.certificate.hostnameMatches) {
+    score -= 35;
+    notes.push("Certificate does not match requested hostname.");
+  }
+  if (payload.certificate.isExpired) {
+    score = 0;
+    notes.push("Certificate has already expired.");
+  } else if (payload.certificate.expiresSoon) {
+    score -= 20;
+    notes.push("Certificate expires within 30 days.");
+  }
+
+  const protocol = (payload.protocol ?? "").toUpperCase();
+  if (protocol.includes("TLSV1.0") || protocol.includes("TLSV1.1")) {
+    score -= 25;
+    notes.push("Legacy TLS protocol detected.");
+  } else if (protocol.includes("TLSV1.2")) {
+    score -= 5;
+  }
+
+  const cipher = (payload.cipher?.standardName ?? payload.cipher?.name ?? "").toUpperCase();
+  if (/RC4|3DES|DES|NULL|EXPORT/.test(cipher)) {
+    score -= 20;
+    notes.push("Potentially weak cipher detected.");
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  const grade = score >= 90 ? "A" : score >= 80 ? "B" : score >= 70 ? "C" : score >= 60 ? "D" : "F";
+  const tone: "ok" | "warn" | "bad" = score >= 85 ? "ok" : score >= 70 ? "warn" : "bad";
+  if (!notes.length) notes.push("No obvious TLS or certificate risk signals detected.");
+  return { score, grade, tone, notes };
 }
 
 function SslCheckerTool() {
@@ -5264,12 +5507,15 @@ function SslCheckerTool() {
         }
 
         const days = payload.certificate?.daysRemaining ?? null;
+        const hostnameMatches = payload.certificate?.hostnameMatches ?? true;
         setStatus(
-          days === null
-            ? "SSL inspection completed."
-            : days < 0
-              ? "Certificate has expired."
-              : `Certificate valid. ${formatNumericValue(days)} day(s) remaining.`,
+          !hostnameMatches
+            ? "Certificate loaded, but hostname does not match SAN/CN coverage."
+            : days === null
+              ? "SSL inspection completed."
+              : days < 0
+                ? "Certificate has expired."
+                : `Certificate valid. ${formatNumericValue(days)} day(s) remaining.`,
         );
 
         setHistory((current) => [
@@ -5288,6 +5534,7 @@ function SslCheckerTool() {
           authorized: payload.authorized ?? false,
           expiresSoon: payload.certificate?.expiresSoon ?? false,
           expired: payload.certificate?.isExpired ?? false,
+          hostnameMatches: payload.certificate?.hostnameMatches ?? false,
         });
       } catch {
         setStatus("SSL inspection request failed.");
@@ -5299,23 +5546,12 @@ function SslCheckerTool() {
     [includePem, target, timeoutMs],
   );
 
-  const certificateTone =
-    !result?.ok || !result.certificate
-      ? "info"
-      : result.certificate.isExpired
-        ? "bad"
-        : result.certificate.expiresSoon
-          ? "warn"
-          : "ok";
-
+  const sslHealth = useMemo(() => getSslHealth(result), [result]);
+  const certificateTone = sslHealth.tone;
   const summaryText =
-    !result?.ok || !result.certificate
+    sslHealth.score === null
       ? "No certificate analyzed yet."
-      : result.certificate.isExpired
-        ? "Expired certificate"
-        : result.certificate.expiresSoon
-          ? "Expiring soon"
-          : "Certificate healthy";
+      : `TLS grade ${sslHealth.grade} (${formatNumericValue(sslHealth.score)}/100)`;
 
   return (
     <section className="tool-surface">
@@ -5381,6 +5617,16 @@ function SslCheckerTool() {
       </div>
       {status ? <p className="supporting-text">{status}</p> : null}
       <p className={`status-badge ${certificateTone}`}>{summaryText}</p>
+      {sslHealth.score !== null ? (
+        <div className="mini-panel">
+          <h3>TLS risk notes</h3>
+          <ul className="plain-list">
+            {sslHealth.notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {result?.ok ? (
         <>
           <ResultList
@@ -5392,6 +5638,14 @@ function SslCheckerTool() {
               { label: "Cipher", value: result.cipher?.standardName ?? result.cipher?.name ?? "-" },
               { label: "Handshake time", value: `${formatNumericValue(result.timingMs ?? 0)} ms` },
               { label: "Trust status", value: result.authorized ? "Trusted chain" : "Untrusted / warning" },
+              {
+                label: "Hostname coverage",
+                value: result.certificate?.hostnameMatches ? "Matches target host" : "Mismatch",
+              },
+              {
+                label: "Match source",
+                value: result.certificate?.hostnameMatchSource ?? "none",
+              },
               { label: "Authorization error", value: result.authorizationError ?? "None" },
               {
                 label: "Days until expiry",
@@ -5419,6 +5673,9 @@ function SslCheckerTool() {
           <div className="mini-panel">
             <h3>Certificate details</h3>
             <p className="supporting-text">
+              <strong>Common Name:</strong> {result.certificate?.commonName ?? "-"}
+            </p>
+            <p className="supporting-text">
               <strong>Subject:</strong> {result.certificate?.subject ?? "-"}
             </p>
             <p className="supporting-text">
@@ -5436,6 +5693,30 @@ function SslCheckerTool() {
               <strong>SHA-256:</strong> {result.certificate?.fingerprint256 ?? "-"}
             </p>
           </div>
+          {result.certificate?.infoAccess?.length ? (
+            <div className="mini-panel">
+              <h3>Authority Information Access</h3>
+              <ul className="plain-list">
+                {result.certificate.infoAccess.map((entry) => (
+                  <li key={entry}>
+                    <code>{entry}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {result.certificate?.extKeyUsage?.length ? (
+            <div className="mini-panel">
+              <h3>Extended Key Usage</h3>
+              <div className="chip-list">
+                {result.certificate.extKeyUsage.map((entry) => (
+                  <span key={entry} className="chip">
+                    {entry}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {result.certificate?.subjectAltNames?.length ? (
             <div className="mini-panel">
               <h3>Subject Alternative Names</h3>

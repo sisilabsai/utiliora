@@ -125,3 +125,5 @@ Status: `Planned`
 - Shipped `HTML Beautifier`, `XML Sitemap Generator`, and `Robots.txt Generator`.
 - Shipped `DNS Lookup` with multi-record queries, resolver selection, DMARC/SPF insights, history, and CSV/JSON export.
 - Shipped `SSL Checker` with TLS protocol/cipher details, certificate chain analysis, SAN visibility, expiry risk status, and export support.
+- Enhanced `DNS Lookup` with cross-resolver comparison (Google vs Cloudflare) and difference reporting per record type.
+- Enhanced `SSL Checker` with hostname coverage validation (SAN/CN), TLS risk scoring (`A-F`), and AIA/extended-key-usage visibility.
