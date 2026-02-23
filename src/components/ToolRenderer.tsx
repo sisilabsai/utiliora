@@ -6917,6 +6917,896 @@ function BarcodeGeneratorTool() {
   );
 }
 
+type PdfPageSizePreset = "a4" | "letter" | "legal" | "fit-image";
+type PdfImageEncoding = "jpeg" | "png";
+type PageSelectionPreset = "all" | "first-5" | "first-10";
+
+interface ImageToPdfItem {
+  id: string;
+  file: File;
+  url: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}
+
+interface PdfJpgPagePreview {
+  pageNumber: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+  estimatedBytes: number;
+}
+
+interface PdfJsPageViewport {
+  width: number;
+  height: number;
+}
+
+interface PdfJsPage {
+  getViewport(params: { scale: number }): PdfJsPageViewport;
+  render(params: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PdfJsPageViewport;
+  }): { promise: Promise<void> };
+}
+
+interface PdfJsDocument {
+  numPages: number;
+  getPage(pageNumber: number): Promise<PdfJsPage>;
+  destroy?: () => Promise<void> | void;
+}
+
+interface PdfJsLoadingTask {
+  promise: Promise<PdfJsDocument>;
+  destroy?: () => void;
+}
+
+interface PdfJsModule {
+  getDocument(params: {
+    data: ArrayBuffer;
+    disableWorker?: boolean;
+  }): PdfJsLoadingTask;
+  GlobalWorkerOptions?: {
+    workerSrc: string;
+  };
+}
+
+const PDF_PAGE_SIZE_PRESETS: Record<
+  Exclude<PdfPageSizePreset, "fit-image">,
+  { label: string; sizeMm: [number, number] }
+> = {
+  a4: { label: "A4", sizeMm: [210, 297] },
+  letter: { label: "US Letter", sizeMm: [215.9, 279.4] },
+  legal: { label: "US Legal", sizeMm: [215.9, 355.6] },
+};
+
+const PAGE_SELECTION_PRESETS: Array<{ value: PageSelectionPreset; label: string; hint: string }> = [
+  { value: "all", label: "All pages", hint: "Convert every page from the PDF" },
+  { value: "first-5", label: "First 5 pages", hint: "Quick preview for long PDFs" },
+  { value: "first-10", label: "First 10 pages", hint: "Balanced speed + coverage" },
+];
+
+function estimateBytesFromDataUrl(dataUrl: string): number {
+  const base64Payload = dataUrl.split(",")[1] ?? "";
+  return Math.max(0, Math.floor((base64Payload.length * 3) / 4));
+}
+
+async function renderImageFileForPdf(
+  file: File,
+  encoding: PdfImageEncoding,
+  quality: number,
+): Promise<{ dataUrl: string; width: number; height: number; format: "JPEG" | "PNG" }> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await loadImage(objectUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas context unavailable.");
+    }
+
+    if (encoding === "jpeg") {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    context.drawImage(image, 0, 0);
+
+    if (encoding === "jpeg") {
+      return {
+        dataUrl: canvas.toDataURL("image/jpeg", Math.max(0.1, Math.min(1, quality))),
+        width: image.width,
+        height: image.height,
+        format: "JPEG",
+      };
+    }
+
+    return {
+      dataUrl: canvas.toDataURL("image/png"),
+      width: image.width,
+      height: image.height,
+      format: "PNG",
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function resolvePdfPageSizeMm(
+  pagePreset: PdfPageSizePreset,
+  width: number,
+  height: number,
+  fitDpi: number,
+): [number, number] {
+  if (pagePreset !== "fit-image") {
+    return PDF_PAGE_SIZE_PRESETS[pagePreset].sizeMm;
+  }
+
+  const dpi = Math.max(72, Math.min(300, fitDpi));
+  const mmPerPixel = 25.4 / dpi;
+  const widthMm = Math.max(30, Math.min(1200, width * mmPerPixel));
+  const heightMm = Math.max(30, Math.min(1200, height * mmPerPixel));
+  return [widthMm, heightMm];
+}
+
+function parsePageRangeInput(input: string, totalPages: number): number[] | null {
+  const trimmed = input.trim();
+  if (!trimmed || trimmed.toLowerCase() === "all") {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = new Set<number>();
+  const chunks = trimmed.split(",");
+  for (const rawChunk of chunks) {
+    const chunk = rawChunk.trim();
+    if (!chunk) continue;
+
+    if (chunk.includes("-")) {
+      const [startPart, endPart] = chunk.split("-").map((part) => Number.parseInt(part.trim(), 10));
+      if (!Number.isFinite(startPart) || !Number.isFinite(endPart)) return null;
+      if (startPart < 1 || endPart < 1 || startPart > endPart) return null;
+      if (startPart > totalPages) return null;
+      const boundedEnd = Math.min(totalPages, endPart);
+      for (let page = startPart; page <= boundedEnd; page += 1) {
+        pages.add(page);
+      }
+      continue;
+    }
+
+    const page = Number.parseInt(chunk, 10);
+    if (!Number.isFinite(page) || page < 1 || page > totalPages) return null;
+    pages.add(page);
+  }
+
+  return Array.from(pages).sort((a, b) => a - b);
+}
+
+function buildPageRangeFromPreset(preset: PageSelectionPreset): string {
+  if (preset === "first-5") return "1-5";
+  if (preset === "first-10") return "1-10";
+  return "all";
+}
+
+async function loadPdfJsModule(): Promise<PdfJsModule> {
+  const pdfJsModule = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule;
+  if (pdfJsModule.GlobalWorkerOptions) {
+    pdfJsModule.GlobalWorkerOptions.workerSrc = "";
+  }
+  return pdfJsModule;
+}
+
+function ImageToPdfTool() {
+  const [items, setItems] = useState<ImageToPdfItem[]>([]);
+  const [pdfName, setPdfName] = useState("utiliora-images");
+  const [pagePreset, setPagePreset] = useState<PdfPageSizePreset>("a4");
+  const [marginMm, setMarginMm] = useState(10);
+  const [fitDpi, setFitDpi] = useState(150);
+  const [encoding, setEncoding] = useState<PdfImageEncoding>("jpeg");
+  const [quality, setQuality] = useState(0.9);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload one or more images to generate a PDF.");
+  const [lastPdfSizeBytes, setLastPdfSizeBytes] = useState<number | null>(null);
+  const [lastGeneratedPages, setLastGeneratedPages] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const itemsRef = useRef<ImageToPdfItem[]>([]);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    return () => {
+      itemsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
+    };
+  }, []);
+
+  const handleSelectedFiles = useCallback(async (list: FileList | null) => {
+    if (!list?.length) return;
+
+    const candidates = Array.from(list).filter((file) => file.type.startsWith("image/"));
+    if (!candidates.length) {
+      setStatus("Please select image files only.");
+      return;
+    }
+
+    setStatus(`Reading ${candidates.length} image${candidates.length > 1 ? "s" : ""}...`);
+    const nextItems: ImageToPdfItem[] = [];
+    for (let index = 0; index < candidates.length; index += 1) {
+      const file = candidates[index];
+      const objectUrl = URL.createObjectURL(file);
+      try {
+        const image = await loadImage(objectUrl);
+        nextItems.push({
+          id: `${Date.now()}-${index}-${file.name}`,
+          file,
+          url: objectUrl,
+          width: image.width,
+          height: image.height,
+          sizeBytes: file.size,
+        });
+      } catch {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }
+
+    if (!nextItems.length) {
+      setStatus("No readable images were found in your selection.");
+      return;
+    }
+
+    setItems((previous) => [...previous, ...nextItems].slice(0, 60));
+    setStatus(`Loaded ${nextItems.length} image${nextItems.length > 1 ? "s" : ""}.`);
+    trackEvent("tool_image_to_pdf_upload", { count: nextItems.length });
+  }, []);
+
+  const clearAll = useCallback(() => {
+    setItems((previous) => {
+      previous.forEach((item) => URL.revokeObjectURL(item.url));
+      return [];
+    });
+    setLastGeneratedPages(0);
+    setLastPdfSizeBytes(null);
+    setProgress(0);
+    setStatus("Cleared. Upload images to start again.");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const removeItem = useCallback((id: string) => {
+    setItems((previous) => {
+      const target = previous.find((item) => item.id === id);
+      if (target) URL.revokeObjectURL(target.url);
+      return previous.filter((item) => item.id !== id);
+    });
+  }, []);
+
+  const moveItem = useCallback((index: number, direction: -1 | 1) => {
+    setItems((previous) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= previous.length) return previous;
+      const clone = [...previous];
+      const [moved] = clone.splice(index, 1);
+      clone.splice(nextIndex, 0, moved);
+      return clone;
+    });
+  }, []);
+
+  const generatePdf = useCallback(async () => {
+    if (!items.length) {
+      setStatus("Add at least one image before generating.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(5);
+    setStatus("Preparing PDF document...");
+
+    try {
+      const { jsPDF } = await import("jspdf");
+      const firstItem = items[0];
+      const firstPageSize = resolvePdfPageSizeMm(pagePreset, firstItem.width, firstItem.height, fitDpi);
+      const firstLandscape = firstItem.width > firstItem.height;
+      const firstFormat: [number, number] = firstLandscape
+        ? [firstPageSize[1], firstPageSize[0]]
+        : firstPageSize;
+
+      const pdfDocument = new jsPDF({
+        unit: "mm",
+        format: firstFormat,
+        compress: true,
+      });
+
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        const pageSize = resolvePdfPageSizeMm(pagePreset, item.width, item.height, fitDpi);
+        const useLandscape = item.width > item.height;
+        const format: [number, number] = useLandscape ? [pageSize[1], pageSize[0]] : pageSize;
+        if (index > 0) {
+          pdfDocument.addPage(format);
+        } else {
+          const current = pdfDocument.internal.pageSize;
+          if (
+            Math.abs(current.getWidth() - format[0]) > 0.01 ||
+            Math.abs(current.getHeight() - format[1]) > 0.01
+          ) {
+            pdfDocument.deletePage(1);
+            pdfDocument.addPage(format);
+            pdfDocument.setPage(1);
+          }
+        }
+
+        setStatus(`Rendering image ${index + 1}/${items.length}...`);
+        setProgress(Math.round((index / Math.max(1, items.length)) * 70) + 10);
+
+        const rendered = await renderImageFileForPdf(item.file, encoding, quality);
+        const pageWidth = pdfDocument.internal.pageSize.getWidth();
+        const pageHeight = pdfDocument.internal.pageSize.getHeight();
+        const safeMargin = Math.max(0, Math.min(30, marginMm));
+        const drawAreaWidth = Math.max(10, pageWidth - safeMargin * 2);
+        const drawAreaHeight = Math.max(10, pageHeight - safeMargin * 2);
+        const widthRatio = drawAreaWidth / rendered.width;
+        const heightRatio = drawAreaHeight / rendered.height;
+        const scale = Math.min(widthRatio, heightRatio);
+        const drawWidth = rendered.width * scale;
+        const drawHeight = rendered.height * scale;
+        const x = (pageWidth - drawWidth) / 2;
+        const y = (pageHeight - drawHeight) / 2;
+
+        pdfDocument.addImage(
+          rendered.dataUrl,
+          rendered.format,
+          x,
+          y,
+          drawWidth,
+          drawHeight,
+          undefined,
+          "FAST",
+        );
+      }
+
+      setStatus("Finalizing PDF file...");
+      setProgress(92);
+      const outputBlob = pdfDocument.output("blob");
+      const baseName = stripFileExtension(pdfName.trim()) || "images";
+      const filename = `${baseName}.pdf`;
+      const outputUrl = URL.createObjectURL(outputBlob);
+      const anchor = document.createElement("a");
+      anchor.href = outputUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(outputUrl);
+
+      setProgress(100);
+      setLastGeneratedPages(items.length);
+      setLastPdfSizeBytes(outputBlob.size);
+      setStatus(`PDF ready: ${filename} (${formatBytes(outputBlob.size)}).`);
+      trackEvent("tool_image_to_pdf_generate", {
+        pages: items.length,
+        pagePreset,
+        encoding,
+      });
+    } catch {
+      setStatus("PDF generation failed. Try fewer or smaller images.");
+    } finally {
+      setProcessing(false);
+    }
+  }, [encoding, fitDpi, items, marginMm, pagePreset, pdfName, quality]);
+
+  const totalInputBytes = useMemo(
+    () => items.reduce((sum, item) => sum + item.sizeBytes, 0),
+    [items],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Image to PDF converter"
+        subtitle="Combine many images into one PDF with page-size controls, margins, and order management."
+      />
+
+      <label className="field">
+        <span>Upload images (JPG, PNG, WebP)</span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          onChange={(event) => {
+            void handleSelectedFiles(event.target.files);
+          }}
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>PDF filename</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Page size</span>
+          <select value={pagePreset} onChange={(event) => setPagePreset(event.target.value as PdfPageSizePreset)}>
+            <option value="a4">A4</option>
+            <option value="letter">US Letter</option>
+            <option value="legal">US Legal</option>
+            <option value="fit-image">Match each image size</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Margin ({marginMm} mm)</span>
+          <input
+            type="range"
+            min={0}
+            max={30}
+            step={1}
+            value={marginMm}
+            onChange={(event) => setMarginMm(Number(event.target.value))}
+          />
+        </label>
+        {pagePreset === "fit-image" ? (
+          <label className="field">
+            <span>Fit DPI ({fitDpi})</span>
+            <input
+              type="range"
+              min={72}
+              max={300}
+              step={2}
+              value={fitDpi}
+              onChange={(event) => setFitDpi(Number(event.target.value))}
+            />
+            <small className="supporting-text">Higher DPI creates physically smaller pages.</small>
+          </label>
+        ) : null}
+        <label className="field">
+          <span>Embed format</span>
+          <select value={encoding} onChange={(event) => setEncoding(event.target.value as PdfImageEncoding)}>
+            <option value="jpeg">JPEG (smaller files)</option>
+            <option value="png">PNG (lossless)</option>
+          </select>
+        </label>
+        {encoding === "jpeg" ? (
+          <label className="field">
+            <span>JPEG quality ({quality.toFixed(2)})</span>
+            <input
+              type="range"
+              min={0.4}
+              max={1}
+              step={0.02}
+              value={quality}
+              onChange={(event) => setQuality(Number(event.target.value))}
+            />
+          </label>
+        ) : null}
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!items.length || processing} onClick={() => void generatePdf()}>
+          {processing ? "Generating PDF..." : "Generate PDF"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={clearAll} disabled={!items.length || processing}>
+          <Trash2 size={15} />
+          Clear images
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Images loaded", value: formatNumericValue(items.length) },
+          { label: "Total input size", value: formatBytes(totalInputBytes) },
+          {
+            label: "Page size mode",
+            value: pagePreset === "fit-image" ? "Match image size" : PDF_PAGE_SIZE_PRESETS[pagePreset].label,
+          },
+          { label: "Last PDF pages", value: lastGeneratedPages ? formatNumericValue(lastGeneratedPages) : "-" },
+          { label: "Last PDF size", value: lastPdfSizeBytes ? formatBytes(lastPdfSizeBytes) : "-" },
+        ]}
+      />
+
+      {items.length ? (
+        <div className="image-compare-grid">
+          {items.map((item, index) => (
+            <article key={item.id} className="image-card">
+              <h3>
+                {index + 1}. {item.file.name}
+              </h3>
+              <div className="image-frame">
+                <NextImage
+                  src={item.url}
+                  alt={`Source image ${item.file.name}`}
+                  width={item.width}
+                  height={item.height}
+                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  unoptimized
+                />
+              </div>
+              <dl className="image-meta">
+                <div>
+                  <dt>Dimensions</dt>
+                  <dd>
+                    {item.width} x {item.height}
+                  </dd>
+                </div>
+                <div>
+                  <dt>File size</dt>
+                  <dd>{formatBytes(item.sizeBytes)}</dd>
+                </div>
+              </dl>
+              <div className="button-row">
+                <button className="action-button secondary" type="button" onClick={() => moveItem(index, -1)} disabled={index === 0 || processing}>
+                  Move up
+                </button>
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() => moveItem(index, 1)}
+                  disabled={index === items.length - 1 || processing}
+                >
+                  Move down
+                </button>
+                <button className="action-button secondary" type="button" onClick={() => removeItem(item.id)} disabled={processing}>
+                  Remove
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function PdfToJpgTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [pageCount, setPageCount] = useState(0);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [selectionPreset, setSelectionPreset] = useState<PageSelectionPreset>("all");
+  const [scalePercent, setScalePercent] = useState(150);
+  const [quality, setQuality] = useState(0.9);
+  const [maxPages, setMaxPages] = useState(20);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a PDF to extract JPG pages.");
+  const [pages, setPages] = useState<PdfJpgPagePreview[]>([]);
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [lastRenderMs, setLastRenderMs] = useState<number | null>(null);
+  const [renderedRangeSummary, setRenderedRangeSummary] = useState("None");
+
+  const totalJpgBytes = useMemo(
+    () => pages.reduce((sum, page) => sum + page.estimatedBytes, 0),
+    [pages],
+  );
+
+  const inspectPdfMeta = useCallback(async (nextFile: File) => {
+    try {
+      setStatus("Inspecting PDF pages...");
+      const pdfjs = await loadPdfJsModule();
+      const loadingTask = pdfjs.getDocument({
+        data: await nextFile.arrayBuffer(),
+        disableWorker: true,
+      });
+      const pdfDocument = await loadingTask.promise;
+      const count = pdfDocument.numPages;
+      setPageCount(count);
+      setStatus(`PDF loaded with ${count} pages.`);
+      setRenderedRangeSummary("None");
+      if (pdfDocument.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask.destroy) {
+        loadingTask.destroy();
+      }
+    } catch {
+      setPageCount(0);
+      setStatus("Unable to read PDF file.");
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setPdfName("");
+        setPages([]);
+        setPageCount(0);
+        setSourceBytes(0);
+        setStatus("Upload a PDF to extract JPG pages.");
+        return;
+      }
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF document.");
+        return;
+      }
+
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setPages([]);
+      setProgress(0);
+      setSourceBytes(candidate.size);
+      void inspectPdfMeta(candidate);
+      trackEvent("tool_pdf_to_jpg_upload", { size: candidate.size });
+    },
+    [inspectPdfMeta],
+  );
+
+  const convertPdf = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a PDF file first.");
+      return;
+    }
+    if (!pageCount) {
+      setStatus("PDF page count is not ready yet.");
+      return;
+    }
+
+    const selectedPages = parsePageRangeInput(pageRangeInput, pageCount);
+    if (!selectedPages || !selectedPages.length) {
+      setStatus("Invalid page range. Example: 1-3,5,8");
+      return;
+    }
+
+    const boundedSelection = selectedPages.slice(0, Math.max(1, Math.min(100, maxPages)));
+    setProcessing(true);
+    setProgress(5);
+    setStatus(`Rendering ${boundedSelection.length} page${boundedSelection.length > 1 ? "s" : ""}...`);
+    const startedAt = Date.now();
+
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await file.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+      const nextPages: PdfJpgPagePreview[] = [];
+      const scale = Math.max(0.5, Math.min(4, scalePercent / 100));
+
+      for (let index = 0; index < boundedSelection.length; index += 1) {
+        const pageNumber = boundedSelection[index];
+        setStatus(`Rendering page ${pageNumber} (${index + 1}/${boundedSelection.length})...`);
+        setProgress(Math.round((index / Math.max(1, boundedSelection.length)) * 75) + 10);
+        const page = await pdfDocument.getPage(pageNumber);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas context unavailable.");
+        }
+
+        await page.render({ canvasContext: context, viewport }).promise;
+        const dataUrl = canvas.toDataURL("image/jpeg", Math.max(0.4, Math.min(1, quality)));
+        nextPages.push({
+          pageNumber,
+          width: canvas.width,
+          height: canvas.height,
+          dataUrl,
+          estimatedBytes: estimateBytesFromDataUrl(dataUrl),
+        });
+      }
+
+      const elapsed = Date.now() - startedAt;
+      setPages(nextPages);
+      setProgress(100);
+      setLastRenderMs(elapsed);
+      const summary =
+        boundedSelection.length > 1
+          ? `${boundedSelection[0]}-${boundedSelection[boundedSelection.length - 1]} (${boundedSelection.length} pages)`
+          : `${boundedSelection[0]}`;
+      setRenderedRangeSummary(summary);
+      setStatus(`Rendered ${nextPages.length} JPG page${nextPages.length > 1 ? "s" : ""} in ${(elapsed / 1000).toFixed(1)}s.`);
+      trackEvent("tool_pdf_to_jpg_convert", {
+        pages: nextPages.length,
+        scalePercent,
+        quality,
+      });
+    } catch {
+      setStatus("PDF to JPG conversion failed. Try a smaller range.");
+    } finally {
+      setProcessing(false);
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, [file, maxPages, pageCount, pageRangeInput, quality, scalePercent]);
+
+  const downloadAll = useCallback(() => {
+    if (!pages.length) return;
+    pages.forEach((page, index) => {
+      setTimeout(() => {
+        const baseName = stripFileExtension(pdfName.trim()) || "document";
+        downloadDataUrl(`${baseName}-page-${page.pageNumber}.jpg`, page.dataUrl);
+      }, index * 110);
+    });
+  }, [pages, pdfName]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={MonitorUp}
+        title="PDF to JPG converter"
+        subtitle="Extract PDF pages as JPG with page-range targeting, resolution controls, and batch download."
+      />
+
+      <label className="field">
+        <span>Upload PDF</span>
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)}
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Page selection preset</span>
+          <select
+            value={selectionPreset}
+            onChange={(event) => {
+              const preset = event.target.value as PageSelectionPreset;
+              setSelectionPreset(preset);
+              setPageRangeInput(buildPageRangeFromPreset(preset));
+            }}
+          >
+            {PAGE_SELECTION_PRESETS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Page range</span>
+          <input
+            type="text"
+            value={pageRangeInput}
+            onChange={(event) => setPageRangeInput(event.target.value)}
+            placeholder="all or 1-3,5,8"
+          />
+          <small className="supporting-text">Use commas and ranges, for example: 1-4,7,10</small>
+        </label>
+        <label className="field">
+          <span>Scale ({scalePercent}%)</span>
+          <input
+            type="range"
+            min={50}
+            max={300}
+            step={10}
+            value={scalePercent}
+            onChange={(event) => setScalePercent(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>JPG quality ({quality.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.4}
+            max={1}
+            step={0.02}
+            value={quality}
+            onChange={(event) => setQuality(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>Max pages per run</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={maxPages}
+            onChange={(event) => setMaxPages(Number(event.target.value))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!file || processing} onClick={() => void convertPdf()}>
+          {processing ? "Converting..." : "Convert to JPG"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={downloadAll} disabled={!pages.length}>
+          <Download size={15} />
+          Download all pages
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setPages([]);
+            setProgress(0);
+            setRenderedRangeSummary("None");
+            setStatus("Cleared extracted pages.");
+          }}
+          disabled={!pages.length || processing}
+        >
+          <Trash2 size={15} />
+          Clear output
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "PDF pages", value: pageCount ? formatNumericValue(pageCount) : "-" },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Rendered pages", value: formatNumericValue(pages.length) },
+          { label: "Rendered range", value: renderedRangeSummary },
+          { label: "Output estimate", value: pages.length ? formatBytes(totalJpgBytes) : "-" },
+          { label: "Last run", value: lastRenderMs ? `${(lastRenderMs / 1000).toFixed(1)}s` : "-" },
+        ]}
+      />
+
+      {pages.length ? (
+        <div className="image-compare-grid">
+          {pages.map((page) => (
+            <article key={page.pageNumber} className="image-card">
+              <h3>Page {page.pageNumber}</h3>
+              <div className="image-frame">
+                <NextImage
+                  src={page.dataUrl}
+                  alt={`PDF page ${page.pageNumber} converted to JPG`}
+                  width={page.width}
+                  height={page.height}
+                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  unoptimized
+                />
+              </div>
+              <dl className="image-meta">
+                <div>
+                  <dt>Resolution</dt>
+                  <dd>
+                    {page.width} x {page.height}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Estimated size</dt>
+                  <dd>{formatBytes(page.estimatedBytes)}</dd>
+                </div>
+              </dl>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => {
+                  const baseName = stripFileExtension(pdfName.trim()) || "document";
+                  downloadDataUrl(`${baseName}-page-${page.pageNumber}.jpg`, page.dataUrl);
+                }}
+              >
+                <Download size={15} />
+                Download page
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ImageTool({ id }: { id: ImageToolId }) {
   switch (id) {
     case "qr-code-generator":
@@ -6937,6 +7827,10 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <ImageCropperTool />;
     case "barcode-generator":
       return <BarcodeGeneratorTool />;
+    case "image-to-pdf":
+      return <ImageToPdfTool />;
+    case "pdf-to-jpg":
+      return <PdfToJpgTool />;
     default:
       return <p>Image tool unavailable.</p>;
   }

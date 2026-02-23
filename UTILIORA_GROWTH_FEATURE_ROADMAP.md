@@ -129,3 +129,5 @@ Status: `Planned`
 - Enhanced `SSL Checker` with hostname coverage validation (SAN/CN), TLS risk scoring (`A-F`), and AIA/extended-key-usage visibility.
 - Shipped `Image Cropper` with ratio presets, locked aspect controls, scaling, output format/quality tuning, and live preview/download.
 - Shipped `Barcode Generator` with multi-format support (CODE128/CODE39/EAN/UPC/ITF), batch values, styling controls, and CSV/PNG export.
+- Shipped `Image to PDF Converter` with multi-image ordering, page size modes (A4/Letter/Legal/fit), margin and quality controls, and direct PDF download.
+- Shipped `PDF to JPG Converter` with page-range parsing, scale/quality tuning, per-page previews, and single/all-page JPG download.

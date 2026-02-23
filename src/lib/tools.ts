@@ -654,6 +654,28 @@ const imageTools: ToolDefinition[] = [
     engine: { kind: "image-tool", id: "barcode-generator" },
     faq: baseFaq("Barcode Generator"),
   },
+  {
+    slug: "image-to-pdf-converter",
+    category: "image-tools",
+    title: "Image to PDF Converter",
+    summary: "Combine one or many images into a downloadable PDF document.",
+    description:
+      "Build polished PDF files from JPG, PNG, or WebP images with page-size controls, margins, ordering, and quick export.",
+    keywords: ["image to pdf", "jpg to pdf", "png to pdf", "convert image to pdf"],
+    engine: { kind: "image-tool", id: "image-to-pdf" },
+    faq: baseFaq("Image to PDF Converter"),
+  },
+  {
+    slug: "pdf-to-jpg-converter",
+    category: "image-tools",
+    title: "PDF to JPG Converter",
+    summary: "Convert PDF pages into high-quality JPG images in-browser.",
+    description:
+      "Extract single or multiple PDF pages to JPG with page-range control, quality tuning, and per-page downloads.",
+    keywords: ["pdf to jpg", "pdf page to image", "convert pdf to jpg"],
+    engine: { kind: "image-tool", id: "pdf-to-jpg" },
+    faq: baseFaq("PDF to JPG Converter"),
+  },
 ];
 
 const developerTools: ToolDefinition[] = [

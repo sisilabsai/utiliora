@@ -107,7 +107,9 @@ export type ImageToolId =
   | "jpg-to-png"
   | "png-to-webp"
   | "image-cropper"
-  | "barcode-generator";
+  | "barcode-generator"
+  | "image-to-pdf"
+  | "pdf-to-jpg";
 
 export type ProductivityToolId =
   | "pomodoro-timer"
