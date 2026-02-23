@@ -7790,6 +7790,21 @@ interface InvoiceData {
   items: InvoiceLineItem[];
 }
 
+interface CurrencyOption {
+  code: string;
+  name: string;
+}
+
+const INVOICE_LOCAL_CURRENCIES: CurrencyOption[] = [
+  { code: "USD", name: "United States Dollar" },
+  { code: "EUR", name: "Euro" },
+  { code: "GBP", name: "Pound Sterling" },
+  { code: "JPY", name: "Japanese Yen" },
+  { code: "CAD", name: "Canadian Dollar" },
+  { code: "AUD", name: "Australian Dollar" },
+  { code: "INR", name: "Indian Rupee" },
+];
+
 function createDefaultInvoiceData(): InvoiceData {
   const today = new Date();
   const due = new Date(today);
@@ -7858,6 +7873,9 @@ function InvoiceGeneratorTool() {
   const storageKey = "utiliora-invoice-generator-v1";
   const [invoice, setInvoice] = useState<InvoiceData>(() => createDefaultInvoiceData());
   const [status, setStatus] = useState("");
+  const [currencyOptions, setCurrencyOptions] = useState<CurrencyOption[]>(INVOICE_LOCAL_CURRENCIES);
+  const [currencySource, setCurrencySource] = useState("local-fallback");
+  const [currencySearch, setCurrencySearch] = useState("");
 
   useEffect(() => {
     try {
@@ -7877,6 +7895,51 @@ function InvoiceGeneratorTool() {
       // Ignore storage failures.
     }
   }, [invoice, storageKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const loadCurrencies = async () => {
+      try {
+        const response = await fetch("/api/currencies", { signal: controller.signal });
+        if (!response.ok) throw new Error("Currency API unavailable");
+        const payload = (await response.json()) as {
+          ok?: boolean;
+          source?: string;
+          currencies?: Array<{ code?: string; name?: string }>;
+        };
+        const normalized = (payload.currencies ?? [])
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            code: typeof item.code === "string" ? item.code.trim().toUpperCase() : "",
+            name: typeof item.name === "string" ? item.name.trim() : "",
+          }))
+          .filter((item) => /^[A-Z]{3}$/.test(item.code) && item.name)
+          .sort((left, right) => left.code.localeCompare(right.code));
+        if (!normalized.length) throw new Error("No currencies returned");
+        if (!cancelled) {
+          setCurrencyOptions(normalized);
+          setCurrencySource(payload.source || "api");
+        }
+      } catch {
+        if (!cancelled) {
+          setCurrencyOptions(INVOICE_LOCAL_CURRENCIES);
+          setCurrencySource("local-fallback");
+        }
+      }
+    };
+    void loadCurrencies();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currencyOptions.some((item) => item.code === invoice.currency)) return;
+    if (!currencyOptions.length) return;
+    setInvoice((current) => ({ ...current, currency: currencyOptions[0].code }));
+  }, [currencyOptions, invoice.currency]);
 
   const updateInvoice = <K extends keyof InvoiceData>(key: K, value: InvoiceData[K]) => {
     setInvoice((current) => ({ ...current, [key]: value }));
@@ -7931,6 +7994,20 @@ function InvoiceGeneratorTool() {
       invoice.dueDate || "the due date"
     }. Please let me know if you need anything from me to process payment.`;
   }, [financials.total, invoice.clientName, invoice.currency, invoice.dueDate, invoice.invoiceNumber]);
+
+  const visibleCurrencies = useMemo(() => {
+    const term = currencySearch.trim().toLowerCase();
+    const selected = currencyOptions.find((option) => option.code === invoice.currency) ?? null;
+    if (!term) return currencyOptions;
+    const filtered = currencyOptions.filter(
+      (option) =>
+        option.code.toLowerCase().includes(term) || option.name.toLowerCase().includes(term),
+    );
+    if (selected && !filtered.some((option) => option.code === selected.code)) {
+      return [selected, ...filtered];
+    }
+    return filtered;
+  }, [currencyOptions, currencySearch, invoice.currency]);
 
   const printInvoice = () => {
     const rowsHtml = invoice.items
@@ -8070,13 +8147,26 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
             </label>
             <label className="field">
               <span>Currency</span>
+              <input
+                type="text"
+                value={currencySearch}
+                placeholder="Search currency by code or name"
+                onChange={(event) => setCurrencySearch(event.target.value)}
+              />
               <select value={invoice.currency} onChange={(event) => updateInvoice("currency", event.target.value)}>
-                {["USD", "EUR", "GBP", "CAD", "AUD", "INR"].map((currency) => (
-                  <option key={currency} value={currency}>
-                    {currency}
-                  </option>
-                ))}
+                {visibleCurrencies.length ? (
+                  visibleCurrencies.map((currency) => (
+                    <option key={currency.code} value={currency.code}>
+                      {currency.code} - {currency.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value={invoice.currency}>{invoice.currency}</option>
+                )}
               </select>
+              <small className="supporting-text">
+                Source: {currencySource}. Loaded {formatNumericValue(currencyOptions.length)} currencies.
+              </small>
             </label>
           </div>
           <div className="field-grid">
