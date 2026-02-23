@@ -7787,6 +7787,8 @@ interface InvoiceData {
   shipping: string;
   notes: string;
   paymentTerms: string;
+  logoDataUrl: string;
+  logoFileName: string;
   items: InvoiceLineItem[];
 }
 
@@ -7795,15 +7797,122 @@ interface CurrencyOption {
   name: string;
 }
 
-const INVOICE_LOCAL_CURRENCIES: CurrencyOption[] = [
-  { code: "USD", name: "United States Dollar" },
-  { code: "EUR", name: "Euro" },
-  { code: "GBP", name: "Pound Sterling" },
-  { code: "JPY", name: "Japanese Yen" },
-  { code: "CAD", name: "Canadian Dollar" },
-  { code: "AUD", name: "Australian Dollar" },
-  { code: "INR", name: "Indian Rupee" },
+const INVOICE_AFRICAN_PRIORITY: CurrencyOption[] = [
+  { code: "DZD", name: "Algerian Dinar" },
+  { code: "AOA", name: "Angolan Kwanza" },
+  { code: "BWP", name: "Botswana Pula" },
+  { code: "BIF", name: "Burundian Franc" },
+  { code: "CVE", name: "Cape Verdean Escudo" },
+  { code: "CDF", name: "Congolese Franc" },
+  { code: "EGP", name: "Egyptian Pound" },
+  { code: "ETB", name: "Ethiopian Birr" },
+  { code: "GHS", name: "Ghanaian Cedi" },
+  { code: "KES", name: "Kenyan Shilling" },
+  { code: "MAD", name: "Moroccan Dirham" },
+  { code: "MUR", name: "Mauritian Rupee" },
+  { code: "NGN", name: "Nigerian Naira" },
+  { code: "RWF", name: "Rwandan Franc" },
+  { code: "ZAR", name: "South African Rand" },
+  { code: "TZS", name: "Tanzanian Shilling" },
+  { code: "TND", name: "Tunisian Dinar" },
+  { code: "UGX", name: "Ugandan Shilling" },
+  { code: "XAF", name: "Central African CFA Franc" },
+  { code: "XOF", name: "West African CFA Franc" },
+  { code: "ZMW", name: "Zambian Kwacha" },
+  { code: "ZWL", name: "Zimbabwean Dollar" },
 ];
+
+function mergeCurrencyOptions(...lists: CurrencyOption[][]): CurrencyOption[] {
+  const map = new Map<string, string>();
+  lists.forEach((list) => {
+    list.forEach((currency) => {
+      if (!/^[A-Z]{3}$/.test(currency.code)) return;
+      if (!currency.name.trim()) return;
+      if (!map.has(currency.code)) {
+        map.set(currency.code, currency.name.trim());
+      }
+    });
+  });
+  return [...map.entries()]
+    .map(([code, name]) => ({ code, name }))
+    .sort((left, right) => left.code.localeCompare(right.code));
+}
+
+function getInvoiceClientFallbackCurrencies(): CurrencyOption[] {
+  const intlWithSupported = Intl as typeof Intl & { supportedValuesOf?: (key: "currency") => string[] };
+  const supported = intlWithSupported.supportedValuesOf?.("currency") ?? [];
+  const displayNames = typeof Intl.DisplayNames === "function" ? new Intl.DisplayNames(["en"], { type: "currency" }) : null;
+  const fromIntl = supported
+    .map((code) => ({
+      code,
+      name: displayNames?.of(code) ?? code,
+    }))
+    .filter((item) => /^[A-Z]{3}$/.test(item.code) && item.name);
+  if (fromIntl.length) {
+    return mergeCurrencyOptions(fromIntl, INVOICE_AFRICAN_PRIORITY);
+  }
+  return mergeCurrencyOptions(
+    [
+      { code: "USD", name: "United States Dollar" },
+      { code: "EUR", name: "Euro" },
+      { code: "GBP", name: "Pound Sterling" },
+      { code: "JPY", name: "Japanese Yen" },
+      { code: "CAD", name: "Canadian Dollar" },
+      { code: "AUD", name: "Australian Dollar" },
+      { code: "INR", name: "Indian Rupee" },
+      { code: "BRL", name: "Brazilian Real" },
+      { code: "CNY", name: "Chinese Yuan" },
+    ],
+    INVOICE_AFRICAN_PRIORITY,
+  );
+}
+
+interface InvoiceWorkspace {
+  id: string;
+  label: string;
+  updatedAt: number;
+  invoice: InvoiceData;
+}
+
+interface InvoiceWorkspaceStorage {
+  activeWorkspaceId: string;
+  workspaces: InvoiceWorkspace[];
+}
+
+function createInvoiceWorkspace(label: string, invoice?: InvoiceData): InvoiceWorkspace {
+  return {
+    id: crypto.randomUUID(),
+    label,
+    updatedAt: Date.now(),
+    invoice: invoice ?? createDefaultInvoiceData(),
+  };
+}
+
+function deriveWorkspaceLabel(invoice: InvoiceData, fallback = "Draft invoice"): string {
+  const fromNumber = invoice.invoiceNumber.trim();
+  if (fromNumber) return fromNumber;
+  const fromClient = invoice.clientName.trim();
+  if (fromClient) return `Invoice - ${fromClient}`;
+  return fallback;
+}
+
+function sanitizeInvoiceWorkspace(raw: unknown): InvoiceWorkspace | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<InvoiceWorkspace>;
+  const sanitizedInvoice = sanitizeInvoiceData(candidate.invoice);
+  if (!sanitizedInvoice) return null;
+  return {
+    id: typeof candidate.id === "string" && candidate.id ? candidate.id : crypto.randomUUID(),
+    label:
+      typeof candidate.label === "string" && candidate.label.trim()
+        ? candidate.label.trim()
+        : deriveWorkspaceLabel(sanitizedInvoice),
+    updatedAt: typeof candidate.updatedAt === "number" ? candidate.updatedAt : Date.now(),
+    invoice: sanitizedInvoice,
+  };
+}
+
+const INVOICE_LOCAL_CURRENCIES = getInvoiceClientFallbackCurrencies();
 
 function createDefaultInvoiceData(): InvoiceData {
   const today = new Date();
@@ -7827,6 +7936,8 @@ function createDefaultInvoiceData(): InvoiceData {
     shipping: "0",
     notes: "",
     paymentTerms: "Payment due within 14 days.",
+    logoDataUrl: "",
+    logoFileName: "",
     items: [{ id: crypto.randomUUID(), description: "Service work", quantity: "1", unitPrice: "0" }],
   };
 }
@@ -7865,36 +7976,101 @@ function sanitizeInvoiceData(raw: unknown): InvoiceData | null {
     shipping: typeof candidate.shipping === "string" ? candidate.shipping : defaults.shipping,
     notes: typeof candidate.notes === "string" ? candidate.notes : defaults.notes,
     paymentTerms: typeof candidate.paymentTerms === "string" ? candidate.paymentTerms : defaults.paymentTerms,
+    logoDataUrl: typeof candidate.logoDataUrl === "string" ? candidate.logoDataUrl : defaults.logoDataUrl,
+    logoFileName: typeof candidate.logoFileName === "string" ? candidate.logoFileName : defaults.logoFileName,
     items: items.length ? items : defaults.items,
   };
 }
 
 function InvoiceGeneratorTool() {
-  const storageKey = "utiliora-invoice-generator-v1";
+  const storageKey = "utiliora-invoice-workspaces-v1";
+  const legacyStorageKey = "utiliora-invoice-generator-v1";
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
   const [invoice, setInvoice] = useState<InvoiceData>(() => createDefaultInvoiceData());
+  const [workspaces, setWorkspaces] = useState<InvoiceWorkspace[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
   const [status, setStatus] = useState("");
   const [currencyOptions, setCurrencyOptions] = useState<CurrencyOption[]>(INVOICE_LOCAL_CURRENCIES);
   const [currencySource, setCurrencySource] = useState("local-fallback");
   const [currencySearch, setCurrencySearch] = useState("");
+  const activeIndex = Math.max(0, workspaces.findIndex((workspace) => workspace.id === activeWorkspaceId));
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem(storageKey);
-      if (!stored) return;
-      const sanitized = sanitizeInvoiceData(JSON.parse(stored));
-      if (sanitized) setInvoice(sanitized);
+      if (stored) {
+        const parsed = JSON.parse(stored) as Partial<InvoiceWorkspaceStorage>;
+        const normalizedWorkspaces = Array.isArray(parsed.workspaces)
+          ? parsed.workspaces
+              .map((item) => sanitizeInvoiceWorkspace(item))
+              .filter((item): item is InvoiceWorkspace => Boolean(item))
+          : [];
+        if (normalizedWorkspaces.length) {
+          const selectedId =
+            typeof parsed.activeWorkspaceId === "string" &&
+            normalizedWorkspaces.some((workspace) => workspace.id === parsed.activeWorkspaceId)
+              ? parsed.activeWorkspaceId
+              : normalizedWorkspaces[0].id;
+          const selected =
+            normalizedWorkspaces.find((workspace) => workspace.id === selectedId) ?? normalizedWorkspaces[0];
+          setWorkspaces(normalizedWorkspaces);
+          setActiveWorkspaceId(selected.id);
+          setInvoice(selected.invoice);
+          return;
+        }
+      }
+
+      const legacy = localStorage.getItem(legacyStorageKey);
+      if (legacy) {
+        const sanitizedLegacy = sanitizeInvoiceData(JSON.parse(legacy));
+        if (sanitizedLegacy) {
+          const migrated = createInvoiceWorkspace(deriveWorkspaceLabel(sanitizedLegacy), sanitizedLegacy);
+          setWorkspaces([migrated]);
+          setActiveWorkspaceId(migrated.id);
+          setInvoice(migrated.invoice);
+          return;
+        }
+      }
+
+      const fallbackWorkspace = createInvoiceWorkspace("Draft invoice", createDefaultInvoiceData());
+      setWorkspaces([fallbackWorkspace]);
+      setActiveWorkspaceId(fallbackWorkspace.id);
     } catch {
       // Ignore malformed invoice data.
     }
-  }, [storageKey]);
+  }, [legacyStorageKey, storageKey]);
 
   useEffect(() => {
+    if (!workspaces.length) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify(invoice));
+      const payload: InvoiceWorkspaceStorage = {
+        activeWorkspaceId:
+          activeWorkspaceId && workspaces.some((workspace) => workspace.id === activeWorkspaceId)
+            ? activeWorkspaceId
+            : workspaces[0].id,
+        workspaces,
+      };
+      localStorage.setItem(storageKey, JSON.stringify(payload));
     } catch {
       // Ignore storage failures.
     }
-  }, [invoice, storageKey]);
+  }, [activeWorkspaceId, storageKey, workspaces]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.id === activeWorkspaceId
+          ? {
+              ...workspace,
+              invoice,
+              label: deriveWorkspaceLabel(invoice, workspace.label),
+              updatedAt: Date.now(),
+            }
+          : workspace,
+      ),
+    );
+  }, [activeWorkspaceId, invoice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7918,7 +8094,7 @@ function InvoiceGeneratorTool() {
           .sort((left, right) => left.code.localeCompare(right.code));
         if (!normalized.length) throw new Error("No currencies returned");
         if (!cancelled) {
-          setCurrencyOptions(normalized);
+          setCurrencyOptions(mergeCurrencyOptions(normalized, INVOICE_AFRICAN_PRIORITY));
           setCurrencySource(payload.source || "api");
         }
       } catch {
@@ -7951,6 +8127,57 @@ function InvoiceGeneratorTool() {
       items: current.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     }));
   };
+
+  const activateWorkspace = useCallback(
+    (workspaceId: string) => {
+      const target = workspaces.find((workspace) => workspace.id === workspaceId);
+      if (!target) return;
+      setActiveWorkspaceId(target.id);
+      setInvoice(target.invoice);
+      setStatus(`Opened ${target.label}.`);
+    },
+    [workspaces],
+  );
+
+  const createWorkspaceFromCurrent = useCallback(
+    (mode: "new" | "duplicate") => {
+      const duplicateNumber = (() => {
+        const now = new Date();
+        return `INV-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${Math.floor(Math.random() * 900 + 100)}`;
+      })();
+      const nextInvoice = mode === "new" ? createDefaultInvoiceData() : { ...invoice, invoiceNumber: duplicateNumber };
+      const nextWorkspace = createInvoiceWorkspace(
+        mode === "new" ? "Draft invoice" : `${deriveWorkspaceLabel(invoice)} copy`,
+        nextInvoice,
+      );
+      setWorkspaces((current) => [...current, nextWorkspace]);
+      setActiveWorkspaceId(nextWorkspace.id);
+      setInvoice(nextWorkspace.invoice);
+      setStatus(mode === "new" ? "Created a new invoice workspace." : "Duplicated invoice workspace.");
+    },
+    [invoice],
+  );
+
+  const removeActiveWorkspace = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    if (workspaces.length <= 1) {
+      const replacement = createInvoiceWorkspace("Draft invoice");
+      setWorkspaces([replacement]);
+      setActiveWorkspaceId(replacement.id);
+      setInvoice(replacement.invoice);
+      setStatus("Reset to a fresh invoice workspace.");
+      return;
+    }
+    const currentIndex = workspaces.findIndex((workspace) => workspace.id === activeWorkspaceId);
+    const nextList = workspaces.filter((workspace) => workspace.id !== activeWorkspaceId);
+    const nextWorkspace = nextList[Math.min(Math.max(currentIndex, 0), nextList.length - 1)] ?? nextList[0];
+    setWorkspaces(nextList);
+    if (nextWorkspace) {
+      setActiveWorkspaceId(nextWorkspace.id);
+      setInvoice(nextWorkspace.invoice);
+      setStatus("Removed current workspace.");
+    }
+  }, [activeWorkspaceId, workspaces]);
 
   const financials = useMemo(() => {
     const subtotal = invoice.items.reduce((sum, item) => {
@@ -8010,6 +8237,9 @@ function InvoiceGeneratorTool() {
   }, [currencyOptions, currencySearch, invoice.currency]);
 
   const printInvoice = () => {
+    const logoHtml = invoice.logoDataUrl
+      ? `<img class="invoice-logo" src="${escapeHtml(invoice.logoDataUrl)}" alt="${escapeHtml(invoice.logoFileName || "Business logo")}" />`
+      : "";
     const rowsHtml = invoice.items
       .map((item) => {
         const quantity = Math.max(0, safeNumberValue(item.quantity));
@@ -8025,6 +8255,7 @@ function InvoiceGeneratorTool() {
       .join("");
     const bodyHtml = `<main class="invoice-doc">
 <header>
+  ${logoHtml}
   <h1>Invoice ${escapeHtml(invoice.invoiceNumber || "")}</h1>
   <p class="muted">Issue: ${escapeHtml(invoice.issueDate || "-")} | Due: ${escapeHtml(invoice.dueDate || "-")}</p>
 </header>
@@ -8051,6 +8282,7 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
       bodyHtml,
       `
       .invoice-doc { max-width: 960px; margin: 0 auto; display: grid; gap: 14px; }
+      .invoice-logo { max-height: 72px; max-width: 220px; object-fit: contain; display: block; margin-bottom: 8px; }
       .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .totals { margin-left: auto; max-width: 360px; width: 100%; }
       .totals p { display: flex; justify-content: space-between; margin: 4px 0; }
@@ -8072,6 +8304,65 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
         title="Invoice generator"
         subtitle="Create client-ready invoices with taxes, discounts, due tracking, and print-to-PDF."
       />
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Invoice workspaces</h3>
+          <span className="supporting-text">
+            {formatNumericValue(workspaces.length)} saved
+          </span>
+        </div>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={() => createWorkspaceFromCurrent("new")}>
+            <Plus size={15} />
+            New invoice
+          </button>
+          <button className="action-button secondary" type="button" onClick={() => createWorkspaceFromCurrent("duplicate")}>
+            <Copy size={15} />
+            Duplicate
+          </button>
+          <button className="action-button secondary" type="button" onClick={removeActiveWorkspace}>
+            <Trash2 size={15} />
+            Delete current
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              if (!workspaces.length) return;
+              const next = workspaces[(activeIndex - 1 + workspaces.length) % workspaces.length];
+              activateWorkspace(next.id);
+            }}
+            disabled={workspaces.length < 2}
+          >
+            Prev
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              if (!workspaces.length) return;
+              const next = workspaces[(activeIndex + 1) % workspaces.length];
+              activateWorkspace(next.id);
+            }}
+            disabled={workspaces.length < 2}
+          >
+            Next
+          </button>
+        </div>
+        <div className="chip-list">
+          {workspaces.map((workspace) => (
+            <button
+              key={workspace.id}
+              className="chip-button"
+              type="button"
+              onClick={() => activateWorkspace(workspace.id)}
+              aria-pressed={workspace.id === activeWorkspaceId}
+            >
+              {workspace.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="button-row">
         <button className="action-button" type="button" onClick={printInvoice}>
           <Printer size={15} />
@@ -8199,6 +8490,77 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
           </div>
           <div className="mini-panel">
             <div className="panel-head">
+              <h3>Branding</h3>
+            </div>
+            <div className="button-row">
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => logoInputRef.current?.click()}
+              >
+                <Plus size={15} />
+                Upload logo
+              </button>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => {
+                  updateInvoice("logoDataUrl", "");
+                  updateInvoice("logoFileName", "");
+                  setStatus("Removed invoice logo.");
+                }}
+                disabled={!invoice.logoDataUrl}
+              >
+                <Trash2 size={15} />
+                Remove logo
+              </button>
+              <input
+                ref={logoInputRef}
+                type="file"
+                hidden
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  if (file.size > 1_500_000) {
+                    setStatus("Logo is too large. Please keep it under 1.5 MB.");
+                    event.target.value = "";
+                    return;
+                  }
+                  try {
+                    const dataUrl = await new Promise<string>((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+                      reader.onerror = () => reject(new Error("read-failed"));
+                      reader.readAsDataURL(file);
+                    });
+                    if (!dataUrl) throw new Error("invalid-data-url");
+                    updateInvoice("logoDataUrl", dataUrl);
+                    updateInvoice("logoFileName", file.name);
+                    setStatus("Logo updated for this invoice.");
+                  } catch {
+                    setStatus("Could not read that logo file.");
+                  } finally {
+                    event.target.value = "";
+                  }
+                }}
+              />
+            </div>
+            {invoice.logoDataUrl ? (
+              <NextImage
+                className="invoice-logo-preview"
+                src={invoice.logoDataUrl}
+                alt={invoice.logoFileName || "Invoice logo"}
+                width={220}
+                height={72}
+                unoptimized
+              />
+            ) : (
+              <p className="supporting-text">No logo selected.</p>
+            )}
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
               <h3>Line items</h3>
               <button
                 className="action-button secondary"
@@ -8281,6 +8643,16 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
         </div>
         <aside className="invoice-preview">
           <h3>Invoice preview</h3>
+          {invoice.logoDataUrl ? (
+            <NextImage
+              className="invoice-logo-preview"
+              src={invoice.logoDataUrl}
+              alt={invoice.logoFileName || "Invoice logo"}
+              width={220}
+              height={72}
+              unoptimized
+            />
+          ) : null}
           <p className="supporting-text">
             <strong>{invoice.invoiceNumber || "Invoice Number"}</strong> | {invoice.issueDate || "-"} to {invoice.dueDate || "-"}
           </p>

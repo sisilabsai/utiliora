@@ -741,9 +741,9 @@ const productivityTools: ToolDefinition[] = [
     slug: "invoice-generator",
     category: "productivity-tools",
     title: "Invoice Generator",
-    summary: "Generate professional invoices with global currency support, taxes, totals, and PDF export.",
+    summary: "Generate branded invoices with global currencies, workspace history, taxes, and PDF export.",
     description:
-      "Create client-ready invoices with business and client details, full currency selection, due dates, discount/tax support, and export workflow.",
+      "Create client-ready invoices with logo branding, multiple saved invoice workspaces, full currency selection including African currencies, and robust billing/export workflows.",
     keywords: ["invoice generator", "invoice template", "invoice pdf", "billing tool"],
     engine: { kind: "productivity-tool", id: "invoice-generator" },
     faq: baseFaq("Invoice Generator"),

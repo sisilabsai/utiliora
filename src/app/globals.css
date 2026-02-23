@@ -1096,6 +1096,16 @@ textarea {
   margin: 0;
 }
 
+.invoice-logo-preview {
+  max-width: 220px;
+  max-height: 72px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 0.35rem;
+}
+
 .invoice-identity-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
