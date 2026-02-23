@@ -127,3 +127,5 @@ Status: `Planned`
 - Shipped `SSL Checker` with TLS protocol/cipher details, certificate chain analysis, SAN visibility, expiry risk status, and export support.
 - Enhanced `DNS Lookup` with cross-resolver comparison (Google vs Cloudflare) and difference reporting per record type.
 - Enhanced `SSL Checker` with hostname coverage validation (SAN/CN), TLS risk scoring (`A-F`), and AIA/extended-key-usage visibility.
+- Shipped `Image Cropper` with ratio presets, locked aspect controls, scaling, output format/quality tuning, and live preview/download.
+- Shipped `Barcode Generator` with multi-format support (CODE128/CODE39/EAN/UPC/ITF), batch values, styling controls, and CSV/PNG export.

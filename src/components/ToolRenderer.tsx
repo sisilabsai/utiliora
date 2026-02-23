@@ -2,6 +2,7 @@
 
 import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import JsBarcode from "jsbarcode";
 import {
   Bell,
   BellOff,
@@ -671,6 +672,15 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain;
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+}
+
+function downloadDataUrl(filename: string, dataUrl: string): void {
+  const anchor = document.createElement("a");
+  anchor.href = dataUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
 }
 
 function encodeBase64Url(value: string): string {
@@ -6456,6 +6466,457 @@ function ImageTransformTool({ mode }: { mode: ImageMode }) {
   );
 }
 
+type CropAspectPreset = "free" | "1:1" | "4:3" | "16:9" | "3:2";
+
+const CROP_ASPECT_PRESETS: CropAspectPreset[] = ["free", "1:1", "4:3", "16:9", "3:2"];
+
+const CROP_ASPECT_RATIO_MAP: Record<Exclude<CropAspectPreset, "free">, number> = {
+  "1:1": 1,
+  "4:3": 4 / 3,
+  "16:9": 16 / 9,
+  "3:2": 3 / 2,
+};
+
+interface CropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function getCropAspectRatio(preset: CropAspectPreset): number | null {
+  if (preset === "free") return null;
+  return CROP_ASPECT_RATIO_MAP[preset];
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function clampCropRect(crop: CropRect, details: ImageDetails): CropRect {
+  const width = clampInteger(crop.width, 1, details.width);
+  const height = clampInteger(crop.height, 1, details.height);
+  const x = clampInteger(crop.x, 0, Math.max(0, details.width - width));
+  const y = clampInteger(crop.y, 0, Math.max(0, details.height - height));
+  return { x, y, width, height };
+}
+
+function createCenteredCrop(details: ImageDetails, aspectRatio: number | null, fillRatio = 0.86): CropRect {
+  const safeFill = Math.max(0.1, Math.min(1, fillRatio));
+  let width = Math.max(1, Math.round(details.width * safeFill));
+  let height = Math.max(1, Math.round(details.height * safeFill));
+
+  if (aspectRatio && aspectRatio > 0) {
+    let candidateHeight = Math.round(width / aspectRatio);
+    if (candidateHeight > details.height * safeFill) {
+      candidateHeight = Math.round(details.height * safeFill);
+      width = Math.round(candidateHeight * aspectRatio);
+    }
+    height = Math.max(1, candidateHeight);
+    if (height > details.height) {
+      height = details.height;
+      width = Math.max(1, Math.round(height * aspectRatio));
+    }
+    if (width > details.width) {
+      width = details.width;
+      height = Math.max(1, Math.round(width / aspectRatio));
+    }
+  }
+
+  const x = Math.max(0, Math.round((details.width - width) / 2));
+  const y = Math.max(0, Math.round((details.height - height) / 2));
+  return clampCropRect({ x, y, width, height }, details);
+}
+
+function ImageCropperTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
+  const [resultDetails, setResultDetails] = useState<OutputImageDetails | null>(null);
+  const [crop, setCrop] = useState<CropRect>({ x: 0, y: 0, width: 0, height: 0 });
+  const [aspectPreset, setAspectPreset] = useState<CropAspectPreset>("free");
+  const [lockAspect, setLockAspect] = useState(false);
+  const [scalePercent, setScalePercent] = useState(100);
+  const [outputMimeType, setOutputMimeType] = useState<OutputMimeType>("image/png");
+  const [quality, setQuality] = useState(0.9);
+  const [autoPreview, setAutoPreview] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [status, setStatus] = useState("Upload an image to crop.");
+
+  const sourceUrlRef = useRef("");
+  const resultUrlRef = useRef("");
+  const runIdRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const lossyOutput = outputMimeType === "image/jpeg" || outputMimeType === "image/webp";
+
+  useEffect(() => {
+    return () => {
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+    };
+  }, []);
+
+  const clearOutput = useCallback(() => {
+    if (resultUrlRef.current) {
+      URL.revokeObjectURL(resultUrlRef.current);
+      resultUrlRef.current = "";
+    }
+    setResultDetails(null);
+  }, []);
+
+  const updateCropField = useCallback(
+    (field: keyof CropRect, value: number) => {
+      if (!sourceDetails) return;
+      setCrop((current) => {
+        const next: CropRect = { ...current, [field]: value };
+        const ratio = lockAspect ? getCropAspectRatio(aspectPreset) : null;
+        if (ratio && field === "width") next.height = Math.max(1, Math.round(next.width / ratio));
+        if (ratio && field === "height") next.width = Math.max(1, Math.round(next.height * ratio));
+        return clampCropRect(next, sourceDetails);
+      });
+      clearOutput();
+    },
+    [aspectPreset, clearOutput, lockAspect, sourceDetails],
+  );
+
+  const handleFile = useCallback(
+    async (candidate: File | null) => {
+      if (!candidate) return;
+      if (!candidate.type.startsWith("image/")) {
+        setStatus("Please upload a valid image.");
+        return;
+      }
+      const objectUrl = URL.createObjectURL(candidate);
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = objectUrl;
+      setSourceUrl(objectUrl);
+      setFile(candidate);
+      clearOutput();
+      try {
+        const image = await loadImage(objectUrl);
+        const details: ImageDetails = {
+          filename: candidate.name,
+          sizeBytes: candidate.size,
+          mimeType: candidate.type || "image/png",
+          width: image.width,
+          height: image.height,
+        };
+        setSourceDetails(details);
+        setCrop(createCenteredCrop(details, getCropAspectRatio(aspectPreset), 0.86));
+        setStatus("Image loaded. Adjust crop settings.");
+      } catch {
+        setStatus("Could not read the image.");
+      }
+    },
+    [aspectPreset, clearOutput],
+  );
+
+  const processCrop = useCallback(
+    async (trigger: "manual" | "auto") => {
+      if (!file || !sourceDetails || !sourceUrl) return;
+      const runId = ++runIdRef.current;
+      setProcessing(true);
+      try {
+        const image = await loadImage(sourceUrl);
+        if (runId !== runIdRef.current) return;
+        const safeCrop = clampCropRect(crop, sourceDetails);
+        const scaleFactor = Math.max(0.1, Math.min(3, scalePercent / 100));
+        const outputWidth = Math.max(1, Math.round(safeCrop.width * scaleFactor));
+        const outputHeight = Math.max(1, Math.round(safeCrop.height * scaleFactor));
+        const canvas = document.createElement("canvas");
+        canvas.width = outputWidth;
+        canvas.height = outputHeight;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          setStatus("Canvas context unavailable.");
+          return;
+        }
+        context.drawImage(image, safeCrop.x, safeCrop.y, safeCrop.width, safeCrop.height, 0, 0, outputWidth, outputHeight);
+        const blob = await canvasToBlob(canvas, outputMimeType, lossyOutput ? quality : undefined);
+        if (!blob) {
+          setStatus("Failed to encode cropped output.");
+          return;
+        }
+        const outputUrl = URL.createObjectURL(blob);
+        if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+        resultUrlRef.current = outputUrl;
+        const baseName = stripFileExtension(file.name) || "image";
+        const downloadName = `${baseName}-cropped.${extensionFromMimeType(outputMimeType)}`;
+        setResultDetails({
+          url: outputUrl,
+          downloadName,
+          filename: downloadName,
+          sizeBytes: blob.size,
+          mimeType: outputMimeType,
+          width: outputWidth,
+          height: outputHeight,
+        });
+        setStatus(trigger === "auto" ? "Auto preview updated." : "Cropped output ready.");
+        trackEvent("tool_image_crop", { outputType: outputMimeType, trigger, aspectPreset, scalePercent });
+      } catch {
+        setStatus("Cropping failed.");
+      } finally {
+        if (runId === runIdRef.current) setProcessing(false);
+      }
+    },
+    [aspectPreset, crop, file, lossyOutput, outputMimeType, quality, scalePercent, sourceDetails, sourceUrl],
+  );
+
+  useEffect(() => {
+    if (!autoPreview || !sourceDetails || !file) return;
+    const timeout = setTimeout(() => {
+      void processCrop("auto");
+    }, 180);
+    return () => clearTimeout(timeout);
+  }, [autoPreview, crop, file, outputMimeType, processCrop, quality, scalePercent, sourceDetails]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading icon={MonitorUp} title="Image cropper" subtitle="Crop with ratio presets, precision controls, scaling, and instant downloads." />
+      <label className="field">
+        <span>Choose image</span>
+        <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void handleFile(event.target.files?.[0] ?? null)} />
+      </label>
+      <div className="chip-list">
+        {CROP_ASPECT_PRESETS.map((preset) => (
+          <button key={preset} className="chip-button" type="button" onClick={() => {
+            setAspectPreset(preset);
+            if (preset === "free") setLockAspect(false);
+            if (sourceDetails && preset !== "free") {
+              setLockAspect(true);
+              setCrop(createCenteredCrop(sourceDetails, getCropAspectRatio(preset), 0.86));
+            }
+          }}>
+            {preset}
+          </button>
+        ))}
+      </div>
+      <div className="field-grid">
+        <label className="field"><span>X</span><input type="number" value={crop.x} onChange={(event) => updateCropField("x", Number(event.target.value))} disabled={!sourceDetails} /></label>
+        <label className="field"><span>Y</span><input type="number" value={crop.y} onChange={(event) => updateCropField("y", Number(event.target.value))} disabled={!sourceDetails} /></label>
+        <label className="field"><span>Width</span><input type="number" value={crop.width} onChange={(event) => updateCropField("width", Number(event.target.value))} disabled={!sourceDetails} /></label>
+        <label className="field"><span>Height</span><input type="number" value={crop.height} onChange={(event) => updateCropField("height", Number(event.target.value))} disabled={!sourceDetails} /></label>
+        <label className="field"><span>Scale ({scalePercent}%)</span><input type="range" min={10} max={200} step={5} value={scalePercent} onChange={(event) => setScalePercent(Number(event.target.value))} /></label>
+        <label className="field"><span>Format</span><select value={outputMimeType} onChange={(event) => setOutputMimeType(event.target.value as OutputMimeType)}><option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option></select></label>
+      </div>
+      {lossyOutput ? <label className="field"><span>Quality ({quality.toFixed(2)})</span><input type="range" min={0.1} max={1} step={0.05} value={quality} onChange={(event) => setQuality(Number(event.target.value))} /></label> : null}
+      <div className="button-row">
+        <label className="checkbox"><input type="checkbox" checked={lockAspect} onChange={(event) => setLockAspect(event.target.checked)} disabled={aspectPreset === "free"} />Lock aspect ratio</label>
+        <label className="checkbox"><input type="checkbox" checked={autoPreview} onChange={(event) => setAutoPreview(event.target.checked)} />Auto preview</label>
+        <button className="action-button" type="button" onClick={() => void processCrop("manual")} disabled={!sourceDetails || processing}>{processing ? "Cropping..." : "Crop now"}</button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <div className="image-compare-grid">
+        <article className="image-card"><h3>Original</h3><div className="image-frame">{sourceUrl ? <NextImage src={sourceUrl} alt="Original crop source" width={sourceDetails?.width ?? 800} height={sourceDetails?.height ?? 600} style={{ width: "100%", height: "100%", objectFit: "contain" }} unoptimized /> : <p className="image-placeholder">Upload an image first.</p>}</div></article>
+        <article className="image-card"><h3>Cropped</h3><div className="image-frame">{resultDetails ? <NextImage src={resultDetails.url} alt="Cropped output preview" width={resultDetails.width} height={resultDetails.height} style={{ width: "100%", height: "100%", objectFit: "contain" }} unoptimized /> : <p className="image-placeholder">Crop output appears here.</p>}</div></article>
+      </div>
+      {resultDetails ? <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>Download cropped {labelForMimeType(resultDetails.mimeType)}</a> : null}
+    </section>
+  );
+}
+
+type BarcodeFormat = "CODE128" | "CODE39" | "EAN13" | "EAN8" | "UPC" | "ITF14";
+
+const BARCODE_FORMAT_OPTIONS: Array<{ value: BarcodeFormat; label: string; hint: string }> = [
+  { value: "CODE128", label: "CODE128", hint: "General-purpose alphanumeric labels" },
+  { value: "CODE39", label: "CODE39", hint: "Warehouse and logistics IDs" },
+  { value: "EAN13", label: "EAN13", hint: "Retail products (13 digits)" },
+  { value: "EAN8", label: "EAN8", hint: "Compact retail (8 digits)" },
+  { value: "UPC", label: "UPC-A", hint: "North American retail labels" },
+  { value: "ITF14", label: "ITF-14", hint: "Shipping carton identifiers" },
+];
+
+interface BarcodePreviewItem {
+  id: string;
+  value: string;
+  dataUrl?: string;
+  width?: number;
+  height?: number;
+  error?: string;
+}
+
+function sanitizeBarcodeFilePart(value: string): string {
+  const cleaned = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "barcode";
+}
+
+function BarcodeGeneratorTool() {
+  const [rawValues, setRawValues] = useState("UTILIORA-001");
+  const [format, setFormat] = useState<BarcodeFormat>("CODE128");
+  const [barWidth, setBarWidth] = useState(2);
+  const [barHeight, setBarHeight] = useState(110);
+  const [margin, setMargin] = useState(10);
+  const [lineColor, setLineColor] = useState("#111111");
+  const [background, setBackground] = useState("#ffffff");
+  const [displayValue, setDisplayValue] = useState(true);
+  const [fontSize, setFontSize] = useState(20);
+  const [textMargin, setTextMargin] = useState(6);
+  const [autoPreview, setAutoPreview] = useState(true);
+  const [status, setStatus] = useState("Enter one value per line and generate barcodes.");
+  const [items, setItems] = useState<BarcodePreviewItem[]>([]);
+
+  const values = useMemo(() => splitNonEmptyLines(rawValues).slice(0, 25), [rawValues]);
+  const successfulItems = useMemo(
+    () => items.filter((item): item is BarcodePreviewItem & { dataUrl: string } => Boolean(item.dataUrl)),
+    [items],
+  );
+  const firstItem = successfulItems[0];
+
+  const generate = useCallback(
+    (trigger: "manual" | "auto") => {
+      if (!values.length) {
+        setItems([]);
+        setStatus("Add at least one value to generate.");
+        return;
+      }
+
+      const nextItems = values.map((value, index) => {
+        const canvas = document.createElement("canvas");
+        try {
+          JsBarcode(canvas, value, {
+            format,
+            width: Math.max(1, Math.min(6, Math.round(barWidth))),
+            height: Math.max(40, Math.min(260, Math.round(barHeight))),
+            margin: Math.max(0, Math.min(40, Math.round(margin))),
+            lineColor,
+            background,
+            displayValue,
+            fontSize: Math.max(8, Math.min(48, Math.round(fontSize))),
+            textMargin: Math.max(0, Math.min(24, Math.round(textMargin))),
+          });
+          return {
+            id: `${value}-${index}`,
+            value,
+            dataUrl: canvas.toDataURL("image/png"),
+            width: canvas.width,
+            height: canvas.height,
+          } satisfies BarcodePreviewItem;
+        } catch (error) {
+          return {
+            id: `${value}-${index}`,
+            value,
+            error: error instanceof Error ? error.message : "Invalid value for selected format.",
+          } satisfies BarcodePreviewItem;
+        }
+      });
+
+      const successCount = nextItems.filter((item) => item.dataUrl).length;
+      setItems(nextItems);
+      setStatus(`${successCount}/${nextItems.length} generated (${trigger} run).`);
+      trackEvent("tool_barcode_generate", { format, count: nextItems.length, successes: successCount, trigger });
+    },
+    [background, barHeight, barWidth, displayValue, fontSize, format, lineColor, margin, textMargin, values],
+  );
+
+  useEffect(() => {
+    if (!autoPreview) return;
+    const timeout = setTimeout(() => generate("auto"), 220);
+    return () => clearTimeout(timeout);
+  }, [
+    autoPreview,
+    background,
+    barHeight,
+    barWidth,
+    displayValue,
+    fontSize,
+    format,
+    generate,
+    lineColor,
+    margin,
+    rawValues,
+    textMargin,
+  ]);
+
+  const exportCsv = () => {
+    const rows = items.map((item) => [
+      item.value,
+      item.error ? "error" : "ok",
+      item.width ? String(item.width) : "",
+      item.height ? String(item.height) : "",
+      item.error ?? "",
+    ]);
+    downloadCsv("barcode-report.csv", ["Value", "Status", "Width", "Height", "Error"], rows);
+  };
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading icon={Hash} title="Barcode generator" subtitle="Generate multiple barcode formats with batch input, styling, and PNG export." />
+
+      <label className="field">
+        <span>Values (one per line, up to 25)</span>
+        <textarea value={rawValues} onChange={(event) => setRawValues(event.target.value)} rows={5} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field"><span>Format</span><select value={format} onChange={(event) => setFormat(event.target.value as BarcodeFormat)}>{BARCODE_FORMAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label} - {option.hint}</option>)}</select></label>
+        <label className="field"><span>Bar width</span><input type="number" min={1} max={6} value={barWidth} onChange={(event) => setBarWidth(Number(event.target.value))} /></label>
+        <label className="field"><span>Bar height</span><input type="number" min={40} max={260} value={barHeight} onChange={(event) => setBarHeight(Number(event.target.value))} /></label>
+        <label className="field"><span>Margin</span><input type="number" min={0} max={40} value={margin} onChange={(event) => setMargin(Number(event.target.value))} /></label>
+        <label className="field"><span>Line color</span><input type="color" value={lineColor} onChange={(event) => setLineColor(event.target.value)} /></label>
+        <label className="field"><span>Background</span><input type="color" value={background} onChange={(event) => setBackground(event.target.value)} /></label>
+        <label className="field"><span>Font size</span><input type="number" min={8} max={48} value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /></label>
+        <label className="field"><span>Text margin</span><input type="number" min={0} max={24} value={textMargin} onChange={(event) => setTextMargin(Number(event.target.value))} /></label>
+      </div>
+
+      <div className="button-row">
+        <label className="checkbox"><input type="checkbox" checked={displayValue} onChange={(event) => setDisplayValue(event.target.checked)} />Show value text</label>
+        <label className="checkbox"><input type="checkbox" checked={autoPreview} onChange={(event) => setAutoPreview(event.target.checked)} />Auto preview</label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => generate("manual")}>Generate barcodes</button>
+        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!items.length}><Download size={15} />Export CSV</button>
+        <button className="action-button secondary" type="button" disabled={!firstItem} onClick={() => {
+          if (!firstItem) return;
+          downloadDataUrl(`${sanitizeBarcodeFilePart(firstItem.value)}-${format.toLowerCase()}.png`, firstItem.dataUrl);
+        }}><Download size={15} />Download first</button>
+        <button className="action-button secondary" type="button" disabled={!successfulItems.length} onClick={() => {
+          successfulItems.forEach((item, index) => {
+            setTimeout(() => {
+              downloadDataUrl(`${sanitizeBarcodeFilePart(item.value)}-${format.toLowerCase()}-${index + 1}.png`, item.dataUrl);
+            }, index * 120);
+          });
+        }}><Download size={15} />Download all</button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList rows={[{ label: "Input rows", value: formatNumericValue(values.length) }, { label: "Generated", value: formatNumericValue(successfulItems.length) }, { label: "Failed", value: formatNumericValue(items.length - successfulItems.length) }, { label: "Format", value: format }]} />
+
+      {items.length ? (
+        <div className="image-compare-grid">
+          {items.map((item) => (
+            <article key={item.id} className="image-card">
+              <h3>{item.value}</h3>
+              <div className="image-frame">
+                {item.dataUrl ? (
+                  <NextImage
+                    src={item.dataUrl}
+                    alt={`Barcode preview for ${item.value}`}
+                    width={item.width ?? 640}
+                    height={item.height ?? 220}
+                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                    unoptimized
+                  />
+                ) : (
+                  <p className="image-placeholder">Generation failed</p>
+                )}
+              </div>
+              {item.error ? <p className="error-text">{item.error}</p> : null}
+              {item.dataUrl ? <button className="action-button secondary" type="button" onClick={() => downloadDataUrl(`${sanitizeBarcodeFilePart(item.value)}-${format.toLowerCase()}.png`, item.dataUrl ?? "")}>Download</button> : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ImageTool({ id }: { id: ImageToolId }) {
   switch (id) {
     case "qr-code-generator":
@@ -6472,6 +6933,10 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <ImageTransformTool mode="jpg-to-png" />;
     case "png-to-webp":
       return <ImageTransformTool mode="png-to-webp" />;
+    case "image-cropper":
+      return <ImageCropperTool />;
+    case "barcode-generator":
+      return <BarcodeGeneratorTool />;
     default:
       return <p>Image tool unavailable.</p>;
   }

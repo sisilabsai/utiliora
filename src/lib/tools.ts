@@ -632,6 +632,28 @@ const imageTools: ToolDefinition[] = [
     engine: { kind: "image-tool", id: "png-to-webp" },
     faq: baseFaq("PNG to WebP Converter"),
   },
+  {
+    slug: "image-cropper",
+    category: "image-tools",
+    title: "Image Cropper",
+    summary: "Crop images with aspect presets, precision controls, and live output preview.",
+    description:
+      "Crop image regions client-side with fixed ratio presets, scaling options, output format control, and instant download.",
+    keywords: ["image cropper", "crop image online", "photo crop tool"],
+    engine: { kind: "image-tool", id: "image-cropper" },
+    faq: baseFaq("Image Cropper"),
+  },
+  {
+    slug: "barcode-generator",
+    category: "image-tools",
+    title: "Barcode Generator",
+    summary: "Generate barcodes in multiple formats with batch input and export controls.",
+    description:
+      "Create production-ready barcodes for products, labels, and logistics with format options, styling controls, and downloadable PNG output.",
+    keywords: ["barcode generator", "code128 generator", "ean13 barcode", "upc barcode"],
+    engine: { kind: "image-tool", id: "barcode-generator" },
+    faq: baseFaq("Barcode Generator"),
+  },
 ];
 
 const developerTools: ToolDefinition[] = [
