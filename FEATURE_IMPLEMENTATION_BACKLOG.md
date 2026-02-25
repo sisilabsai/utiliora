@@ -26,7 +26,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 8 | PDF to Word Converter | Image/PDF | Very high conversion intent | Done |
 | 9 | Word to PDF Converter | Image/PDF | Very high conversion intent | Done |
 | 10 | Internet Speed Test | Developer/Utility | Massive evergreen demand | Done |
-| 11 | AI Detector | SEO/Content | Strong current demand | Planned |
+| 11 | AI Detector | SEO/Content | Strong current demand | Done |
 | 12 | Plagiarism Checker | SEO/Content | Strong student/content demand | Planned |
 | 13 | Background Remover | Image Tools | Very high creator/ecommerce demand | Planned |
 | 14 | Text Translator | Productivity/SEO | Massive multilingual demand | Planned |
@@ -46,4 +46,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `PDF to Word Converter` (`/image-tools/pdf-to-word-converter`)
 - Completed feature: `Word to PDF Converter` (`/image-tools/word-to-pdf-converter`)
 - Completed feature: `Internet Speed Test` (`/developer-tools/internet-speed-test`)
-- Active next feature: `AI Detector`
+- Completed feature: `AI Detector` (`/seo-tools/ai-detector`)
+- Active next feature: `Plagiarism Checker`

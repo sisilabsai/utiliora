@@ -4164,6 +4164,288 @@ function LoremIpsumTool() {
   );
 }
 
+interface AiDetectorReport {
+  riskScore: number;
+  confidence: number;
+  verdict: string;
+  verdictTone: "ok" | "info" | "warn" | "bad";
+  wordCount: number;
+  sentenceCount: number;
+  lexicalDiversity: number;
+  burstiness: number;
+  repeatedPhraseCoverage: number;
+  repeatedPhrases: Array<{ phrase: string; count: number }>;
+  signals: string[];
+  rewriteTips: string[];
+}
+
+function tokenizeAiWords(value: string): string[] {
+  return value.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+}
+
+function splitAiSentences(value: string): string[] {
+  return value
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function clampScore(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildAiDetectorReport(value: string): AiDetectorReport | null {
+  const text = value.trim();
+  if (!text) return null;
+
+  const words = tokenizeAiWords(text);
+  const sentences = splitAiSentences(text);
+  const wordCount = words.length;
+  const sentenceCount = Math.max(1, sentences.length);
+  if (!wordCount) return null;
+
+  const uniqueWordCount = new Set(words).size;
+  const lexicalDiversity = uniqueWordCount / wordCount;
+
+  const sentenceLengths = sentences
+    .map((sentence) => tokenizeAiWords(sentence).length)
+    .filter((length) => length > 0);
+  const averageSentenceLength =
+    sentenceLengths.reduce((sum, length) => sum + length, 0) / Math.max(1, sentenceLengths.length);
+  const sentenceVariance =
+    sentenceLengths.reduce((sum, length) => sum + Math.pow(length - averageSentenceLength, 2), 0) /
+    Math.max(1, sentenceLengths.length);
+  const sentenceStdDev = Math.sqrt(sentenceVariance);
+  const burstiness = averageSentenceLength > 0 ? sentenceStdDev / averageSentenceLength : 0;
+
+  const phraseCounts = new Map<string, number>();
+  for (let index = 0; index <= words.length - 3; index += 1) {
+    const phrase = words.slice(index, index + 3).join(" ");
+    if (phrase.length < 10) continue;
+    phraseCounts.set(phrase, (phraseCounts.get(phrase) ?? 0) + 1);
+  }
+
+  const repeatedPhrases = [...phraseCounts.entries()]
+    .filter((entry) => entry[1] > 1)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 6)
+    .map(([phrase, count]) => ({ phrase, count }));
+
+  const repeatedPhraseCoverage =
+    repeatedPhrases.reduce((sum, entry) => sum + entry.count * 3, 0) / Math.max(1, wordCount);
+
+  const transitionMatches =
+    text.match(
+      /\b(however|moreover|therefore|furthermore|additionally|in conclusion|in summary|overall|thus|notably|finally)\b/gi,
+    ) ?? [];
+  const transitionDensity = transitionMatches.length / sentenceCount;
+  const punctuationMarks = (text.match(/[,:;!?]/g) ?? []).length;
+  const punctuationPerSentence = punctuationMarks / sentenceCount;
+
+  let risk = 35;
+  if (lexicalDiversity < 0.35) risk += 22;
+  else if (lexicalDiversity < 0.42) risk += 10;
+  else if (lexicalDiversity > 0.58) risk -= 8;
+
+  if (burstiness < 0.28) risk += 20;
+  else if (burstiness < 0.4) risk += 10;
+  else if (burstiness > 0.75) risk -= 6;
+
+  if (repeatedPhraseCoverage > 0.18) risk += 22;
+  else if (repeatedPhraseCoverage > 0.1) risk += 12;
+
+  if (transitionDensity > 0.6) risk += 10;
+  if (punctuationPerSentence < 0.45) risk += 6;
+  if (wordCount < 120) risk += 6;
+
+  const riskScore = clampScore(Math.round(risk), 2, 98);
+
+  const signals: string[] = [];
+  if (lexicalDiversity < 0.38) signals.push("Low lexical diversity");
+  if (burstiness < 0.35) signals.push("Very uniform sentence lengths");
+  if (repeatedPhraseCoverage > 0.1) signals.push("Repeated phrase patterns");
+  if (transitionDensity > 0.6) signals.push("High transition-word density");
+  if (wordCount < 120) signals.push("Short sample reduces reliability");
+  if (!signals.length) signals.push("Mixed signals");
+
+  const rewriteTips: string[] = [];
+  if (burstiness < 0.4) rewriteTips.push("Mix short and long sentences to improve rhythm.");
+  if (repeatedPhraseCoverage > 0.1) rewriteTips.push("Replace repeated 3-word phrases with varied wording.");
+  if (lexicalDiversity < 0.4) rewriteTips.push("Use more specific vocabulary and concrete details.");
+  if (transitionDensity > 0.6) rewriteTips.push("Reduce formulaic connectors and use direct transitions.");
+  if (!rewriteTips.length) rewriteTips.push("Add personal examples and domain-specific references.");
+
+  const confidenceLengthFactor = Math.min(1, wordCount / 500);
+  const confidenceSignalFactor = Math.min(
+    1,
+    Math.abs(riskScore - 50) / 50 + repeatedPhraseCoverage + Math.max(0, 0.5 - burstiness),
+  );
+  const confidence = clampScore(
+    Math.round((0.35 + confidenceLengthFactor * 0.45 + confidenceSignalFactor * 0.2) * 100),
+    20,
+    98,
+  );
+
+  let verdict = "Mixed / uncertain";
+  let verdictTone: "ok" | "info" | "warn" | "bad" = "info";
+  if (riskScore >= 70) {
+    verdict = "Likely AI-generated";
+    verdictTone = "bad";
+  } else if (riskScore >= 45) {
+    verdict = "Possibly AI-assisted";
+    verdictTone = "warn";
+  } else {
+    verdict = "Likely human-written";
+    verdictTone = "ok";
+  }
+
+  return {
+    riskScore,
+    confidence,
+    verdict,
+    verdictTone,
+    wordCount,
+    sentenceCount,
+    lexicalDiversity,
+    burstiness,
+    repeatedPhraseCoverage,
+    repeatedPhrases,
+    signals,
+    rewriteTips,
+  };
+}
+
+function AiDetectorTool() {
+  const [text, setText] = useState("");
+  const [report, setReport] = useState<AiDetectorReport | null>(null);
+  const [status, setStatus] = useState("Paste text and run analysis.");
+
+  const runAnalysis = useCallback(() => {
+    const nextReport = buildAiDetectorReport(text);
+    if (!nextReport) {
+      setReport(null);
+      setStatus("Enter enough text to analyze (at least a short paragraph).");
+      return;
+    }
+    setReport(nextReport);
+    setStatus(`Analysis complete. ${nextReport.verdict} (${nextReport.confidence}% confidence).`);
+    trackEvent("tool_ai_detector_analyze", {
+      words: nextReport.wordCount,
+      riskScore: nextReport.riskScore,
+      confidence: nextReport.confidence,
+    });
+  }, [text]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Sparkles}
+        title="AI detector"
+        subtitle="Estimate AI-likeness with burstiness, repetition, and lexical variation signals."
+      />
+
+      <label className="field">
+        <span>Text to analyze</span>
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          rows={10}
+          placeholder="Paste article, essay, email, or any long-form text."
+        />
+      </label>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={runAnalysis}>
+          Analyze text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setText("");
+            setReport(null);
+            setStatus("Cleared analysis.");
+          }}
+        >
+          <Trash2 size={15} />
+          Clear
+        </button>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "Characters", value: formatNumericValue(countCharacters(text, true)) },
+          { label: "Words", value: formatNumericValue(countWords(text)) },
+          { label: "Sentences", value: formatNumericValue(splitAiSentences(text).length) },
+        ]}
+      />
+
+      {report ? (
+        <>
+          <p className={`status-badge ${report.verdictTone}`}>
+            {report.verdict} | Risk score: {report.riskScore}/100 | Confidence: {report.confidence}%
+          </p>
+          <ResultList
+            rows={[
+              { label: "Lexical diversity", value: `${(report.lexicalDiversity * 100).toFixed(1)}%` },
+              { label: "Sentence burstiness", value: report.burstiness.toFixed(2) },
+              {
+                label: "Repeated phrase coverage",
+                value: `${(report.repeatedPhraseCoverage * 100).toFixed(1)}%`,
+              },
+              { label: "Signals found", value: formatNumericValue(report.signals.length) },
+            ]}
+          />
+
+          <div className="mini-panel">
+            <h3>Detected signals</h3>
+            <ul className="plain-list">
+              {report.signals.map((signal) => (
+                <li key={signal}>{signal}</li>
+              ))}
+            </ul>
+          </div>
+
+          {report.repeatedPhrases.length ? (
+            <div className="mini-panel">
+              <h3>Top repeated phrases</h3>
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Phrase</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.repeatedPhrases.map((entry) => (
+                      <tr key={entry.phrase}>
+                        <td>{entry.phrase}</td>
+                        <td>{entry.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mini-panel">
+            <h3>Rewrite suggestions</h3>
+            <ul className="plain-list">
+              {report.rewriteTips.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ul>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function TextTool({ id }: { id: TextToolId }) {
   switch (id) {
     case "word-counter":
@@ -4196,6 +4478,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <MinifierTool mode="js" />;
     case "base64-encoder-decoder":
       return <Base64Tool />;
+    case "ai-detector":
+      return <AiDetectorTool />;
     case "password-generator":
       return <PasswordGeneratorTool />;
     case "lorem-ipsum-generator":

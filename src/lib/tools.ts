@@ -579,6 +579,17 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Base64 Encoder/Decoder"),
   },
   {
+    slug: "ai-detector",
+    category: "seo-tools",
+    title: "AI Detector",
+    summary: "Analyze text patterns and estimate AI-likeness using burstiness and repetition signals.",
+    description:
+      "Run a heuristic AI-writing risk check across sentence variation, lexical diversity, repetition, and punctuation rhythm with actionable rewrite cues.",
+    keywords: ["ai detector", "ai content detector", "detect ai writing", "ai text checker"],
+    engine: { kind: "text-tool", id: "ai-detector" },
+    faq: baseFaq("AI Detector"),
+  },
+  {
     slug: "password-generator",
     category: "seo-tools",
     title: "Password Generator",
