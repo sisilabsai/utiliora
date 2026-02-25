@@ -100,6 +100,39 @@ function formatDate(value: Date): string {
   return dateFormatter.format(value);
 }
 
+function parseDateInput(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!matched) return null;
+
+  const year = Number(matched[1]);
+  const month = Number(matched[2]);
+  const day = Number(matched[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+
+  const parsed = new Date(year, month - 1, day, 12);
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) return null;
+  return parsed;
+}
+
+function toUtcDayNumber(value: Date): number {
+  return Math.floor(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()) / MS_PER_DAY);
+}
+
+function resolveBirthdayInYear(birthDate: Date, year: number): Date {
+  const month = birthDate.getMonth();
+  const day = birthDate.getDate();
+  const candidate = new Date(year, month, day, 12);
+  if (candidate.getMonth() !== month) {
+    return new Date(year, month + 1, 0, 12);
+  }
+  return candidate;
+}
+
 function resolveDisplayCurrency(options?: CalculatorOutputOptions): string {
   return sanitizeCurrencyCode(options?.currency);
 }
@@ -634,6 +667,102 @@ function pregnancyMetrics(rawValues: Record<string, unknown>): PregnancyMetrics 
   };
 }
 
+interface AgeMetrics {
+  isValid: boolean;
+  isFutureBirthDate: boolean;
+  birthDate: Date | null;
+  asOfDate: Date;
+  years: number;
+  months: number;
+  days: number;
+  totalDays: number;
+  totalWeeks: number;
+  totalMonths: number;
+  nextBirthday: Date | null;
+  daysUntilNextBirthday: number;
+}
+
+function ageMetrics(rawValues: Record<string, unknown>): AgeMetrics {
+  const birthDate = parseDateInput(rawValues.birthDate);
+  const explicitAsOfDate = parseDateInput(rawValues.asOfDate);
+  const now = new Date();
+  const asOfDate =
+    explicitAsOfDate ?? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+
+  if (!birthDate) {
+    return {
+      isValid: false,
+      isFutureBirthDate: false,
+      birthDate: null,
+      asOfDate,
+      years: 0,
+      months: 0,
+      days: 0,
+      totalDays: 0,
+      totalWeeks: 0,
+      totalMonths: 0,
+      nextBirthday: null,
+      daysUntilNextBirthday: 0,
+    };
+  }
+
+  const totalDaysRaw = toUtcDayNumber(asOfDate) - toUtcDayNumber(birthDate);
+  if (totalDaysRaw < 0) {
+    return {
+      isValid: false,
+      isFutureBirthDate: true,
+      birthDate,
+      asOfDate,
+      years: 0,
+      months: 0,
+      days: 0,
+      totalDays: 0,
+      totalWeeks: 0,
+      totalMonths: 0,
+      nextBirthday: null,
+      daysUntilNextBirthday: 0,
+    };
+  }
+
+  let years = asOfDate.getFullYear() - birthDate.getFullYear();
+  let months = asOfDate.getMonth() - birthDate.getMonth();
+  let days = asOfDate.getDate() - birthDate.getDate();
+
+  if (days < 0) {
+    const daysInPreviousMonth = new Date(asOfDate.getFullYear(), asOfDate.getMonth(), 0).getDate();
+    days += daysInPreviousMonth;
+    months -= 1;
+  }
+  if (months < 0) {
+    months += 12;
+    years -= 1;
+  }
+
+  const totalDays = Math.max(0, totalDaysRaw);
+  const totalWeeks = totalDays / 7;
+  const totalMonths = years * 12 + months + days / 30.4375;
+
+  let nextBirthday = resolveBirthdayInYear(birthDate, asOfDate.getFullYear());
+  if (toUtcDayNumber(nextBirthday) < toUtcDayNumber(asOfDate)) {
+    nextBirthday = resolveBirthdayInYear(birthDate, asOfDate.getFullYear() + 1);
+  }
+
+  return {
+    isValid: true,
+    isFutureBirthDate: false,
+    birthDate,
+    asOfDate,
+    years,
+    months,
+    days,
+    totalDays,
+    totalWeeks,
+    totalMonths,
+    nextBirthday,
+    daysUntilNextBirthday: Math.max(0, toUtcDayNumber(nextBirthday) - toUtcDayNumber(asOfDate)),
+  };
+}
+
 interface StartupCostMetrics {
   oneTimeCosts: number;
   monthlyBurn: number;
@@ -846,6 +975,20 @@ export function getCalculatorInsights(
       const returns = Math.max(0, toNumber(rawValues.returns));
       const multiple = investment > 0 ? returns / investment : 0;
       return [`Capital multiple: ${formatNumber(multiple)}x.`, "Track ROI alongside payback time, not in isolation."];
+    }
+    case "age-calculator": {
+      const metrics = ageMetrics(rawValues);
+      if (!metrics.isValid) {
+        return metrics.isFutureBirthDate
+          ? ["Birth date cannot be later than the As of date.", "Adjust the date inputs to calculate age."]
+          : ["Enter a valid birth date to calculate age.", "You can leave As of date empty to use today."];
+      }
+      return [
+        `Exact age: ${metrics.years} years ${metrics.months} months ${metrics.days} days.`,
+        metrics.nextBirthday
+          ? `Next birthday: ${formatDate(metrics.nextBirthday)} (${formatNumber(metrics.daysUntilNextBirthday)} days left).`
+          : "Next birthday information is not available.",
+      ];
     }
     case "bmi-calculator": {
       const heightCm = Math.max(1, toNumber(rawValues.heightCm));
@@ -1101,6 +1244,25 @@ export function runCalculator(
         { label: "Base Amount", value: formatMoney(amount) },
         { label: "VAT Amount", value: formatMoney(vatAmount) },
         { label: "Total (Incl. VAT)", value: formatMoney(totalWithVat) },
+      ];
+    }
+    case "age-calculator": {
+      const metrics = ageMetrics(rawValues);
+      if (!metrics.isValid) {
+        return [
+          { label: "Status", value: metrics.isFutureBirthDate ? "Birth date cannot be in the future" : "Enter a valid birth date" },
+          { label: "Tip", value: "Leave As of date empty to calculate age as of today." },
+        ];
+      }
+
+      return [
+        { label: "Exact Age", value: `${metrics.years} years ${metrics.months} months ${metrics.days} days` },
+        { label: "As of Date", value: formatDate(metrics.asOfDate) },
+        { label: "Total Months (approx.)", value: formatNumber(metrics.totalMonths) },
+        { label: "Total Weeks (approx.)", value: formatNumber(metrics.totalWeeks) },
+        { label: "Total Days", value: formatNumber(metrics.totalDays) },
+        { label: "Next Birthday", value: metrics.nextBirthday ? formatDate(metrics.nextBirthday) : "Not available" },
+        { label: "Days Until Next Birthday", value: formatNumber(metrics.daysUntilNextBirthday) },
       ];
     }
     case "bmi-calculator": {

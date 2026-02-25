@@ -201,6 +201,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Water Intake Calculator"),
   },
   {
+    slug: "age-calculator",
+    category: "calculators",
+    title: "Age Calculator",
+    summary: "Calculate exact age in years, months, weeks, and days from date of birth.",
+    description:
+      "Find current age, total days lived, and next birthday details from your birth date and optional target date.",
+    keywords: ["age calculator", "calculate age", "date of birth age", "how old am i"],
+    engine: { kind: "calculator", id: "age-calculator" },
+    faq: baseFaq("Age Calculator"),
+  },
+  {
     slug: "pregnancy-due-date-calculator",
     category: "calculators",
     title: "Pregnancy Due Date Calculator",

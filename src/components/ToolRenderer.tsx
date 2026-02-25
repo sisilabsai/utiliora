@@ -367,6 +367,16 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     { name: "weightKg", label: "Weight (kg)", defaultValue: "70", min: 1, step: 0.1, type: "number" },
     { name: "activityMinutes", label: "Exercise minutes/day", defaultValue: "30", min: 0, step: 1, type: "number" },
   ],
+  "age-calculator": [
+    { name: "birthDate", label: "Date of birth", defaultValue: "1995-01-15", type: "date" },
+    {
+      name: "asOfDate",
+      label: "As of date (optional)",
+      defaultValue: "",
+      type: "date",
+      helper: "Leave empty to calculate age as of today.",
+    },
+  ],
   "pregnancy-due-date-calculator": [
     { name: "lmpDate", label: "First day of last period", defaultValue: "2026-01-01", type: "date" },
     { name: "cycleLengthDays", label: "Cycle length (days)", defaultValue: "28", min: 20, step: 1, type: "number" },
@@ -433,6 +443,7 @@ const calculatorSubtitles: Record<CalculatorId, string> = {
   "body-fat-calculator": "Estimate body-fat percentage and lean mass using body measurements.",
   "calorie-needs-calculator": "Estimate maintenance, cut, and gain calorie targets.",
   "water-intake-calculator": "Set a hydration target based on body weight and activity.",
+  "age-calculator": "Calculate exact age, next birthday, and total time lived from birth date.",
   "pregnancy-due-date-calculator": "Estimate due date and current gestational age from LMP.",
   "savings-goal-calculator": "Calculate the monthly contribution needed to hit your target.",
   "break-even-calculator": "See units and revenue needed to cover fixed and variable costs.",
@@ -560,6 +571,10 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "water-intake-calculator": [
     { label: "Low activity", values: { weightKg: "70", activityMinutes: "20" } },
     { label: "High activity", values: { weightKg: "70", activityMinutes: "90" } },
+  ],
+  "age-calculator": [
+    { label: "Adult profile", values: { birthDate: "1995-01-15", asOfDate: "" } },
+    { label: "School age profile", values: { birthDate: "2012-09-01", asOfDate: "" } },
   ],
   "pregnancy-due-date-calculator": [
     { label: "28-day cycle", values: { lmpDate: "2026-01-01", cycleLengthDays: "28" } },
