@@ -10904,6 +10904,8 @@ const PAGE_SELECTION_PRESETS: Array<{ value: PageSelectionPreset; label: string;
 
 let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
 let pdfJsWorkerConfigured = false;
+let pdfJsWorkerSourceCandidates: string[] = [];
+let pdfJsActiveWorkerSourceIndex = 0;
 
 function ensurePromiseWithResolversPolyfill(): void {
   const promiseCtor = Promise as PromiseConstructor & {
@@ -10928,14 +10930,52 @@ function ensurePromiseWithResolversPolyfill(): void {
   };
 }
 
+function getPdfJsWorkerSourceCandidates(version: string): string[] {
+  return [
+    "/api/pdfjs-worker",
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.min.mjs`,
+    `https://unpkg.com/pdfjs-dist@${version}/legacy/build/pdf.worker.min.mjs`,
+  ];
+}
+
+function assignPdfJsWorkerSource(pdfjs: PdfJsModule, sourceIndex: number): boolean {
+  if (!pdfjs.GlobalWorkerOptions) {
+    return false;
+  }
+  const source = pdfJsWorkerSourceCandidates[sourceIndex];
+  if (!source) {
+    return false;
+  }
+  pdfjs.GlobalWorkerOptions.workerSrc = source;
+  pdfJsActiveWorkerSourceIndex = sourceIndex;
+  return true;
+}
+
 function configurePdfJsWorker(pdfjs: PdfJsModule): void {
-  if (pdfJsWorkerConfigured || !pdfjs.GlobalWorkerOptions) {
+  if (!pdfjs.GlobalWorkerOptions) {
+    return;
+  }
+
+  if (pdfJsWorkerConfigured) {
     return;
   }
 
   const version = typeof pdfjs.version === "string" && pdfjs.version ? pdfjs.version : "5.4.624";
-  pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`;
+  pdfJsWorkerSourceCandidates = getPdfJsWorkerSourceCandidates(version);
+  pdfJsActiveWorkerSourceIndex = 0;
+  assignPdfJsWorkerSource(pdfjs, pdfJsActiveWorkerSourceIndex);
   pdfJsWorkerConfigured = true;
+}
+
+function advancePdfJsWorkerSource(pdfjs: PdfJsModule): boolean {
+  if (!pdfjs.GlobalWorkerOptions) {
+    return false;
+  }
+  const nextIndex = pdfJsActiveWorkerSourceIndex + 1;
+  if (nextIndex >= pdfJsWorkerSourceCandidates.length) {
+    return false;
+  }
+  return assignPdfJsWorkerSource(pdfjs, nextIndex);
 }
 
 function estimateBytesFromDataUrl(dataUrl: string): number {
@@ -11134,24 +11174,30 @@ async function openPdfDocumentWithFallback(
     { stopAtErrors: true },
   ];
   let lastError: unknown = null;
+  const sourceAttempts = Math.max(1, pdfJsWorkerSourceCandidates.length);
 
-  for (const options of attempts) {
-    const loadingTask = pdfjs.getDocument({
-      data: bytes.slice(),
-      ...options,
-    });
-    try {
-      const pdfDocument = await loadingTask.promise;
-      return { loadingTask, pdfDocument };
-    } catch (error) {
-      lastError = error;
-      if (loadingTask.destroy) {
-        try {
-          await loadingTask.destroy();
-        } catch {
-          // Ignore failed fallback cleanup.
+  for (let sourceAttempt = 0; sourceAttempt < sourceAttempts; sourceAttempt += 1) {
+    for (const options of attempts) {
+      const loadingTask = pdfjs.getDocument({
+        data: bytes.slice(),
+        ...options,
+      });
+      try {
+        const pdfDocument = await loadingTask.promise;
+        return { loadingTask, pdfDocument };
+      } catch (error) {
+        lastError = error;
+        if (loadingTask.destroy) {
+          try {
+            await loadingTask.destroy();
+          } catch {
+            // Ignore failed fallback cleanup.
+          }
         }
       }
+    }
+    if (!advancePdfJsWorkerSource(pdfjs)) {
+      break;
     }
   }
 
