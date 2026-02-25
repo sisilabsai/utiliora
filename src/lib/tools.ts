@@ -1013,6 +1013,23 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Notes Pad"),
   },
   {
+    slug: "text-translator",
+    category: "productivity-tools",
+    title: "Text Translator",
+    summary: "Translate text across major languages with auto-detect, provider fallback, and saved workspace history.",
+    description:
+      "Translate paragraphs or long-form content with language auto-detection, reliable provider failover, and local session persistence for repeated multilingual workflows.",
+    keywords: [
+      "text translator",
+      "language translator",
+      "translate text online",
+      "auto detect language",
+      "multilingual translation tool",
+    ],
+    engine: { kind: "productivity-tool", id: "text-translator" },
+    faq: baseFaq("Text Translator"),
+  },
+  {
     slug: "resume-builder",
     category: "productivity-tools",
     title: "Resume Builder",

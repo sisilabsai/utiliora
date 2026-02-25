@@ -17,6 +17,7 @@ import {
   FileText,
   GraduationCap,
   Hash,
+  Languages,
   Link2,
   MonitorUp,
   Plus,
@@ -59,6 +60,13 @@ import {
   safeJsonFormat,
   slugify,
 } from "@/lib/text-tools";
+import {
+  buildTranslationPreview,
+  getTranslationLanguageLabel,
+  resolveTranslationLanguage,
+  TRANSLATION_AUTO_LANGUAGE_CODE,
+  TRANSLATION_LANGUAGE_OPTIONS,
+} from "@/lib/translation";
 import type {
   CalculatorId,
   DeveloperToolId,
@@ -18432,6 +18440,673 @@ function PomodoroTool() {
   );
 }
 
+interface TranslatorHistoryEntry {
+  id: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  detectedSourceLanguage: string;
+  inputText: string;
+  translatedText: string;
+  provider: string;
+  createdAt: number;
+}
+
+interface TextTranslateApiSuccessPayload {
+  ok: true;
+  provider: string;
+  sourceLanguage: string;
+  detectedSourceLanguage?: string;
+  targetLanguage: string;
+  translatedText: string;
+  chunks: number;
+}
+
+interface TextTranslateApiErrorPayload {
+  ok: false;
+  error?: string;
+  details?: string[];
+}
+
+type TextTranslateApiPayload = TextTranslateApiSuccessPayload | TextTranslateApiErrorPayload;
+
+const TRANSLATOR_HISTORY_LIMIT = 24;
+const TRANSLATOR_MAX_INPUT_LENGTH = 20_000;
+
+function sanitizeTranslatorHistoryEntry(candidate: unknown): TranslatorHistoryEntry | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const entry = candidate as Partial<TranslatorHistoryEntry>;
+  if (typeof entry.inputText !== "string" || typeof entry.translatedText !== "string") return null;
+
+  const sourceLanguage = resolveTranslationLanguage(entry.sourceLanguage, TRANSLATION_AUTO_LANGUAGE_CODE, {
+    allowAuto: true,
+    supportedOnly: true,
+  });
+  const targetLanguage = resolveTranslationLanguage(entry.targetLanguage, "en", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+  const detectedSourceLanguage = resolveTranslationLanguage(entry.detectedSourceLanguage, "", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+
+  const inputText = entry.inputText.slice(0, TRANSLATOR_MAX_INPUT_LENGTH);
+  const translatedText = entry.translatedText.slice(0, TRANSLATOR_MAX_INPUT_LENGTH);
+  if (!inputText.trim() || !translatedText.trim()) return null;
+
+  return {
+    id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+    sourceLanguage,
+    targetLanguage,
+    detectedSourceLanguage,
+    inputText,
+    translatedText,
+    provider: typeof entry.provider === "string" && entry.provider ? entry.provider : "unknown",
+    createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+  };
+}
+
+function TextTranslatorTool() {
+  const toolSession = useToolSession({
+    toolKey: "text-translator",
+    defaultSessionLabel: "Translator workspace",
+    newSessionPrefix: "translator",
+  });
+  const workspaceStorageKey = toolSession.storageKey("utiliora-text-translator-workspace-v1");
+  const historyStorageKey = toolSession.storageKey("utiliora-text-translator-history-v1");
+  const legacyWorkspaceStorageKey = "utiliora-text-translator-workspace-v1";
+  const legacyHistoryStorageKey = "utiliora-text-translator-history-v1";
+  const abortRef = useRef<AbortController | null>(null);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const [inputText, setInputText] = useState("");
+  const [sourceLanguage, setSourceLanguage] = useState(TRANSLATION_AUTO_LANGUAGE_CODE);
+  const [targetLanguage, setTargetLanguage] = useState("es");
+  const [translatedText, setTranslatedText] = useState("");
+  const [detectedSourceLanguage, setDetectedSourceLanguage] = useState("");
+  const [provider, setProvider] = useState("");
+  const [autoTranslate, setAutoTranslate] = useState(true);
+  const [history, setHistory] = useState<TranslatorHistoryEntry[]>([]);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [status, setStatus] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+
+    let nextInput = "";
+    let nextSource = TRANSLATION_AUTO_LANGUAGE_CODE;
+    let nextTarget = "es";
+    let nextTranslated = "";
+    let nextDetectedSource = "";
+    let nextProvider = "";
+    let nextAutoTranslate = true;
+    let nextHistory: TranslatorHistoryEntry[] = [];
+
+    try {
+      const rawWorkspace =
+        localStorage.getItem(workspaceStorageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyWorkspaceStorageKey) : null);
+      if (rawWorkspace) {
+        const parsed = JSON.parse(rawWorkspace) as {
+          inputText?: string;
+          sourceLanguage?: string;
+          targetLanguage?: string;
+          translatedText?: string;
+          detectedSourceLanguage?: string;
+          provider?: string;
+          autoTranslate?: boolean;
+        };
+        nextInput = typeof parsed.inputText === "string" ? parsed.inputText.slice(0, TRANSLATOR_MAX_INPUT_LENGTH) : "";
+        nextSource = resolveTranslationLanguage(parsed.sourceLanguage, TRANSLATION_AUTO_LANGUAGE_CODE, {
+          allowAuto: true,
+          supportedOnly: true,
+        });
+        nextTarget = resolveTranslationLanguage(parsed.targetLanguage, "es", {
+          allowAuto: false,
+          supportedOnly: true,
+        });
+        nextTranslated =
+          typeof parsed.translatedText === "string" ? parsed.translatedText.slice(0, TRANSLATOR_MAX_INPUT_LENGTH) : "";
+        nextDetectedSource = resolveTranslationLanguage(parsed.detectedSourceLanguage, "", {
+          allowAuto: false,
+          supportedOnly: true,
+        });
+        nextProvider = typeof parsed.provider === "string" ? parsed.provider : "";
+        nextAutoTranslate = parsed.autoTranslate ?? true;
+      }
+
+      const rawHistory =
+        localStorage.getItem(historyStorageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyHistoryStorageKey) : null);
+      if (rawHistory) {
+        const parsed = JSON.parse(rawHistory) as unknown[];
+        if (Array.isArray(parsed)) {
+          nextHistory = parsed
+            .map((entry) => sanitizeTranslatorHistoryEntry(entry))
+            .filter((entry): entry is TranslatorHistoryEntry => Boolean(entry))
+            .slice(0, TRANSLATOR_HISTORY_LIMIT);
+        }
+      }
+    } catch {
+      // Ignore malformed translator session state.
+    }
+
+    setInputText(nextInput);
+    setSourceLanguage(nextSource);
+    setTargetLanguage(nextTarget);
+    setTranslatedText(nextTranslated);
+    setDetectedSourceLanguage(nextDetectedSource);
+    setProvider(nextProvider);
+    setAutoTranslate(nextAutoTranslate);
+    setHistory(nextHistory);
+    setStatus("");
+    setCopyStatus("");
+    setIsTranslating(false);
+    setIsSessionHydrated(true);
+  }, [
+    historyStorageKey,
+    legacyHistoryStorageKey,
+    legacyWorkspaceStorageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+    workspaceStorageKey,
+  ]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        workspaceStorageKey,
+        JSON.stringify({
+          inputText,
+          sourceLanguage,
+          targetLanguage,
+          translatedText,
+          detectedSourceLanguage,
+          provider,
+          autoTranslate,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    autoTranslate,
+    detectedSourceLanguage,
+    inputText,
+    isSessionHydrated,
+    provider,
+    sourceLanguage,
+    targetLanguage,
+    toolSession.isReady,
+    translatedText,
+    workspaceStorageKey,
+  ]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, TRANSLATOR_HISTORY_LIMIT)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey, isSessionHydrated, toolSession.isReady]);
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    },
+    [],
+  );
+
+  const pushHistoryEntry = useCallback(
+    (entry: Omit<TranslatorHistoryEntry, "id" | "createdAt">) => {
+      if (!entry.inputText.trim() || !entry.translatedText.trim()) return;
+      setHistory((current) => {
+        const existingIndex = current.findIndex(
+          (candidate) =>
+            candidate.sourceLanguage === entry.sourceLanguage &&
+            candidate.targetLanguage === entry.targetLanguage &&
+            candidate.inputText === entry.inputText &&
+            candidate.translatedText === entry.translatedText,
+        );
+
+        const nextEntry: TranslatorHistoryEntry = {
+          id: crypto.randomUUID(),
+          createdAt: Date.now(),
+          ...entry,
+        };
+
+        if (existingIndex >= 0) {
+          const existing = current[existingIndex];
+          const merged: TranslatorHistoryEntry = {
+            ...existing,
+            ...nextEntry,
+            id: existing.id,
+          };
+          const next = [merged, ...current.filter((_, index) => index !== existingIndex)];
+          return next.slice(0, TRANSLATOR_HISTORY_LIMIT);
+        }
+
+        return [nextEntry, ...current].slice(0, TRANSLATOR_HISTORY_LIMIT);
+      });
+    },
+    [],
+  );
+
+  const translateText = useCallback(
+    async (trigger: "manual" | "auto") => {
+      const text = inputText.slice(0, TRANSLATOR_MAX_INPUT_LENGTH);
+      if (!text.trim()) {
+        setTranslatedText("");
+        setDetectedSourceLanguage("");
+        setProvider("");
+        if (trigger === "manual") {
+          setStatus("Enter text to translate.");
+        }
+        return;
+      }
+
+      if (sourceLanguage !== TRANSLATION_AUTO_LANGUAGE_CODE && sourceLanguage === targetLanguage) {
+        setTranslatedText(text);
+        setDetectedSourceLanguage(sourceLanguage);
+        setProvider("identity");
+        setStatus("Source and target are the same; text was kept unchanged.");
+        pushHistoryEntry({
+          sourceLanguage,
+          targetLanguage,
+          detectedSourceLanguage: sourceLanguage,
+          inputText: text,
+          translatedText: text,
+          provider: "identity",
+        });
+        return;
+      }
+
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setIsTranslating(true);
+      setStatus(trigger === "auto" ? "Translating..." : "Translating text...");
+
+      try {
+        const response = await fetch("/api/text-translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            sourceLanguage,
+            targetLanguage,
+          }),
+          signal: controller.signal,
+        });
+
+        const payload = (await response.json().catch(() => null)) as TextTranslateApiPayload | null;
+        if (!response.ok || !payload || payload.ok !== true) {
+          const message = payload && payload.ok === false && typeof payload.error === "string"
+            ? payload.error
+            : "Translation failed. Please try again.";
+          throw new Error(message);
+        }
+
+        const normalizedDetected =
+          resolveTranslationLanguage(payload.detectedSourceLanguage, "", {
+            allowAuto: false,
+            supportedOnly: true,
+          }) ||
+          (sourceLanguage === TRANSLATION_AUTO_LANGUAGE_CODE ? "" : sourceLanguage);
+
+        const normalizedProvider = payload.provider || "unknown";
+        setTranslatedText(payload.translatedText);
+        setDetectedSourceLanguage(normalizedDetected);
+        setProvider(normalizedProvider);
+        setStatus(`Translated via ${normalizedProvider}.`);
+        setCopyStatus("");
+        trackEvent("text_translator_translate", {
+          provider: normalizedProvider,
+          chunks: payload.chunks,
+          source: sourceLanguage,
+          target: targetLanguage,
+          trigger,
+        });
+        pushHistoryEntry({
+          sourceLanguage,
+          targetLanguage,
+          detectedSourceLanguage: normalizedDetected,
+          inputText: text,
+          translatedText: payload.translatedText,
+          provider: normalizedProvider,
+        });
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "name" in error &&
+          (error as { name?: string }).name === "AbortError"
+        ) {
+          return;
+        }
+        const message = error instanceof Error && error.message ? error.message : "Translation failed.";
+        setStatus(message);
+      } finally {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+        setIsTranslating(false);
+      }
+    },
+    [inputText, pushHistoryEntry, sourceLanguage, targetLanguage],
+  );
+
+  useEffect(() => {
+    if (!isSessionHydrated || !autoTranslate) return;
+    if (!inputText.trim()) return;
+    const timeout = window.setTimeout(() => {
+      void translateText("auto");
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [autoTranslate, inputText, isSessionHydrated, sourceLanguage, targetLanguage, translateText]);
+
+  const sourceWordCount = countWords(inputText);
+  const translatedWordCount = countWords(translatedText);
+  const sourceCharacterCount = inputText.length;
+  const translatedCharacterCount = translatedText.length;
+  const effectiveDetectedSource =
+    detectedSourceLanguage ||
+    (sourceLanguage !== TRANSLATION_AUTO_LANGUAGE_CODE ? sourceLanguage : "");
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Languages}
+        title="Text translator"
+        subtitle="Translate text with auto-detect, multi-provider fallback, session workspaces, and persistent local history."
+      />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each translator session is saved locally and linked to this /productivity-tools URL."
+        onSelectSession={(nextSessionId) => {
+          abortRef.current?.abort();
+          abortRef.current = null;
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched translator session.");
+        }}
+        onCreateSession={() => {
+          abortRef.current?.abort();
+          abortRef.current = null;
+          toolSession.createSession();
+          setStatus("Created a new translator session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Source language</span>
+          <select
+            value={sourceLanguage}
+            onChange={(event) =>
+              setSourceLanguage(
+                resolveTranslationLanguage(event.target.value, TRANSLATION_AUTO_LANGUAGE_CODE, {
+                  allowAuto: true,
+                  supportedOnly: true,
+                }),
+              )
+            }
+          >
+            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>Auto detect</option>
+            {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
+              <option key={`source-${entry.code}`} value={entry.code}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Target language</span>
+          <select
+            value={targetLanguage}
+            onChange={(event) =>
+              setTargetLanguage(
+                resolveTranslationLanguage(event.target.value, "en", {
+                  allowAuto: false,
+                  supportedOnly: true,
+                }),
+              )
+            }
+          >
+            {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
+              <option key={`target-${entry.code}`} value={entry.code}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Auto translate</span>
+          <select value={autoTranslate ? "on" : "off"} onChange={(event) => setAutoTranslate(event.target.value === "on")}>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Detected source</span>
+          <input type="text" readOnly value={effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Waiting for translation"} />
+        </label>
+      </div>
+      <label className="field">
+        <span>Source text</span>
+        <textarea
+          rows={8}
+          value={inputText}
+          placeholder="Enter text to translate..."
+          onChange={(event) => setInputText(event.target.value.slice(0, TRANSLATOR_MAX_INPUT_LENGTH))}
+        />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void translateText("manual")} disabled={isTranslating}>
+          {isTranslating ? "Translating..." : "Translate"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const nextTarget = sourceLanguage === TRANSLATION_AUTO_LANGUAGE_CODE
+              ? resolveTranslationLanguage(effectiveDetectedSource, "en", { allowAuto: false, supportedOnly: true })
+              : sourceLanguage;
+            if (nextTarget === targetLanguage) {
+              setStatus("Source and target are currently the same. Choose a different language before swapping.");
+              return;
+            }
+            setSourceLanguage(targetLanguage);
+            setTargetLanguage(nextTarget);
+            if (translatedText.trim()) {
+              setInputText(translatedText);
+              setTranslatedText(inputText);
+            }
+            setStatus("Swapped source and target languages.");
+          }}
+        >
+          Swap languages
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setInputText("");
+            setTranslatedText("");
+            setDetectedSourceLanguage("");
+            setProvider("");
+            setStatus("Cleared translator content.");
+            setCopyStatus("");
+          }}
+        >
+          Clear text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const copied = await copyTextToClipboard(translatedText);
+            setCopyStatus(copied ? "Copied translated text." : "Could not copy translated text.");
+          }}
+          disabled={!translatedText.trim()}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              `translation-${targetLanguage}.txt`,
+              translatedText,
+              "text/plain;charset=utf-8;",
+            )
+          }
+          disabled={!translatedText.trim()}
+        >
+          <Download size={15} />
+          TXT
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              `translation-history-${toolSession.sessionId}.json`,
+              JSON.stringify(
+                {
+                  version: 1,
+                  exportedAt: new Date().toISOString(),
+                  sessionId: toolSession.sessionId,
+                  history,
+                },
+                null,
+                2,
+              ),
+              "application/json;charset=utf-8;",
+            )
+          }
+          disabled={history.length === 0}
+        >
+          <Download size={15} />
+          History JSON
+        </button>
+      </div>
+      <label className="field">
+        <span>Translated text</span>
+        <textarea rows={8} value={translatedText} readOnly placeholder="Translation appears here..." />
+      </label>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Session", value: toolSession.sessionLabel },
+          { label: "Source language", value: getTranslationLanguageLabel(sourceLanguage) },
+          { label: "Target language", value: getTranslationLanguageLabel(targetLanguage) },
+          {
+            label: "Detected source",
+            value: effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Unknown",
+          },
+          { label: "Source characters", value: formatNumericValue(sourceCharacterCount) },
+          { label: "Source words", value: formatNumericValue(sourceWordCount) },
+          { label: "Output characters", value: formatNumericValue(translatedCharacterCount) },
+          { label: "Output words", value: formatNumericValue(translatedWordCount) },
+          { label: "Provider", value: provider || "Not run yet" },
+          { label: "Saved history", value: formatNumericValue(history.length) },
+        ]}
+      />
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Saved translations</h3>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              setHistory([]);
+              setStatus("Cleared saved translation history.");
+            }}
+            disabled={history.length === 0}
+          >
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No saved translations yet. Run a translation to populate this workspace history.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => {
+              const sourceLabel = getTranslationLanguageLabel(entry.sourceLanguage);
+              const targetLabel = getTranslationLanguageLabel(entry.targetLanguage);
+              const detectedLabel = entry.detectedSourceLanguage
+                ? getTranslationLanguageLabel(entry.detectedSourceLanguage)
+                : "Unknown";
+              return (
+                <li key={entry.id}>
+                  <div className="history-line">
+                    <strong>
+                      {sourceLabel} {"->"} {targetLabel}
+                    </strong>
+                    <span className="supporting-text">{new Date(entry.createdAt).toLocaleString("en-US")}</span>
+                  </div>
+                  <p className="supporting-text">Input: {buildTranslationPreview(entry.inputText, 150)}</p>
+                  <p className="supporting-text">Output: {buildTranslationPreview(entry.translatedText, 150)}</p>
+                  <p className="supporting-text">
+                    Provider: {entry.provider} | Detected source: {detectedLabel}
+                  </p>
+                  <div className="button-row">
+                    <button
+                      className="action-button secondary"
+                      type="button"
+                      onClick={() => {
+                        setSourceLanguage(entry.sourceLanguage);
+                        setTargetLanguage(entry.targetLanguage);
+                        setInputText(entry.inputText);
+                        setTranslatedText(entry.translatedText);
+                        setDetectedSourceLanguage(entry.detectedSourceLanguage);
+                        setProvider(entry.provider);
+                        setStatus("Loaded translation from history.");
+                      }}
+                    >
+                      Load
+                    </button>
+                    <button
+                      className="action-button secondary"
+                      type="button"
+                      onClick={async () => {
+                        const copied = await copyTextToClipboard(entry.translatedText);
+                        setCopyStatus(copied ? "Copied history translation output." : "Could not copy history translation.");
+                      }}
+                    >
+                      <Copy size={15} />
+                      Copy
+                    </button>
+                    <button
+                      className="action-button secondary"
+                      type="button"
+                      onClick={() => {
+                        setHistory((current) => current.filter((candidate) => candidate.id !== entry.id));
+                        setStatus("Deleted translation from history.");
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 type TodoPriority = "high" | "medium" | "low";
 type TodoPriorityFilter = TodoPriority | "all";
 type TodoFilter = "all" | "active" | "completed" | "overdue" | "today";
@@ -22663,6 +23338,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <TodoListTool />;
     case "notes-pad":
       return <NotesPadTool />;
+    case "text-translator":
+      return <TextTranslatorTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "invoice-generator":

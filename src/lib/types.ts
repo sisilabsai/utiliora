@@ -132,6 +132,7 @@ export type ProductivityToolId =
   | "meeting-time-planner"
   | "simple-todo-list"
   | "notes-pad"
+  | "text-translator"
   | "resume-builder"
   | "invoice-generator";
 
