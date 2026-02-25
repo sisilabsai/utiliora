@@ -719,6 +719,287 @@ function downloadDataUrl(filename: string, dataUrl: string): void {
   document.body.removeChild(anchor);
 }
 
+const TOOL_TEXT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
+type TextUploadMergeMode = "replace" | "append";
+
+async function readTextFileWithLimit(file: File, maxBytes = TOOL_TEXT_UPLOAD_MAX_BYTES): Promise<string> {
+  if (!file) {
+    throw new Error("No file selected.");
+  }
+  if (file.size > maxBytes) {
+    throw new Error(`File is too large. Limit is ${formatBytes(maxBytes)}.`);
+  }
+  return file.text();
+}
+
+function mergeUploadedText(currentText: string, incomingText: string, mode: TextUploadMergeMode): string {
+  if (mode === "replace" || !currentText.trim()) {
+    return incomingText;
+  }
+  return `${currentText.trimEnd()}\n\n${incomingText.trimStart()}`;
+}
+
+function getFileExtension(fileName: string): string {
+  const lastDot = fileName.lastIndexOf(".");
+  if (lastDot < 0) return "";
+  return fileName.slice(lastDot + 1).toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeUploadedText(value: string): string {
+  return value.replace(/\u0000/g, "").replace(/\r\n?/g, "\n");
+}
+
+function stripTagsFromMarkup(markup: string): string {
+  return markup
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function decodeBasicHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#160;/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/gi, "'");
+}
+
+function extractPlainTextFromHtml(value: string): string {
+  if (typeof DOMParser === "undefined") {
+    return normalizeUploadedText(decodeBasicHtmlEntities(stripTagsFromMarkup(value)))
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(value, "text/html");
+  const text = documentNode.body.textContent ?? "";
+  return normalizeUploadedText(text).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+interface ParsedHtmlMetaSnapshot {
+  title: string;
+  description: string;
+  canonical: string;
+  author: string;
+  robots: string;
+  siteName: string;
+  ogTitle: string;
+  ogDescription: string;
+  ogUrl: string;
+  ogImage: string;
+  ogType: string;
+  ogLocale: string;
+  ogImageAlt: string;
+  twitterCard: string;
+  twitterSite: string;
+  twitterCreator: string;
+}
+
+function parseHtmlMetaSnapshot(markup: string): ParsedHtmlMetaSnapshot {
+  if (typeof DOMParser === "undefined") {
+    const pickMeta = (attribute: "name" | "property", key: string) => {
+      const regex = new RegExp(
+        `<meta[^>]*${attribute}\\s*=\\s*["']${key}["'][^>]*content\\s*=\\s*["']([^"']*)["'][^>]*>`,
+        "i",
+      );
+      return (markup.match(regex)?.[1] ?? "").trim();
+    };
+    const title = (markup.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "").trim();
+    const canonical =
+      (
+        markup.match(/<link[^>]*rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i)?.[1] ??
+        ""
+      ).trim();
+
+    return {
+      title: decodeBasicHtmlEntities(stripTagsFromMarkup(title)).trim(),
+      description: pickMeta("name", "description"),
+      canonical,
+      author: pickMeta("name", "author"),
+      robots: pickMeta("name", "robots"),
+      siteName: pickMeta("property", "og:site_name"),
+      ogTitle: pickMeta("property", "og:title"),
+      ogDescription: pickMeta("property", "og:description"),
+      ogUrl: pickMeta("property", "og:url"),
+      ogImage: pickMeta("property", "og:image"),
+      ogType: pickMeta("property", "og:type"),
+      ogLocale: pickMeta("property", "og:locale"),
+      ogImageAlt: pickMeta("property", "og:image:alt"),
+      twitterCard: pickMeta("name", "twitter:card"),
+      twitterSite: pickMeta("name", "twitter:site"),
+      twitterCreator: pickMeta("name", "twitter:creator"),
+    };
+  }
+
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(markup, "text/html");
+  const byName = (name: string) =>
+    (documentNode.querySelector(`meta[name="${name}"]`)?.getAttribute("content") ?? "").trim();
+  const byProperty = (name: string) =>
+    (documentNode.querySelector(`meta[property="${name}"]`)?.getAttribute("content") ?? "").trim();
+
+  return {
+    title: (documentNode.querySelector("title")?.textContent ?? "").trim(),
+    description: byName("description"),
+    canonical: (documentNode.querySelector('link[rel="canonical"]')?.getAttribute("href") ?? "").trim(),
+    author: byName("author"),
+    robots: byName("robots"),
+    siteName: byProperty("og:site_name"),
+    ogTitle: byProperty("og:title"),
+    ogDescription: byProperty("og:description"),
+    ogUrl: byProperty("og:url"),
+    ogImage: byProperty("og:image"),
+    ogType: byProperty("og:type"),
+    ogLocale: byProperty("og:locale"),
+    ogImageAlt: byProperty("og:image:alt"),
+    twitterCard: byName("twitter:card"),
+    twitterSite: byName("twitter:site"),
+    twitterCreator: byName("twitter:creator"),
+  };
+}
+
+function parseUrlListFromUploadedText(raw: string): string[] {
+  const lines = raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines
+    .map((line) => {
+      const firstToken = line.includes(",") ? line.split(",")[0]?.trim() ?? "" : line;
+      return firstToken.replace(/^["']|["']$/g, "");
+    })
+    .filter(Boolean);
+}
+
+function extractUrlsFromSitemapXml(xmlText: string): string[] {
+  if (typeof DOMParser !== "undefined") {
+    try {
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(xmlText, "application/xml");
+      if (xml.querySelector("parsererror")) {
+        throw new Error("Invalid XML");
+      }
+      return Array.from(xml.getElementsByTagName("loc"))
+        .map((node) => (node.textContent ?? "").trim())
+        .filter(Boolean);
+    } catch {
+      // Fall through to regex fallback.
+    }
+  }
+
+  return [...xmlText.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)]
+    .map((match) => (match[1] ?? "").trim())
+    .filter(Boolean);
+}
+
+function parseRobotsTxtInput(value: string): {
+  userAgent: string;
+  allowPaths: string[];
+  disallowPaths: string[];
+  crawlDelay: string;
+  host: string;
+  sitemaps: string[];
+  customDirectives: string[];
+} {
+  const result = {
+    userAgent: "*",
+    allowPaths: [] as string[],
+    disallowPaths: [] as string[],
+    crawlDelay: "",
+    host: "",
+    sitemaps: [] as string[],
+    customDirectives: [] as string[],
+  };
+
+  const lines = value.replace(/\r\n?/g, "\n").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colonIndex = trimmed.indexOf(":");
+    if (colonIndex <= 0) {
+      result.customDirectives.push(trimmed);
+      continue;
+    }
+    const key = trimmed.slice(0, colonIndex).trim().toLowerCase();
+    const directiveValue = trimmed.slice(colonIndex + 1).trim();
+    if (!directiveValue) continue;
+
+    if (key === "user-agent") {
+      result.userAgent = directiveValue;
+    } else if (key === "allow") {
+      result.allowPaths.push(directiveValue);
+    } else if (key === "disallow") {
+      result.disallowPaths.push(directiveValue);
+    } else if (key === "crawl-delay") {
+      result.crawlDelay = directiveValue;
+    } else if (key === "host") {
+      result.host = directiveValue;
+    } else if (key === "sitemap") {
+      result.sitemaps.push(directiveValue);
+    } else {
+      result.customDirectives.push(trimmed);
+    }
+  }
+
+  return result;
+}
+
+function normalizeRobotsPath(path: string): string {
+  if (!path.trim()) return "/";
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+function evaluateRobotsPathDecision(
+  path: string,
+  allowPaths: string[],
+  disallowPaths: string[],
+): { decision: "Allowed" | "Blocked"; matchedAllow?: string; matchedDisallow?: string } {
+  const normalizedPath = normalizeRobotsPath(path.trim());
+  const matchedAllow = allowPaths
+    .map((rule) => normalizeRobotsPath(rule.trim()))
+    .filter((rule) => normalizedPath.startsWith(rule))
+    .sort((left, right) => right.length - left.length)[0];
+
+  const matchedDisallow = disallowPaths
+    .map((rule) => normalizeRobotsPath(rule.trim()))
+    .filter((rule) => normalizedPath.startsWith(rule))
+    .sort((left, right) => right.length - left.length)[0];
+
+  if (!matchedDisallow) {
+    return { decision: "Allowed", matchedAllow };
+  }
+  if (!matchedAllow) {
+    return { decision: "Blocked", matchedDisallow };
+  }
+  if (matchedAllow.length >= matchedDisallow.length) {
+    return { decision: "Allowed", matchedAllow, matchedDisallow };
+  }
+  return { decision: "Blocked", matchedAllow, matchedDisallow };
+}
+
+function downloadBlobFile(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
 interface ImageWorkflowHandoffPayload {
   sourceToolId: ImageToolId;
   targetToolId: ImageToolId;
@@ -2340,7 +2621,11 @@ const CHARACTER_LIMIT_PRESETS = [
 
 function WordCounterTool() {
   const [text, setText] = useState("");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [targetWords, setTargetWords] = useState(1000);
+  const [focusKeyword, setFocusKeyword] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const words = countWords(text);
   const characters = text.length;
   const charactersNoSpaces = countCharacters(text, false);
@@ -2350,11 +2635,39 @@ function WordCounterTool() {
   const readingTime = Math.max(1, Math.ceil(words / 200));
   const speakingTime = Math.max(1, Math.ceil(words / 130));
   const avgWordLength = words > 0 ? (charactersNoSpaces / words).toFixed(1) : "0";
+  const tokenWords = text.toLowerCase().match(/[a-z]+/g) ?? [];
+  const totalSyllables = tokenWords.reduce((sum, word) => sum + estimateSyllables(word), 0);
+  const readabilityScore =
+    words > 0 && sentences > 0 ? 206.835 - 1.015 * (words / sentences) - 84.6 * (totalSyllables / words) : null;
+  const targetProgress = targetWords > 0 ? Math.round((words / targetWords) * 100) : 0;
+  const normalizedFocusKeyword = focusKeyword.trim().toLowerCase();
+  const focusRegex = normalizedFocusKeyword
+    ? new RegExp(`\\b${escapeRegExp(normalizedFocusKeyword).replace(/\s+/g, "\\s+")}\\b`, "g")
+    : null;
+  const focusOccurrences = focusRegex ? text.toLowerCase().match(focusRegex)?.length ?? 0 : 0;
   const topTerms = keywordDensity(text, 8, {
     nGram: 1,
     excludeStopWords: true,
     minLength: 3,
   });
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const normalized = normalizeUploadedText(raw);
+        const imported = extension === "html" || extension === "htm" ? extractPlainTextFromHtml(normalized) : normalized;
+        setText((current) => mergeUploadedText(current, imported, uploadMode));
+        setStatus(`Loaded text from ${file.name}.`);
+        trackEvent("tool_word_counter_upload", { extension: extension || "unknown", mode: uploadMode });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not read uploaded text file.");
+      }
+    },
+    [uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -2367,6 +2680,37 @@ function WordCounterTool() {
         <span>Paste your text</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={10} />
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Target word count</span>
+          <input
+            type="number"
+            min={50}
+            max={50000}
+            value={targetWords}
+            onChange={(event) => setTargetWords(Number.parseInt(event.target.value, 10) || 0)}
+          />
+        </label>
+        <label className="field">
+          <span>Focus keyword (optional)</span>
+          <input type="text" value={focusKeyword} onChange={(event) => setFocusKeyword(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace text</option>
+            <option value="append">Append to text</option>
+          </select>
+        </label>
+      </div>
+      <label className="field">
+        <span>Upload text/HTML file</span>
+        <input
+          type="file"
+          accept=".txt,.md,.markdown,.csv,.html,.htm"
+          onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)}
+        />
+      </label>
       <div className="button-row">
         <button
           className="action-button secondary"
@@ -2374,6 +2718,7 @@ function WordCounterTool() {
           onClick={() => {
             setText("");
             setCopyStatus("");
+            setStatus("");
           }}
         >
           <Trash2 size={15} />
@@ -2390,6 +2735,36 @@ function WordCounterTool() {
           <Copy size={15} />
           Copy text
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const rows: Array<[string, string]> = [
+              ["Words", words.toString()],
+              ["Characters", characters.toString()],
+              ["Characters (no spaces)", charactersNoSpaces.toString()],
+              ["Sentences", sentences.toString()],
+              ["Paragraphs", paragraphs.toString()],
+              ["Lines", lines.toString()],
+              ["Estimated reading time", `${readingTime} min`],
+              ["Estimated speaking time", `${speakingTime} min`],
+              ["Average word length", avgWordLength],
+              ["Target word count", targetWords.toString()],
+              ["Target progress", `${targetProgress}%`],
+            ];
+            if (readabilityScore !== null) {
+              rows.push(["Reading ease", readabilityScore.toFixed(1)]);
+            }
+            if (normalizedFocusKeyword) {
+              rows.push(["Focus keyword", normalizedFocusKeyword], ["Focus keyword count", focusOccurrences.toString()]);
+            }
+            downloadCsv("word-analysis.csv", ["Metric", "Value"], rows);
+            trackEvent("tool_word_counter_export", { words, hasFocusKeyword: Boolean(normalizedFocusKeyword) });
+          }}
+        >
+          <Download size={15} />
+          Export summary
+        </button>
         {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
       <ResultList
@@ -2403,6 +2778,9 @@ function WordCounterTool() {
           { label: "Estimated reading time", value: `${readingTime} min` },
           { label: "Estimated speaking time", value: `${speakingTime} min` },
           { label: "Average word length", value: `${avgWordLength} chars` },
+          { label: "Target progress", value: targetWords > 0 ? `${targetProgress}% of ${targetWords}` : "Set target" },
+          { label: "Reading ease", value: readabilityScore !== null ? readabilityScore.toFixed(1) : "N/A" },
+          { label: "Focus keyword count", value: normalizedFocusKeyword ? focusOccurrences.toString() : "Not set" },
         ]}
       />
       {topTerms.length > 0 ? (
@@ -2417,6 +2795,7 @@ function WordCounterTool() {
           </div>
         </div>
       ) : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -2425,14 +2804,42 @@ function CharacterCounterTool() {
   const [text, setText] = useState("");
   const [includeSpaces, setIncludeSpaces] = useState(true);
   const [presetId, setPresetId] = useState<(typeof CHARACTER_LIMIT_PRESETS)[number]["id"]>("seo-title");
+  const [useCustomLimit, setUseCustomLimit] = useState(false);
+  const [customLimit, setCustomLimit] = useState("160");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [status, setStatus] = useState("");
   const currentPreset = CHARACTER_LIMIT_PRESETS.find((preset) => preset.id === presetId) ?? CHARACTER_LIMIT_PRESETS[0];
+  const parsedCustomLimit = Number.parseInt(customLimit, 10);
+  const activeLimit =
+    useCustomLimit && Number.isFinite(parsedCustomLimit) && parsedCustomLimit > 0
+      ? Math.min(250000, parsedCustomLimit)
+      : currentPreset.limit;
   const count = countCharacters(text, includeSpaces);
   const words = countWords(text);
   const lines = text ? text.split("\n").length : 0;
-  const remaining = currentPreset.limit - count;
-  const rawProgress = currentPreset.limit > 0 ? (count / currentPreset.limit) * 100 : 0;
+  const remaining = activeLimit - count;
+  const rawProgress = activeLimit > 0 ? (count / activeLimit) * 100 : 0;
   const progress = Math.max(0, Math.min(130, rawProgress));
   const overLimit = remaining < 0;
+  const snippet = count > activeLimit ? text.slice(0, activeLimit).trimEnd() : text;
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const normalized = normalizeUploadedText(raw);
+        const imported = extension === "html" || extension === "htm" ? extractPlainTextFromHtml(normalized) : normalized;
+        setText((current) => mergeUploadedText(current, imported, uploadMode));
+        setStatus(`Loaded text from ${file.name}.`);
+        trackEvent("tool_character_counter_upload", { extension: extension || "unknown", mode: uploadMode });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not read uploaded text file.");
+      }
+    },
+    [uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -2456,6 +2863,23 @@ function CharacterCounterTool() {
             ))}
           </select>
         </label>
+        <label className="field">
+          <span>Custom limit</span>
+          <input
+            type="number"
+            min={1}
+            max={250000}
+            value={customLimit}
+            onChange={(event) => setCustomLimit(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace text</option>
+            <option value="append">Append to text</option>
+          </select>
+        </label>
       </div>
       <label className="checkbox">
         <input
@@ -2464,6 +2888,22 @@ function CharacterCounterTool() {
           onChange={(event) => setIncludeSpaces(event.target.checked)}
         />
         Include spaces
+      </label>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={useCustomLimit}
+          onChange={(event) => setUseCustomLimit(event.target.checked)}
+        />
+        Use custom limit instead of preset
+      </label>
+      <label className="field">
+        <span>Upload text/HTML file</span>
+        <input
+          type="file"
+          accept=".txt,.md,.markdown,.csv,.html,.htm"
+          onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)}
+        />
       </label>
       <div className="limit-meter-wrap" aria-live="polite">
         <div className="limit-meter">
@@ -2474,18 +2914,44 @@ function CharacterCounterTool() {
         </div>
         <small className="supporting-text">
           {overLimit
-            ? `${Math.abs(remaining)} characters over limit for ${currentPreset.label}.`
-            : `${remaining} characters left for ${currentPreset.label}.`}
+            ? `${Math.abs(remaining)} characters over limit (${activeLimit}).`
+            : `${remaining} characters left (${activeLimit} max).`}
         </small>
+      </div>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(text);
+            setStatus(ok ? "Text copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(snippet);
+            setStatus(ok ? "Trimmed snippet copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy within limit
+        </button>
       </div>
       <ResultList
         rows={[
           { label: "Characters", value: count.toString() },
           { label: "Words", value: words.toString() },
           { label: "Lines", value: lines.toString() },
-          { label: "Limit", value: currentPreset.limit.toString() },
+          { label: "Limit", value: activeLimit.toString() },
+          { label: "Remaining", value: remaining.toString() },
         ]}
       />
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -2496,7 +2962,9 @@ function KeywordDensityTool() {
   const [excludeStopWords, setExcludeStopWords] = useState(true);
   const [topN, setTopN] = useState(12);
   const [targetKeyword, setTargetKeyword] = useState("");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const rows = keywordDensity(text, topN, {
     nGram,
     excludeStopWords,
@@ -2514,6 +2982,33 @@ function KeywordDensityTool() {
   const targetCount = normalizedTarget ? analyzedTerms.filter((term) => term === normalizedTarget).length : 0;
   const targetDensity = totalTerms > 0 ? `${((targetCount / totalTerms) * 100).toFixed(2)}%` : "0.00%";
   const csvOutput = rows.map((row) => `${row.keyword},${row.count},${row.density}`).join("\n");
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const imported =
+          extension === "html" || extension === "htm"
+            ? extractPlainTextFromHtml(raw)
+            : normalizeUploadedText(raw).trim();
+        const next = mergeUploadedText(text, imported, uploadMode);
+        setText(next);
+        setStatus(
+          `Imported ${file.name} (${formatNumericValue(countWords(imported))} words) using ${uploadMode} mode.`,
+        );
+        trackEvent("tool_keyword_density_upload", {
+          extension: extension || "unknown",
+          words: countWords(imported),
+          mergeMode: uploadMode,
+        });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not read uploaded file.");
+      }
+    },
+    [text, uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -2563,6 +3058,19 @@ function KeywordDensityTool() {
         <span>Content input</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={10} />
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload content file (.txt, .md, .html)</span>
+          <input type="file" accept=".txt,.md,.markdown,.html,.htm,.csv" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace editor content</option>
+            <option value="append">Append to existing content</option>
+          </select>
+        </label>
+      </div>
       <ResultList
         rows={[
           { label: "Terms analyzed", value: totalTerms.toString() },
@@ -2584,8 +3092,24 @@ function KeywordDensityTool() {
           <Copy size={15} />
           Copy CSV
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "keyword-density.csv",
+              ["Keyword", "Count", "Density"],
+              rows.map((row) => [row.keyword, row.count.toString(), row.density]),
+            )
+          }
+          disabled={!rows.length}
+        >
+          <Download size={15} />
+          Download CSV
+        </button>
         {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       {rows.length ? (
         <table className="table">
           <thead>
@@ -2617,24 +3141,59 @@ function SlugGeneratorTool() {
   const [separator, setSeparator] = useState<"-" | "_">("-");
   const [lowercase, setLowercase] = useState(true);
   const [removeStopWords, setRemoveStopWords] = useState(false);
+  const [enforceUnique, setEnforceUnique] = useState(true);
   const [maxLength, setMaxLength] = useState(80);
   const [domain, setDomain] = useState("https://utiliora.com");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const generated = lines.map((line) =>
-    slugify(line, {
-      separator,
-      lowercase,
-      maxLength,
-      removeStopWords,
-    }),
-  );
+  const generated = useMemo(() => {
+    const duplicateCounter = new Map<string, number>();
+    return lines.map((line) => {
+      const base = slugify(line, {
+        separator,
+        lowercase,
+        maxLength,
+        removeStopWords,
+      });
+      if (!enforceUnique || !base) {
+        return base;
+      }
+      const currentCount = duplicateCounter.get(base) ?? 0;
+      duplicateCounter.set(base, currentCount + 1);
+      if (currentCount === 0) {
+        return base;
+      }
+      return `${base}${separator}${currentCount + 1}`;
+    });
+  }, [enforceUnique, lines, lowercase, maxLength, removeStopWords, separator]);
   const output = generated[0] ?? "";
   const normalizedDomain = domain.replace(/\/+$/, "");
   const fullUrl = output ? `${normalizedDomain}/${output}` : normalizedDomain;
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const imported =
+          extension === "html" || extension === "htm"
+            ? extractPlainTextFromHtml(raw)
+            : normalizeUploadedText(raw);
+        const next = mergeUploadedText(text, imported, uploadMode);
+        setText(next);
+        setStatus(`Imported ${file.name} with ${formatNumericValue(next.split(/\r?\n/).filter(Boolean).length)} lines.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Unable to import titles.");
+      }
+    },
+    [text, uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -2683,11 +3242,32 @@ function SlugGeneratorTool() {
           />
           Remove stop words
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={enforceUnique}
+            onChange={(event) => setEnforceUnique(event.target.checked)}
+          />
+          Force unique slugs in bulk mode
+        </label>
       </div>
       <label className="field">
         <span>Source title(s) - one per line for bulk generation</span>
         <textarea value={text} onChange={(event) => setText(event.target.value)} rows={6} />
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload titles file</span>
+          <input type="file" accept=".txt,.csv,.md,.html,.htm" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace titles</option>
+            <option value="append">Append titles</option>
+          </select>
+        </label>
+      </div>
       <div className="result-row">
         <span>Slug</span>
         <strong>{output || "Add title text to generate slug"}</strong>
@@ -2719,8 +3299,39 @@ function SlugGeneratorTool() {
           <Copy size={15} />
           Copy full URL
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(generated.join("\n"));
+            setCopyStatus(ok ? "Bulk slugs copied." : "Nothing to copy.");
+          }}
+          disabled={!generated.length}
+        >
+          <Copy size={15} />
+          Copy all slugs
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "slug-output.csv",
+              ["Input title", "Slug", "Preview URL"],
+              lines.map((line, index) => {
+                const slug = generated[index] ?? "";
+                return [line, slug, slug ? `${normalizedDomain}/${slug}` : normalizedDomain];
+              }),
+            )
+          }
+          disabled={!generated.length}
+        >
+          <Download size={15} />
+          Download CSV
+        </button>
         {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
       {generated.length > 1 ? (
         <div className="mini-panel">
           <h3>Bulk output</h3>
@@ -2745,22 +3356,70 @@ function MetaTagGeneratorTool() {
   const [robotsIndex, setRobotsIndex] = useState(true);
   const [robotsFollow, setRobotsFollow] = useState(true);
   const [siteName, setSiteName] = useState("Utiliora");
+  const [focusKeyword, setFocusKeyword] = useState("");
+  const [languageTag, setLanguageTag] = useState("en");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const titleLength = title.length;
   const descriptionLength = description.length;
   const robotsValue = `${robotsIndex ? "index" : "noindex"}, ${robotsFollow ? "follow" : "nofollow"}`;
   const canonicalUrl = canonical.trim() || "https://example.com/page";
+  const normalizedKeyword = focusKeyword.toLowerCase().trim();
+  const keywordInTitle = normalizedKeyword ? title.toLowerCase().includes(normalizedKeyword) : false;
+  const keywordInDescription = normalizedKeyword ? description.toLowerCase().includes(normalizedKeyword) : false;
+
+  const recommendations: string[] = [];
+  if (titleLength < 35) recommendations.push("Title is short; aim for 50-60 characters for richer SERP context.");
+  if (titleLength > 60) recommendations.push("Title may truncate in search results; keep near 60 characters.");
+  if (descriptionLength < 120) recommendations.push("Description is short; expand toward 140-160 characters.");
+  if (descriptionLength > 160) recommendations.push("Description may truncate in search results.");
+  if (!canonical.trim()) recommendations.push("Set a canonical URL to reduce duplicate-content ambiguity.");
+  if (normalizedKeyword && !keywordInTitle) recommendations.push("Focus keyword is missing from the title.");
+  if (normalizedKeyword && !keywordInDescription) recommendations.push("Focus keyword is missing from the description.");
+  if (!recommendations.length) recommendations.push("Meta signals look healthy for publish.");
+
+  const safeTitle = escapeHtml(title || "Page title");
+  const safeDescription = escapeHtml(description || "Page description");
+  const safeCanonical = escapeHtml(canonical);
+  const safeAuthor = escapeHtml(author);
+  const safeSiteName = escapeHtml(siteName);
+  const safeLanguageTag = escapeHtml(languageTag || "en");
 
   const output = [
-    `<title>${title || "Page title"}</title>`,
-    `<meta name="description" content="${description || "Page description"}" />`,
+    `<meta charset="utf-8" />`,
+    `<meta name="viewport" content="width=device-width, initial-scale=1" />`,
+    `<!-- Add to your HTML tag: <html lang="${safeLanguageTag}"> -->`,
+    `<title>${safeTitle}</title>`,
+    `<meta name="description" content="${safeDescription}" />`,
     `<meta name="robots" content="${robotsValue}" />`,
-    author ? `<meta name="author" content="${author}" />` : "",
-    `<meta property="og:site_name" content="${siteName}" />`,
-    canonical ? `<link rel="canonical" href="${canonical}" />` : "",
+    safeAuthor ? `<meta name="author" content="${safeAuthor}" />` : "",
+    `<meta property="og:site_name" content="${safeSiteName}" />`,
+    safeCanonical ? `<link rel="canonical" href="${safeCanonical}" />` : "",
   ]
     .filter(Boolean)
     .join("\n");
+
+  const handleHtmlImport = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      const snapshot = parseHtmlMetaSnapshot(raw);
+      if (snapshot.title) setTitle(snapshot.title);
+      if (snapshot.description) setDescription(snapshot.description);
+      if (snapshot.canonical) setCanonical(snapshot.canonical);
+      if (snapshot.author) setAuthor(snapshot.author);
+      if (snapshot.siteName) setSiteName(snapshot.siteName);
+      if (snapshot.robots) {
+        const robotsLower = snapshot.robots.toLowerCase();
+        setRobotsIndex(!robotsLower.includes("noindex"));
+        setRobotsFollow(!robotsLower.includes("nofollow"));
+      }
+      setStatus(`Imported metadata from ${file.name}.`);
+      trackEvent("tool_meta_tag_import", { extension: getFileExtension(file.name) || "unknown" });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import HTML metadata.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -2790,6 +3449,14 @@ function MetaTagGeneratorTool() {
           <span>Site name</span>
           <input type="text" value={siteName} onChange={(event) => setSiteName(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Focus keyword (optional)</span>
+          <input type="text" value={focusKeyword} onChange={(event) => setFocusKeyword(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Language tag (for HTML lang)</span>
+          <input type="text" value={languageTag} onChange={(event) => setLanguageTag(event.target.value)} placeholder="en" />
+        </label>
       </div>
       <div className="button-row">
         <label className="checkbox">
@@ -2809,11 +3476,31 @@ function MetaTagGeneratorTool() {
           Allow following links
         </label>
       </div>
+      <label className="field">
+        <span>Import from HTML file</span>
+        <input type="file" accept=".html,.htm" onChange={(event) => void handleHtmlImport(event.target.files?.[0] ?? null)} />
+      </label>
       <div className="serp-preview">
         <small>Google preview</small>
         <h3>{title || "Page title preview"}</h3>
         <p className="serp-url">{canonicalUrl}</p>
         <p>{description || "Meta description preview appears here."}</p>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Title length", value: `${titleLength}/60` },
+          { label: "Description length", value: `${descriptionLength}/160` },
+          { label: "Keyword in title", value: normalizedKeyword ? (keywordInTitle ? "Yes" : "No") : "-" },
+          { label: "Keyword in description", value: normalizedKeyword ? (keywordInDescription ? "Yes" : "No") : "-" },
+        ]}
+      />
+      <div className="mini-panel">
+        <h3>Optimization suggestions</h3>
+        <ul className="plain-list">
+          {recommendations.map((tip) => (
+            <li key={tip}>{tip}</li>
+          ))}
+        </ul>
       </div>
       <label className="field">
         <span>Generated tags</span>
@@ -2831,8 +3518,17 @@ function MetaTagGeneratorTool() {
           <Copy size={15} />
           Copy tags
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("meta-tags.html", output, "text/html;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Download snippet
+        </button>
         {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -2842,30 +3538,76 @@ function OpenGraphGeneratorTool() {
   const [description, setDescription] = useState("");
   const [url, setUrl] = useState("");
   const [image, setImage] = useState("");
+  const [imageAlt, setImageAlt] = useState("");
   const [siteName, setSiteName] = useState("Utiliora");
   const [ogType, setOgType] = useState("website");
+  const [ogLocale, setOgLocale] = useState("en_US");
   const [twitterCard, setTwitterCard] = useState("summary_large_image");
   const [twitterHandle, setTwitterHandle] = useState("@utiliora");
+  const [twitterCreator, setTwitterCreator] = useState("@utiliora");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const previewTitle = title || "Social preview title";
   const previewDescription = description || "Social preview description will appear here.";
   const previewUrl = url || "https://example.com";
+  const completionScore = [
+    Boolean(title.trim()),
+    Boolean(description.trim()),
+    Boolean(url.trim()),
+    Boolean(image.trim()),
+    Boolean(siteName.trim()),
+  ].filter(Boolean).length;
+  const safeTitle = escapeHtml(previewTitle);
+  const safeDescription = escapeHtml(previewDescription);
+  const safeUrl = escapeHtml(previewUrl);
+  const safeImage = escapeHtml(image.trim());
+  const safeImageAlt = escapeHtml(imageAlt.trim());
+  const safeSiteName = escapeHtml(siteName.trim() || "Utiliora");
+  const safeTwitterHandle = escapeHtml(twitterHandle.trim());
+  const safeTwitterCreator = escapeHtml(twitterCreator.trim());
+  const safeLocale = escapeHtml(ogLocale.trim() || "en_US");
 
   const output = [
-    `<meta property="og:title" content="${previewTitle}" />`,
-    `<meta property="og:description" content="${previewDescription}" />`,
-    `<meta property="og:url" content="${previewUrl}" />`,
+    `<meta property="og:title" content="${safeTitle}" />`,
+    `<meta property="og:description" content="${safeDescription}" />`,
+    `<meta property="og:url" content="${safeUrl}" />`,
     `<meta property="og:type" content="${ogType}" />`,
-    `<meta property="og:site_name" content="${siteName}" />`,
-    image ? `<meta property="og:image" content="${image}" />` : "",
+    `<meta property="og:site_name" content="${safeSiteName}" />`,
+    `<meta property="og:locale" content="${safeLocale}" />`,
+    safeImage ? `<meta property="og:image" content="${safeImage}" />` : "",
+    safeImageAlt ? `<meta property="og:image:alt" content="${safeImageAlt}" />` : "",
     `<meta name="twitter:card" content="${twitterCard}" />`,
-    `<meta name="twitter:title" content="${previewTitle}" />`,
-    `<meta name="twitter:description" content="${previewDescription}" />`,
-    `<meta name="twitter:site" content="${twitterHandle}" />`,
-    image ? `<meta name="twitter:image" content="${image}" />` : "",
+    `<meta name="twitter:title" content="${safeTitle}" />`,
+    `<meta name="twitter:description" content="${safeDescription}" />`,
+    safeTwitterHandle ? `<meta name="twitter:site" content="${safeTwitterHandle}" />` : "",
+    safeTwitterCreator ? `<meta name="twitter:creator" content="${safeTwitterCreator}" />` : "",
+    safeImage ? `<meta name="twitter:image" content="${safeImage}" />` : "",
   ]
     .filter(Boolean)
     .join("\n");
+
+  const handleHtmlImport = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      const snapshot = parseHtmlMetaSnapshot(raw);
+      setTitle(snapshot.ogTitle || snapshot.title);
+      setDescription(snapshot.ogDescription || snapshot.description);
+      setUrl(snapshot.ogUrl || snapshot.canonical);
+      setImage(snapshot.ogImage);
+      setImageAlt(snapshot.ogImageAlt);
+      setSiteName(snapshot.siteName || "Utiliora");
+      setOgType(snapshot.ogType || "website");
+      setOgLocale(snapshot.ogLocale || "en_US");
+      setTwitterCard(snapshot.twitterCard || "summary_large_image");
+      setTwitterHandle(snapshot.twitterSite || "@utiliora");
+      setTwitterCreator(snapshot.twitterCreator || snapshot.twitterSite || "@utiliora");
+      setStatus(`Imported Open Graph data from ${file.name}.`);
+      trackEvent("tool_open_graph_import", { extension: getFileExtension(file.name) || "unknown" });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import Open Graph metadata.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -2892,6 +3634,10 @@ function OpenGraphGeneratorTool() {
           <input type="url" value={image} onChange={(event) => setImage(event.target.value)} />
         </label>
         <label className="field">
+          <span>Image alt text</span>
+          <input type="text" value={imageAlt} onChange={(event) => setImageAlt(event.target.value)} />
+        </label>
+        <label className="field">
           <span>Site name</span>
           <input type="text" value={siteName} onChange={(event) => setSiteName(event.target.value)} />
         </label>
@@ -2904,6 +3650,10 @@ function OpenGraphGeneratorTool() {
           </select>
         </label>
         <label className="field">
+          <span>Locale</span>
+          <input type="text" value={ogLocale} onChange={(event) => setOgLocale(event.target.value)} placeholder="en_US" />
+        </label>
+        <label className="field">
           <span>Twitter card</span>
           <select value={twitterCard} onChange={(event) => setTwitterCard(event.target.value)}>
             <option value="summary_large_image">summary_large_image</option>
@@ -2911,10 +3661,18 @@ function OpenGraphGeneratorTool() {
           </select>
         </label>
         <label className="field">
-          <span>Twitter handle</span>
+          <span>Twitter site handle</span>
           <input type="text" value={twitterHandle} onChange={(event) => setTwitterHandle(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Twitter creator handle</span>
+          <input type="text" value={twitterCreator} onChange={(event) => setTwitterCreator(event.target.value)} />
+        </label>
       </div>
+      <label className="field">
+        <span>Import existing HTML metadata</span>
+        <input type="file" accept=".html,.htm" onChange={(event) => void handleHtmlImport(event.target.files?.[0] ?? null)} />
+      </label>
       <div className="social-preview-card">
         <div className="social-preview-media">
           {image ? (
@@ -2929,6 +3687,14 @@ function OpenGraphGeneratorTool() {
           <p>{previewDescription}</p>
         </div>
       </div>
+      <ResultList
+        rows={[
+          { label: "Field completion", value: `${completionScore}/5 core fields` },
+          { label: "Title length", value: formatNumericValue(previewTitle.length) },
+          { label: "Description length", value: formatNumericValue(previewDescription.length) },
+          { label: "Has image alt", value: imageAlt.trim() ? "Yes" : "No" },
+        ]}
+      />
       <label className="field">
         <span>Generated OG tags</span>
         <textarea value={output} readOnly rows={11} />
@@ -2945,8 +3711,17 @@ function OpenGraphGeneratorTool() {
           <Copy size={15} />
           Copy social tags
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("open-graph-tags.html", output, "text/html;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Download tags
+        </button>
         {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -2963,22 +3738,55 @@ const SITEMAP_CHANGEFREQUENCIES = [
 
 type SitemapChangeFrequency = (typeof SITEMAP_CHANGEFREQUENCIES)[number];
 
+function generateSitemapIndexXml(entries: Array<{ loc: string; lastmod?: string }>): string {
+  const lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'];
+  entries.forEach((entry) => {
+    lines.push("  <sitemap>");
+    lines.push(`    <loc>${entry.loc}</loc>`);
+    if (entry.lastmod) {
+      lines.push(`    <lastmod>${entry.lastmod}</lastmod>`);
+    }
+    lines.push("  </sitemap>");
+  });
+  lines.push("</sitemapindex>");
+  return lines.join("\n");
+}
+
 function HtmlBeautifierTool() {
   const [input, setInput] = useState(
     "<!doctype html><html><head><title>Utiliora</title></head><body><main><h1>Simple tools. Instant results.</h1><p>Format this HTML for readability.</p></main></body></html>",
   );
   const [indentSize, setIndentSize] = useState(2);
+  const [stripComments, setStripComments] = useState(false);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [output, setOutput] = useState(() => beautifyHtml(input, 2));
   const [status, setStatus] = useState("");
 
   const runBeautifier = () => {
-    const formatted = beautifyHtml(input, indentSize);
+    const source = stripComments ? input.replace(/<!--[\s\S]*?-->/g, "") : input;
+    const formatted = beautifyHtml(source, indentSize);
     setOutput(formatted);
     setStatus(formatted ? "Formatted HTML ready." : "Enter HTML to beautify.");
-    trackEvent("tool_html_beautifier_run", { indentSize, hasInput: Boolean(input.trim()) });
+    trackEvent("tool_html_beautifier_run", { indentSize, hasInput: Boolean(input.trim()), stripComments });
   };
 
   const lineCount = output ? output.split("\n").length : 0;
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const next = mergeUploadedText(input, normalized, uploadMode);
+        setInput(next);
+        setStatus(`Loaded ${file.name}. Click Beautify HTML to format.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load HTML file.");
+      }
+    },
+    [input, uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -2999,10 +3807,29 @@ function HtmlBeautifierTool() {
             onChange={(event) => setIndentSize(Math.max(0, Math.min(8, Number(event.target.value) || 2)))}
           />
         </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace editor content</option>
+            <option value="append">Append HTML</option>
+          </select>
+        </label>
       </div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={stripComments}
+          onChange={(event) => setStripComments(event.target.checked)}
+        />
+        Strip HTML comments before formatting
+      </label>
       <label className="field">
         <span>Input HTML</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={8} />
+      </label>
+      <label className="field">
+        <span>Upload HTML file</span>
+        <input type="file" accept=".html,.htm,.xml,.txt" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
       </label>
       <div className="button-row">
         <button className="action-button" type="button" onClick={runBeautifier}>
@@ -3050,13 +3877,17 @@ function XmlSitemapGeneratorTool() {
   const [includeLastmod, setIncludeLastmod] = useState(true);
   const [changefreq, setChangefreq] = useState<SitemapChangeFrequency>("weekly");
   const [priority, setPriority] = useState("0.7");
+  const [maxUrlsPerFile, setMaxUrlsPerFile] = useState(50000);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
 
   const generation = useMemo(() => {
     const requestedPriority = Number.parseFloat(priority);
     const normalizedPriority = Number.isFinite(requestedPriority)
       ? Math.max(0, Math.min(1, requestedPriority))
       : 0.7;
+    const safeMaxUrlsPerFile = Math.max(1, Math.min(50000, Math.round(maxUrlsPerFile || 50000)));
     const today = new Date().toISOString().slice(0, 10);
     const seen = new Set<string>();
     const invalidLines: string[] = [];
@@ -3078,14 +3909,67 @@ function XmlSitemapGeneratorTool() {
         priority: normalizedPriority,
       }));
 
-    const xml = generateSitemapXml(entries);
+    const files = entries.length
+      ? Array.from({ length: Math.ceil(entries.length / safeMaxUrlsPerFile) }, (_unused, index) => {
+          const chunk = entries.slice(index * safeMaxUrlsPerFile, (index + 1) * safeMaxUrlsPerFile);
+          const name = entries.length > safeMaxUrlsPerFile ? `sitemap-${index + 1}.xml` : "sitemap.xml";
+          return { name, xml: generateSitemapXml(chunk), entries: chunk };
+        })
+      : [{ name: "sitemap.xml", xml: generateSitemapXml([]), entries: [] as typeof entries }];
+
+    let sitemapIndexXml = "";
+    if (files.length > 1) {
+      let normalizedBase = "https://example.com/";
+      try {
+        const parsedBase = new URL(baseUrl.trim() || "https://example.com/");
+        normalizedBase = parsedBase.toString().endsWith("/") ? parsedBase.toString() : `${parsedBase.toString()}/`;
+      } catch {
+        normalizedBase = "https://example.com/";
+      }
+      sitemapIndexXml = generateSitemapIndexXml(
+        files.map((file) => ({
+          loc: new URL(file.name, normalizedBase).toString(),
+          lastmod: includeLastmod ? today : undefined,
+        })),
+      );
+    }
+
+    const xml = files.length > 1 ? sitemapIndexXml : files[0]?.xml ?? "";
     return {
       xml,
       entries,
       invalidLines,
       priority: normalizedPriority,
+      safeMaxUrlsPerFile,
+      files,
+      sitemapIndexXml,
+      primaryFileName: files.length > 1 ? "sitemap-index.xml" : "sitemap.xml",
     };
-  }, [baseUrl, changefreq, includeLastmod, priority, rawPaths]);
+  }, [baseUrl, changefreq, includeLastmod, maxUrlsPerFile, priority, rawPaths]);
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const importedUrls =
+          extension === "xml"
+            ? extractUrlsFromSitemapXml(raw)
+            : parseUrlListFromUploadedText(raw);
+        if (!importedUrls.length) {
+          setStatus("No valid URLs found in the uploaded file.");
+          return;
+        }
+        const merged = mergeUploadedText(rawPaths, importedUrls.join("\n"), uploadMode);
+        setRawPaths(merged);
+        setStatus(`Imported ${formatNumericValue(importedUrls.length)} URL line(s) from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import sitemap file.");
+      }
+    },
+    [rawPaths, uploadMode],
+  );
 
   return (
     <section className="tool-surface">
@@ -3113,6 +3997,16 @@ function XmlSitemapGeneratorTool() {
           <span>Priority (0.0 to 1.0)</span>
           <input type="number" min={0} max={1} step={0.1} value={priority} onChange={(event) => setPriority(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Max URLs per sitemap file</span>
+          <input
+            type="number"
+            min={1}
+            max={50000}
+            value={maxUrlsPerFile}
+            onChange={(event) => setMaxUrlsPerFile(Number(event.target.value))}
+          />
+        </label>
       </div>
       <label className="checkbox">
         <input
@@ -3126,6 +4020,19 @@ function XmlSitemapGeneratorTool() {
         <span>Paths or URLs (one per line)</span>
         <textarea value={rawPaths} onChange={(event) => setRawPaths(event.target.value)} rows={8} />
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Import URL list / sitemap file</span>
+          <input type="file" accept=".txt,.csv,.xml" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace current lines</option>
+            <option value="append">Append imported lines</option>
+          </select>
+        </label>
+      </div>
       <div className="button-row">
         <button
           className="action-button secondary"
@@ -3147,13 +4054,34 @@ function XmlSitemapGeneratorTool() {
         <button
           className="action-button secondary"
           type="button"
-          onClick={() => {
-            downloadTextFile("sitemap.xml", generation.xml, "application/xml;charset=utf-8;");
-            trackEvent("tool_xml_sitemap_download", { urls: generation.entries.length });
+          onClick={async () => {
+            if (generation.files.length === 1) {
+              downloadTextFile(generation.files[0].name, generation.files[0].xml, "application/xml;charset=utf-8;");
+              trackEvent("tool_xml_sitemap_download", { urls: generation.entries.length, files: 1 });
+              return;
+            }
+
+            try {
+              const jsZipModule = await import("jszip");
+              const JSZip = jsZipModule.default;
+              const zip = new JSZip();
+              generation.files.forEach((file) => {
+                zip.file(file.name, file.xml);
+              });
+              if (generation.sitemapIndexXml) {
+                zip.file("sitemap-index.xml", generation.sitemapIndexXml);
+              }
+              const blob = await zip.generateAsync({ type: "blob" });
+              downloadBlobFile("sitemap-bundle.zip", blob);
+              setStatus(`Downloaded sitemap bundle with ${generation.files.length + 1} files.`);
+              trackEvent("tool_xml_sitemap_download", { urls: generation.entries.length, files: generation.files.length + 1 });
+            } catch {
+              setStatus("Could not create sitemap ZIP bundle.");
+            }
           }}
         >
           <Download size={15} />
-          Download sitemap.xml
+          {generation.files.length > 1 ? "Download sitemap bundle" : "Download sitemap.xml"}
         </button>
       </div>
       <ResultList
@@ -3161,6 +4089,8 @@ function XmlSitemapGeneratorTool() {
           { label: "Valid URLs", value: generation.entries.length.toString() },
           { label: "Invalid lines", value: generation.invalidLines.length.toString() },
           { label: "Priority used", value: generation.priority.toFixed(1) },
+          { label: "Sitemap files", value: formatNumericValue(generation.files.length) },
+          { label: "Max URLs/file", value: formatNumericValue(generation.safeMaxUrlsPerFile) },
         ]}
       />
       {generation.invalidLines.length ? (
@@ -3175,11 +4105,27 @@ function XmlSitemapGeneratorTool() {
           </ul>
         </div>
       ) : null}
+      {generation.files.length > 1 ? (
+        <div className="mini-panel">
+          <h3>Generated files</h3>
+          <ul className="plain-list">
+            <li>
+              <code>sitemap-index.xml</code> (references {generation.files.length} sitemap files)
+            </li>
+            {generation.files.map((file) => (
+              <li key={file.name}>
+                <code>{file.name}</code> ({formatNumericValue(file.entries.length)} URL{file.entries.length === 1 ? "" : "s"})
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <label className="field">
-        <span>Generated sitemap.xml</span>
+        <span>Generated {generation.primaryFileName}</span>
         <textarea value={generation.xml} readOnly rows={12} />
       </label>
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -3191,11 +4137,14 @@ function RobotsTxtGeneratorTool() {
   const [crawlDelay, setCrawlDelay] = useState("");
   const [host, setHost] = useState("utiliora.com");
   const [sitemaps, setSitemaps] = useState("https://utiliora.com/sitemap.xml");
+  const [customDirectives, setCustomDirectives] = useState("");
+  const [testPath, setTestPath] = useState("/private/dashboard");
   const [status, setStatus] = useState("");
+  const customDirectiveLines = useMemo(() => splitNonEmptyLines(customDirectives), [customDirectives]);
 
   const output = useMemo(() => {
     const crawlDelayValue = Number.parseInt(crawlDelay, 10);
-    return generateRobotsTxt({
+    const generated = generateRobotsTxt({
       userAgent,
       allowPaths: splitNonEmptyLines(allowPaths),
       disallowPaths: splitNonEmptyLines(disallowPaths),
@@ -3203,7 +4152,32 @@ function RobotsTxtGeneratorTool() {
       host,
       sitemapUrls: splitNonEmptyLines(sitemaps),
     });
-  }, [allowPaths, crawlDelay, disallowPaths, host, sitemaps, userAgent]);
+    if (!customDirectiveLines.length) return generated;
+    return `${generated}\n${customDirectiveLines.join("\n")}`;
+  }, [allowPaths, crawlDelay, customDirectiveLines, disallowPaths, host, sitemaps, userAgent]);
+
+  const pathTestResult = useMemo(
+    () => evaluateRobotsPathDecision(testPath, splitNonEmptyLines(allowPaths), splitNonEmptyLines(disallowPaths)),
+    [allowPaths, disallowPaths, testPath],
+  );
+
+  const handleUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      const parsed = parseRobotsTxtInput(raw);
+      setUserAgent(parsed.userAgent || "*");
+      setAllowPaths(parsed.allowPaths.length ? parsed.allowPaths.join("\n") : "/");
+      setDisallowPaths(parsed.disallowPaths.join("\n"));
+      setCrawlDelay(parsed.crawlDelay);
+      setHost(parsed.host);
+      setSitemaps(parsed.sitemaps.join("\n"));
+      setCustomDirectives(parsed.customDirectives.join("\n"));
+      setStatus(`Imported robots directives from ${file.name}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import robots.txt file.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -3240,6 +4214,25 @@ function RobotsTxtGeneratorTool() {
         <span>Sitemap URLs (one per line)</span>
         <textarea value={sitemaps} onChange={(event) => setSitemaps(event.target.value)} rows={3} />
       </label>
+      <label className="field">
+        <span>Custom directives (optional, one per line)</span>
+        <textarea value={customDirectives} onChange={(event) => setCustomDirectives(event.target.value)} rows={3} />
+      </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Import robots.txt file</span>
+          <input type="file" accept=".txt,.robots" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Test path against rules</span>
+          <input type="text" value={testPath} onChange={(event) => setTestPath(event.target.value)} placeholder="/private/dashboard" />
+          <small className="supporting-text">
+            Decision: {pathTestResult.decision}
+            {pathTestResult.matchedDisallow ? ` | Disallow: ${pathTestResult.matchedDisallow}` : ""}
+            {pathTestResult.matchedAllow ? ` | Allow: ${pathTestResult.matchedAllow}` : ""}
+          </small>
+        </label>
+      </div>
       <div className="button-row">
         <button
           className="action-button secondary"
@@ -3275,6 +4268,8 @@ function RobotsTxtGeneratorTool() {
           { label: "Allow rules", value: splitNonEmptyLines(allowPaths).length.toString() },
           { label: "Disallow rules", value: splitNonEmptyLines(disallowPaths).length.toString() },
           { label: "Sitemap lines", value: splitNonEmptyLines(sitemaps).length.toString() },
+          { label: "Custom directives", value: formatNumericValue(customDirectiveLines.length) },
+          { label: "Path test result", value: pathTestResult.decision },
         ]}
       />
       <label className="field">
@@ -3315,6 +4310,59 @@ const REQUIRED_SCHEMA_FIELDS: Record<string, string[]> = {
   Recipe: ["name", "recipeIngredient", "recipeInstructions"],
   BreadcrumbList: ["itemListElement"],
 };
+
+const STRUCTURED_DATA_TEMPLATES: Array<{ label: string; value: string; payload: string }> = [
+  {
+    label: "Article",
+    value: "article",
+    payload: `{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Your article headline",
+  "datePublished": "2026-02-25",
+  "author": {
+    "@type": "Person",
+    "name": "Author name"
+  },
+  "url": "https://example.com/blog/article"
+}`,
+  },
+  {
+    label: "Product",
+    value: "product",
+    payload: `{
+  "@context": "https://schema.org",
+  "@type": "Product",
+  "name": "Product name",
+  "description": "Clear product description",
+  "image": "https://example.com/images/product.jpg",
+  "offers": {
+    "@type": "Offer",
+    "priceCurrency": "USD",
+    "price": "49.99",
+    "availability": "https://schema.org/InStock"
+  }
+}`,
+  },
+  {
+    label: "FAQPage",
+    value: "faq",
+    payload: `{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Question one?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Answer one."
+      }
+    }
+  ]
+}`,
+  },
+];
 
 function extractJsonLdSegments(input: string): string[] {
   const trimmed = input.trim();
@@ -3482,13 +4530,62 @@ function StructuredDataValidatorTool() {
   },
   "url": "https://utiliora.com/blog/seo-toolkit"
 }`);
+  const [template, setTemplate] = useState("custom");
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
   const analysis = useMemo(() => analyzeStructuredDataInput(input), [input]);
 
   const mergedPrettyOutput = useMemo(
     () => analysis.blocks.map((block) => block.pretty).join("\n\n"),
     [analysis.blocks],
   );
+
+  const autofixCommonIssues = useCallback(() => {
+    const segments = extractJsonLdSegments(input);
+    if (!segments.length) {
+      setStatus("No JSON-LD blocks found to auto-fix.");
+      return;
+    }
+    const nextBlocks: string[] = [];
+    for (const segment of segments) {
+      try {
+        const parsed = JSON.parse(segment) as Record<string, unknown>;
+        if (!parsed["@context"]) {
+          parsed["@context"] = "https://schema.org";
+        }
+        if (!parsed["@type"]) {
+          parsed["@type"] = "Thing";
+        }
+        nextBlocks.push(JSON.stringify(parsed, null, 2));
+      } catch {
+        nextBlocks.push(segment);
+      }
+    }
+    setInput(nextBlocks.join("\n\n---\n\n"));
+    setStatus("Applied auto-fix for missing @context/@type where possible.");
+  }, [input]);
+
+  const handleUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      const extension = getFileExtension(file.name);
+      if (extension === "html" || extension === "htm") {
+        const scripts = extractJsonLdSegments(raw);
+        if (!scripts.length) {
+          setStatus("No JSON-LD script blocks found in uploaded HTML.");
+          return;
+        }
+        setInput(scripts.join("\n\n---\n\n"));
+        setStatus(`Imported ${formatNumericValue(scripts.length)} JSON-LD block(s) from ${file.name}.`);
+      } else {
+        setInput(normalizeUploadedText(raw));
+        setStatus(`Imported structured data from ${file.name}.`);
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import structured data file.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -3497,11 +4594,42 @@ function StructuredDataValidatorTool() {
         title="Structured data validator"
         subtitle="Validate JSON-LD schema blocks, detect issues, and export clean markup for SEO pages."
       />
+      <div className="field-grid">
+        <label className="field">
+          <span>Template starter</span>
+          <select
+            value={template}
+            onChange={(event) => {
+              const value = event.target.value;
+              setTemplate(value);
+              const selected = STRUCTURED_DATA_TEMPLATES.find((entry) => entry.value === value);
+              if (selected) {
+                setInput(selected.payload);
+                setStatus(`Loaded ${selected.label} template.`);
+              }
+            }}
+          >
+            <option value="custom">Custom / keep current</option>
+            {STRUCTURED_DATA_TEMPLATES.map((entry) => (
+              <option key={entry.value} value={entry.value}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Import JSON-LD / HTML file</span>
+          <input type="file" accept=".json,.jsonld,.txt,.html,.htm" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+      </div>
       <label className="field">
         <span>JSON-LD or script tags</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={12} />
       </label>
       <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={autofixCommonIssues}>
+          Auto-fix basic issues
+        </button>
         <button
           className="action-button secondary"
           type="button"
@@ -3568,6 +4696,7 @@ function StructuredDataValidatorTool() {
         <p className="supporting-text">Paste JSON-LD to begin validation.</p>
       )}
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -3577,17 +4706,50 @@ interface LinkMapEntry {
   resolvedUrl: string;
   anchorText: string;
   internal: boolean;
+  rel: string;
+  nofollow: boolean;
+  target: string;
+  hasAnchorText: boolean;
 }
 
-function extractAnchorLinksFromHtml(html: string): Array<{ href: string; anchorText: string }> {
-  const matches = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
-  return matches.map((match) => ({
-    href: (match[1] ?? "").trim(),
-    anchorText: (match[2] ?? "")
-      .replace(/<[^>]*>/g, " ")
+function extractAnchorLinksFromHtml(html: string): Array<{ href: string; anchorText: string; rel: string; target: string }> {
+  if (typeof DOMParser !== "undefined") {
+    const parser = new DOMParser();
+    const documentNode = parser.parseFromString(html, "text/html");
+    return Array.from(documentNode.querySelectorAll("a[href]")).map((anchor) => ({
+      href: (anchor.getAttribute("href") ?? "").trim(),
+      anchorText: (anchor.textContent ?? "").replace(/\s+/g, " ").trim(),
+      rel: (anchor.getAttribute("rel") ?? "").toLowerCase().trim(),
+      target: (anchor.getAttribute("target") ?? "").trim(),
+    }));
+  }
+
+  const getAttribute = (attributes: string, attributeName: string): string => {
+    const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const quoted = new RegExp(`${escapedName}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i").exec(attributes);
+    if (quoted) {
+      return (quoted[2] ?? quoted[3] ?? "").trim();
+    }
+    const bare = new RegExp(`${escapedName}\\s*=\\s*([^\\s"'>]+)`, "i").exec(attributes);
+    return (bare?.[1] ?? "").trim();
+  };
+
+  return [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map((match) => {
+    const attributes = match[1] ?? "";
+    const href = getAttribute(attributes, "href");
+    const rel = getAttribute(attributes, "rel").toLowerCase();
+    const target = getAttribute(attributes, "target");
+    const anchorText = decodeBasicHtmlEntities(stripTagsFromMarkup(match[2] ?? ""))
       .replace(/\s+/g, " ")
-      .trim(),
-  }));
+      .trim();
+
+    return {
+      href,
+      anchorText,
+      rel,
+      target,
+    };
+  });
 }
 
 function InternalLinkMapHelperTool() {
@@ -3603,6 +4765,8 @@ function InternalLinkMapHelperTool() {
         invalid: [] as string[],
         internalCount: 0,
         externalCount: 0,
+        nofollowCount: 0,
+        missingAnchorTextCount: 0,
       };
     }
 
@@ -3629,11 +4793,19 @@ function InternalLinkMapHelperTool() {
         }
         const resolvedUrl = resolved.toString();
         const internal = base ? resolved.hostname === base.hostname : false;
+        const relTokens = link.rel
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean);
         entries.push({
           href,
           resolvedUrl,
           anchorText: link.anchorText || "(no anchor text)",
           internal,
+          rel: link.rel,
+          nofollow: relTokens.includes("nofollow"),
+          target: link.target,
+          hasAnchorText: Boolean(link.anchorText.trim()),
         });
       } catch {
         invalid.push(href);
@@ -3645,6 +4817,8 @@ function InternalLinkMapHelperTool() {
       invalid,
       internalCount: entries.filter((entry) => entry.internal).length,
       externalCount: entries.filter((entry) => !entry.internal).length,
+      nofollowCount: entries.filter((entry) => entry.nofollow).length,
+      missingAnchorTextCount: entries.filter((entry) => !entry.hasAnchorText).length,
     };
   }, [html, sourceUrl]);
 
@@ -3663,6 +4837,18 @@ function InternalLinkMapHelperTool() {
       .sort((a, b) => b.count - a.count);
   }, [analysis.entries]);
 
+  const handleUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      setHtml(normalizeUploadedText(raw));
+      setStatus(`Loaded HTML from ${file.name}.`);
+      trackEvent("tool_internal_link_map_upload", { extension: getFileExtension(file.name) || "unknown" });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not read uploaded HTML file.");
+    }
+  }, []);
+
   return (
     <section className="tool-surface">
       <ToolHeading
@@ -3677,6 +4863,10 @@ function InternalLinkMapHelperTool() {
       <label className="field">
         <span>Page HTML snippet</span>
         <textarea value={html} onChange={(event) => setHtml(event.target.value)} rows={10} />
+      </label>
+      <label className="field">
+        <span>Upload HTML file</span>
+        <input type="file" accept=".html,.htm,.txt" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
       </label>
       <div className="button-row">
         <button
@@ -3715,6 +4905,8 @@ function InternalLinkMapHelperTool() {
           { label: "Total links", value: formatNumericValue(analysis.entries.length + analysis.invalid.length) },
           { label: "Internal links", value: formatNumericValue(analysis.internalCount) },
           { label: "External links", value: formatNumericValue(analysis.externalCount) },
+          { label: "Nofollow links", value: formatNumericValue(analysis.nofollowCount) },
+          { label: "Missing anchor text", value: formatNumericValue(analysis.missingAnchorTextCount) },
           { label: "Invalid/skipped", value: formatNumericValue(analysis.invalid.length) },
         ]}
       />
@@ -3733,6 +4925,22 @@ function InternalLinkMapHelperTool() {
       ) : (
         <p className="supporting-text">No internal links detected yet.</p>
       )}
+      {analysis.entries.some((entry) => entry.nofollow) ? (
+        <div className="mini-panel">
+          <h3>Nofollow links</h3>
+          <ul className="plain-list">
+            {analysis.entries
+              .filter((entry) => entry.nofollow)
+              .slice(0, 12)
+              .map((entry, index) => (
+                <li key={`${entry.resolvedUrl}-${index}`}>
+                  <code>{entry.resolvedUrl}</code>
+                  {entry.anchorText ? ` | Anchor: ${entry.anchorText}` : ""}
+                </li>
+              ))}
+          </ul>
+        </div>
+      ) : null}
       {analysis.invalid.length ? (
         <div className="mini-panel">
           <h3>Invalid or skipped links</h3>
@@ -3763,6 +4971,7 @@ function JsonFormatterTool() {
     }),
   );
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
 
   const format = () =>
     setResult(
@@ -3772,6 +4981,17 @@ function JsonFormatterTool() {
         indent,
       }),
     );
+
+  const handleUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      setInput(normalizeUploadedText(raw));
+      setStatus(`Loaded ${file.name}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not read JSON file.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -3812,6 +5032,10 @@ function JsonFormatterTool() {
             disabled={minifyOutput}
           />
         </label>
+        <label className="field">
+          <span>Upload JSON file</span>
+          <input type="file" accept=".json,.jsonld,.txt" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
       </div>
       <div className="button-row">
         <button className="action-button" type="button" onClick={format}>
@@ -3849,6 +5073,7 @@ function JsonFormatterTool() {
         <textarea value={result.ok ? result.output : result.error ?? result.output} readOnly rows={10} />
       </label>
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -3860,6 +5085,7 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
   const [output, setOutput] = useState(() => (mode === "css" ? minifyCss(input) : minifyJs(input)));
   const [autoMinify, setAutoMinify] = useState(true);
   const [copyStatus, setCopyStatus] = useState("");
+  const [status, setStatus] = useState("");
 
   useEffect(() => {
     if (!autoMinify) return;
@@ -3873,6 +5099,18 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
   const before = input.length;
   const after = output.length;
   const savings = before > 0 ? (((before - after) / before) * 100).toFixed(1) : "0";
+  const gzipEstimateBytes = Math.max(0, Math.round(after * 0.33));
+
+  const handleUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      setInput(normalizeUploadedText(raw));
+      setStatus(`Loaded ${file.name}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Unable to read code file.");
+    }
+  }, []);
 
   return (
     <section className="tool-surface">
@@ -3893,6 +5131,10 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
         />
         Auto minify while typing
       </label>
+      <label className="field">
+        <span>Upload {mode.toUpperCase()} file</span>
+        <input type="file" accept={mode === "css" ? ".css,.txt" : ".js,.mjs,.cjs,.txt"} onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+      </label>
       <div className="button-row">
         <button className="action-button" type="button" onClick={minify}>
           Minify now
@@ -3908,12 +5150,27 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
           <Copy size={15} />
           Copy output
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadTextFile(
+              mode === "css" ? "styles.min.css" : "script.min.js",
+              output,
+              "text/plain;charset=utf-8;",
+            )
+          }
+        >
+          <Download size={15} />
+          Download output
+        </button>
       </div>
       <ResultList
         rows={[
           { label: "Original size", value: `${before} chars` },
           { label: "Minified size", value: `${after} chars` },
           { label: "Reduction", value: `${savings}%` },
+          { label: "Estimated gzip size", value: `${formatBytes(gzipEstimateBytes)}` },
         ]}
       />
       <label className="field">
@@ -3921,6 +5178,7 @@ function MinifierTool({ mode }: { mode: "css" | "js" }) {
         <textarea value={output} readOnly rows={6} />
       </label>
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
@@ -3929,10 +5187,15 @@ function Base64Tool() {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
   const [urlSafe, setUrlSafe] = useState(false);
+  const [includeDataUrlPrefix, setIncludeDataUrlPrefix] = useState(false);
+  const [dataUrlMimeType, setDataUrlMimeType] = useState("text/plain");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [status, setStatus] = useState("");
   const [decodedFileUrl, setDecodedFileUrl] = useState("");
   const [decodedFileName, setDecodedFileName] = useState("decoded.bin");
   const decodedFileUrlRef = useRef("");
+  const inputBytes = useMemo(() => new TextEncoder().encode(input).length, [input]);
+  const outputBytes = useMemo(() => new TextEncoder().encode(output).length, [output]);
 
   useEffect(() => {
     return () => {
@@ -3948,12 +5211,18 @@ function Base64Tool() {
     return normalized + "=".repeat(4 - padding);
   };
 
+  const normalizePayload = (value: string) => {
+    const dataUrlMatch = value.match(/^data:[^;]+;base64,(.+)$/i);
+    return dataUrlMatch?.[1] ?? value;
+  };
+
   const encode = () => {
     try {
-      const encoded = btoa(unescape(encodeURIComponent(input)));
-      setOutput(urlSafe ? toUrlSafe(encoded) : encoded);
+      const encoded = btoa(unescape(encodeURIComponent(input.trim())));
+      const base = urlSafe ? toUrlSafe(encoded) : encoded;
+      setOutput(includeDataUrlPrefix ? `data:${dataUrlMimeType};base64,${base}` : base);
       setStatus("Encoded successfully.");
-      trackEvent("tool_base64_encode", { urlSafe });
+      trackEvent("tool_base64_encode", { urlSafe, includeDataUrlPrefix });
     } catch {
       setOutput("Unable to encode input.");
       setStatus("Encode failed.");
@@ -3962,7 +5231,8 @@ function Base64Tool() {
 
   const decode = () => {
     try {
-      const decoded = decodeURIComponent(escape(atob(urlSafe ? fromUrlSafe(input.trim()) : input.trim())));
+      const payload = normalizePayload(input.trim());
+      const decoded = decodeURIComponent(escape(atob(urlSafe ? fromUrlSafe(payload) : payload)));
       setOutput(decoded);
       setStatus("Decoded successfully.");
       trackEvent("tool_base64_decode", { urlSafe });
@@ -3977,7 +5247,7 @@ function Base64Tool() {
       const raw = input.trim();
       const dataUrlMatch = raw.match(/^data:([^;]+);base64,(.+)$/i);
       const mimeType = dataUrlMatch?.[1] ?? "application/octet-stream";
-      const payload = dataUrlMatch ? dataUrlMatch[2] : raw;
+      const payload = dataUrlMatch ? dataUrlMatch[2] : normalizePayload(raw);
       const decodedBinary = atob(urlSafe ? fromUrlSafe(payload) : payload);
       const buffer = new Uint8Array(decodedBinary.length);
       for (let index = 0; index < decodedBinary.length; index += 1) {
@@ -3995,13 +5265,30 @@ function Base64Tool() {
     }
   };
 
+  const handleTextUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        setInput((current) => mergeUploadedText(current, normalized, uploadMode));
+        setStatus(`Loaded text payload from ${file.name}.`);
+        trackEvent("tool_base64_upload_text", { extension: getFileExtension(file.name) || "unknown", mode: uploadMode });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not read uploaded text file.");
+      }
+    },
+    [uploadMode],
+  );
+
   const encodeFile = (file: File | null) => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       const result = String(reader.result ?? "");
-      setOutput(result);
+      setInput(uploadMode === "append" && input.trim() ? `${input.trimEnd()}\n${result}` : result);
       setStatus("File converted to Data URL Base64.");
+      trackEvent("tool_base64_upload_binary", { extension: getFileExtension(file.name) || "unknown" });
     };
     reader.onerror = () => {
       setStatus("Unable to read selected file.");
@@ -4024,6 +5311,27 @@ function Base64Tool() {
         />
         URL-safe mode (- and _ instead of + and /)
       </label>
+      <div className="field-grid">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={includeDataUrlPrefix}
+            onChange={(event) => setIncludeDataUrlPrefix(event.target.checked)}
+          />
+          Prefix encoded output as Data URL
+        </label>
+        <label className="field">
+          <span>Data URL MIME type</span>
+          <input type="text" value={dataUrlMimeType} onChange={(event) => setDataUrlMimeType(event.target.value || "text/plain")} />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace input</option>
+            <option value="append">Append input</option>
+          </select>
+        </label>
+      </div>
       <label className="field">
         <span>Input</span>
         <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={6} />
@@ -4049,11 +5357,49 @@ function Base64Tool() {
           <Copy size={15} />
           Copy output
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setInput(output);
+            setStatus("Output moved into input.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Use output as input
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile("base64-output.txt", output);
+            trackEvent("tool_base64_download", { outputBytes });
+          }}
+        >
+          <Download size={15} />
+          Download output
+        </button>
       </div>
+      <label className="field">
+        <span>Upload text payload</span>
+        <input
+          type="file"
+          accept=".txt,.md,.json,.csv,.xml,.html,.htm"
+          onChange={(event) => void handleTextUpload(event.target.files?.[0] ?? null)}
+        />
+      </label>
       <label className="field">
         <span>Encode file to Base64 Data URL</span>
         <input type="file" onChange={(event) => encodeFile(event.target.files?.[0] ?? null)} />
       </label>
+      <ResultList
+        rows={[
+          { label: "Input length", value: `${input.length} chars` },
+          { label: "Input bytes", value: formatBytes(inputBytes) },
+          { label: "Output length", value: `${output.length} chars` },
+          { label: "Output bytes", value: formatBytes(outputBytes) },
+        ]}
+      />
       <label className="field">
         <span>Output</span>
         <textarea value={output} readOnly rows={6} />
@@ -4070,31 +5416,75 @@ function Base64Tool() {
 
 function PasswordGeneratorTool() {
   const [length, setLength] = useState(16);
+  const [includeUppercase, setIncludeUppercase] = useState(true);
+  const [includeLowercase, setIncludeLowercase] = useState(true);
   const [includeNumbers, setIncludeNumbers] = useState(true);
   const [includeSymbols, setIncludeSymbols] = useState(true);
-  const [password, setPassword] = useState("");
+  const [excludeAmbiguous, setExcludeAmbiguous] = useState(true);
+  const [batchSize, setBatchSize] = useState(1);
+  const [passwords, setPasswords] = useState<string[]>([]);
+  const [status, setStatus] = useState("");
+
+  const pickRandomChar = (chars: string): string => {
+    if (!chars.length) return "";
+    const random = new Uint32Array(1);
+    crypto.getRandomValues(random);
+    return chars[random[0] % chars.length];
+  };
 
   const generate = () => {
-    const letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    const numbers = "23456789";
+    const uppercase = excludeAmbiguous ? "ABCDEFGHJKLMNPQRSTUVWXYZ" : "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lowercase = excludeAmbiguous ? "abcdefghijkmnopqrstuvwxyz" : "abcdefghijklmnopqrstuvwxyz";
+    const numbers = excludeAmbiguous ? "23456789" : "0123456789";
     const symbols = "!@#$%^&*()_+-=?.";
-    let chars = letters;
-    if (includeNumbers) chars += numbers;
-    if (includeSymbols) chars += symbols;
-    const chosenLength = Math.min(64, Math.max(8, length));
-    let result = "";
-    const randomValues = new Uint32Array(chosenLength);
-    crypto.getRandomValues(randomValues);
-    for (let index = 0; index < chosenLength; index += 1) {
-      result += chars[randomValues[index] % chars.length];
+    const sets: string[] = [];
+    if (includeUppercase) sets.push(uppercase);
+    if (includeLowercase) sets.push(lowercase);
+    if (includeNumbers) sets.push(numbers);
+    if (includeSymbols) sets.push(symbols);
+
+    if (!sets.length) {
+      setStatus("Enable at least one character set.");
+      return;
     }
-    setPassword(result);
-    trackEvent("tool_generate_password", { length: chosenLength });
+
+    const chosenLength = Math.min(64, Math.max(8, length));
+    const chosenBatchSize = Math.min(20, Math.max(1, batchSize));
+    const allChars = sets.join("");
+    const generated = Array.from({ length: chosenBatchSize }, () => {
+      const requiredChars = sets.map((set) => pickRandomChar(set));
+      const resultChars = [...requiredChars];
+      while (resultChars.length < chosenLength) {
+        resultChars.push(pickRandomChar(allChars));
+      }
+      for (let index = resultChars.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [resultChars[index], resultChars[swapIndex]] = [resultChars[swapIndex], resultChars[index]];
+      }
+      return resultChars.join("");
+    });
+
+    setPasswords(generated);
+    setStatus(`Generated ${generated.length} password${generated.length === 1 ? "" : "s"}.`);
+    trackEvent("tool_generate_password", { length: chosenLength, batchSize: chosenBatchSize, sets: sets.length });
   };
+
+  const charsetSize =
+    (includeUppercase ? (excludeAmbiguous ? 24 : 26) : 0) +
+    (includeLowercase ? (excludeAmbiguous ? 24 : 26) : 0) +
+    (includeNumbers ? (excludeAmbiguous ? 8 : 10) : 0) +
+    (includeSymbols ? 15 : 0);
+  const entropyBits = charsetSize > 0 ? Math.log2(charsetSize) * Math.min(64, Math.max(8, length)) : 0;
+  const strengthScore = Math.round(clampScore((entropyBits / 120) * 100, 0, 100));
+  const strengthLabel = strengthScore >= 80 ? "Very strong" : strengthScore >= 60 ? "Strong" : strengthScore >= 40 ? "Fair" : "Weak";
 
   return (
     <section className="tool-surface">
-      <h2>Password generator</h2>
+      <ToolHeading
+        icon={Sparkles}
+        title="Password generator"
+        subtitle="Create high-entropy single or batch passwords with tuned character rules."
+      />
       <div className="field-grid">
         <label className="field">
           <span>Length</span>
@@ -4105,6 +5495,32 @@ function PasswordGeneratorTool() {
             value={length}
             onChange={(event) => setLength(Number(event.target.value))}
           />
+        </label>
+        <label className="field">
+          <span>Batch size</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={batchSize}
+            onChange={(event) => setBatchSize(Number(event.target.value))}
+          />
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={includeUppercase}
+            onChange={(event) => setIncludeUppercase(event.target.checked)}
+          />
+          Include uppercase
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={includeLowercase}
+            onChange={(event) => setIncludeLowercase(event.target.checked)}
+          />
+          Include lowercase
         </label>
         <label className="checkbox">
           <input
@@ -4122,46 +5538,186 @@ function PasswordGeneratorTool() {
           />
           Include symbols
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={excludeAmbiguous}
+            onChange={(event) => setExcludeAmbiguous(event.target.checked)}
+          />
+          Exclude ambiguous chars (O/0/l/1)
+        </label>
       </div>
-      <button className="action-button" type="button" onClick={generate}>
-        Generate password
-      </button>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generate}>
+          Generate password
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const first = passwords[0] ?? "";
+            const ok = await copyTextToClipboard(first);
+            setStatus(ok ? "Primary password copied." : "Generate a password first.");
+          }}
+        >
+          <Copy size={15} />
+          Copy first
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(passwords.join("\n"));
+            setStatus(ok ? "All passwords copied." : "Generate passwords first.");
+          }}
+        >
+          <Copy size={15} />
+          Copy all
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("generated-passwords.txt", passwords.join("\n"))}
+        >
+          <Download size={15} />
+          Download
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Charset size", value: formatNumericValue(charsetSize) },
+          { label: "Estimated entropy", value: `${entropyBits.toFixed(1)} bits` },
+          { label: "Strength score", value: `${strengthScore}/100 (${strengthLabel})` },
+          { label: "Generated", value: `${passwords.length}` },
+        ]}
+      />
       <label className="field">
-        <span>Password</span>
-        <input type="text" value={password} readOnly />
+        <span>Primary password</span>
+        <input type="text" value={passwords[0] ?? ""} readOnly />
       </label>
+      {passwords.length > 1 ? (
+        <div className="mini-panel">
+          <h3>Batch output</h3>
+          <ul className="plain-list">
+            {passwords.map((value, index) => (
+              <li key={`${value}-${index}`}>
+                {index + 1}. <code>{value}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
 }
 
 function LoremIpsumTool() {
   const [paragraphs, setParagraphs] = useState(3);
+  const [format, setFormat] = useState<"plain" | "html" | "markdown-list">("plain");
+  const [status, setStatus] = useState("");
   const [output, setOutput] = useState(generateLoremIpsum(3));
 
-  const generate = () => setOutput(generateLoremIpsum(paragraphs));
+  const applyFormat = (raw: string, selectedFormat: "plain" | "html" | "markdown-list"): string => {
+    const blocks = raw
+      .split(/\n\s*\n/)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (!blocks.length) {
+      return "";
+    }
+    if (selectedFormat === "html") {
+      return blocks.map((segment) => `<p>${segment}</p>`).join("\n");
+    }
+    if (selectedFormat === "markdown-list") {
+      return blocks.map((segment) => `- ${segment}`).join("\n");
+    }
+    return blocks.join("\n\n");
+  };
+
+  const generate = useCallback(() => {
+    const chosenParagraphs = Math.min(20, Math.max(1, paragraphs));
+    const raw = generateLoremIpsum(chosenParagraphs);
+    setOutput(applyFormat(raw, format));
+    setStatus(`Generated ${chosenParagraphs} paragraph${chosenParagraphs === 1 ? "" : "s"} in ${format} format.`);
+    trackEvent("tool_lorem_generate", { paragraphs: chosenParagraphs, format });
+  }, [format, paragraphs]);
 
   return (
     <section className="tool-surface">
-      <h2>Lorem Ipsum generator</h2>
-      <label className="field">
-        <span>Paragraphs</span>
-        <input
-          type="number"
-          min={1}
-          max={20}
-          value={paragraphs}
-          onChange={(event) => setParagraphs(Number(event.target.value))}
-        />
-      </label>
-      <button className="action-button" type="button" onClick={generate}>
-        Generate text
-      </button>
+      <ToolHeading
+        icon={FileText}
+        title="Lorem Ipsum generator"
+        subtitle="Generate placeholder copy in plain text, HTML paragraph, or markdown-list formats."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Paragraphs</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={paragraphs}
+            onChange={(event) => setParagraphs(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>Output format</span>
+          <select value={format} onChange={(event) => setFormat(event.target.value as typeof format)}>
+            <option value="plain">Plain text</option>
+            <option value="html">HTML paragraphs</option>
+            <option value="markdown-list">Markdown list</option>
+          </select>
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generate}>
+          Generate text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(output);
+            setStatus(ok ? "Output copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy output
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile(format === "html" ? "lorem-ipsum.html" : "lorem-ipsum.txt", output)}
+        >
+          <Download size={15} />
+          Download
+        </button>
+      </div>
+      <ResultList
+        rows={[
+          { label: "Paragraphs", value: formatNumericValue(paragraphs) },
+          { label: "Words", value: formatNumericValue(countWords(output)) },
+          { label: "Characters", value: formatNumericValue(output.length) },
+          { label: "Format", value: format },
+        ]}
+      />
       <label className="field">
         <span>Output</span>
         <textarea value={output} rows={10} readOnly />
       </label>
+      {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
+}
+
+type AiDetectorProfile = "balanced" | "strict" | "lenient";
+
+interface AiSentenceRiskRow {
+  index: number;
+  risk: number;
+  sentence: string;
+  reasons: string[];
 }
 
 interface AiDetectorReport {
@@ -4169,15 +5725,55 @@ interface AiDetectorReport {
   confidence: number;
   verdict: string;
   verdictTone: "ok" | "info" | "warn" | "bad";
+  profile: AiDetectorProfile;
   wordCount: number;
   sentenceCount: number;
   lexicalDiversity: number;
   burstiness: number;
+  averageSentenceLength: number;
+  sentenceStdDev: number;
   repeatedPhraseCoverage: number;
+  transitionDensity: number;
+  punctuationPerSentence: number;
+  stopWordRatio: number;
+  readingEase: number | null;
+  tokenEntropy: number;
   repeatedPhrases: Array<{ phrase: string; count: number }>;
+  sentenceRiskRows: AiSentenceRiskRow[];
   signals: string[];
   rewriteTips: string[];
 }
+
+const AI_TRANSITION_PATTERN =
+  /\b(however|moreover|therefore|furthermore|additionally|in conclusion|in summary|overall|thus|notably|finally)\b/gi;
+const AI_COMMON_WORDS = new Set([
+  "a",
+  "about",
+  "after",
+  "all",
+  "also",
+  "an",
+  "and",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "if",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "to",
+  "was",
+  "were",
+  "with",
+]);
 
 function tokenizeAiWords(value: string): string[] {
   return value.toLowerCase().match(/[a-z0-9']+/g) ?? [];
@@ -4194,7 +5790,38 @@ function clampScore(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function buildAiDetectorReport(value: string): AiDetectorReport | null {
+function estimateSyllables(word: string): number {
+  const normalized = word
+    .toLowerCase()
+    .replace(/[^a-z]/g, "")
+    .replace(/(?:es|ed|e)$/g, "");
+  if (!normalized) return 1;
+  const matches = normalized.match(/[aeiouy]{1,2}/g);
+  return Math.max(1, matches?.length ?? 1);
+}
+
+function estimateFleschReadingEase(words: string[], sentenceCount: number): number | null {
+  if (!words.length || sentenceCount <= 0) return null;
+  const syllableCount = words.reduce((sum, word) => sum + estimateSyllables(word), 0);
+  const score = 206.835 - 1.015 * (words.length / sentenceCount) - 84.6 * (syllableCount / words.length);
+  return Number.isFinite(score) ? Number(score.toFixed(1)) : null;
+}
+
+function calculateTokenEntropy(words: string[]): number {
+  if (!words.length) return 0;
+  const frequencies = new Map<string, number>();
+  words.forEach((word) => {
+    frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
+  });
+  let entropy = 0;
+  frequencies.forEach((count) => {
+    const p = count / words.length;
+    entropy -= p * Math.log2(p);
+  });
+  return Number(entropy.toFixed(3));
+}
+
+function buildAiDetectorReport(value: string, profile: AiDetectorProfile): AiDetectorReport | null {
   const text = value.trim();
   if (!text) return null;
 
@@ -4228,19 +5855,19 @@ function buildAiDetectorReport(value: string): AiDetectorReport | null {
   const repeatedPhrases = [...phraseCounts.entries()]
     .filter((entry) => entry[1] > 1)
     .sort((left, right) => right[1] - left[1])
-    .slice(0, 6)
+    .slice(0, 8)
     .map(([phrase, count]) => ({ phrase, count }));
 
   const repeatedPhraseCoverage =
     repeatedPhrases.reduce((sum, entry) => sum + entry.count * 3, 0) / Math.max(1, wordCount);
 
-  const transitionMatches =
-    text.match(
-      /\b(however|moreover|therefore|furthermore|additionally|in conclusion|in summary|overall|thus|notably|finally)\b/gi,
-    ) ?? [];
+  const transitionMatches = text.match(AI_TRANSITION_PATTERN) ?? [];
   const transitionDensity = transitionMatches.length / sentenceCount;
   const punctuationMarks = (text.match(/[,:;!?]/g) ?? []).length;
   const punctuationPerSentence = punctuationMarks / sentenceCount;
+  const stopWordRatio = words.filter((word) => AI_COMMON_WORDS.has(word)).length / wordCount;
+  const readingEase = estimateFleschReadingEase(words, sentenceCount);
+  const tokenEntropy = calculateTokenEntropy(words);
 
   let risk = 35;
   if (lexicalDiversity < 0.35) risk += 22;
@@ -4257,14 +5884,68 @@ function buildAiDetectorReport(value: string): AiDetectorReport | null {
   if (transitionDensity > 0.6) risk += 10;
   if (punctuationPerSentence < 0.45) risk += 6;
   if (wordCount < 120) risk += 6;
+  if (stopWordRatio > 0.6 && lexicalDiversity < 0.4) risk += 6;
+  if (tokenEntropy < 4) risk += 8;
+
+  if (profile === "strict") risk += 7;
+  if (profile === "lenient") risk -= 7;
 
   const riskScore = clampScore(Math.round(risk), 2, 98);
+
+  const repeatedPhraseSet = new Set(repeatedPhrases.map((entry) => entry.phrase));
+  const sentenceRiskRows = sentences
+    .map((sentence, index): AiSentenceRiskRow | null => {
+      const sentenceWords = tokenizeAiWords(sentence);
+      if (!sentenceWords.length) return null;
+      const sentenceText = sentence.toLowerCase();
+      const sentenceLexicalDiversity = new Set(sentenceWords).size / sentenceWords.length;
+      const reasons: string[] = [];
+      let sentenceRisk = 0;
+
+      if (sentenceWords.length >= 8 && sentenceWords.length <= 22) {
+        sentenceRisk += 12;
+        reasons.push("Mid-length sentence pattern");
+      }
+      if (sentenceWords.length > 30) {
+        sentenceRisk += 10;
+        reasons.push("Long sentence complexity");
+      }
+      if (sentenceLexicalDiversity < 0.65 && sentenceWords.length >= 10) {
+        sentenceRisk += 12;
+        reasons.push("Low lexical variation");
+      }
+      if (/^(however|moreover|therefore|furthermore|additionally|overall|thus)\b/.test(sentenceText)) {
+        sentenceRisk += 18;
+        reasons.push("Formulaic transition opening");
+      }
+      if (repeatedPhraseSet.size && [...repeatedPhraseSet].some((phrase) => sentenceText.includes(phrase))) {
+        sentenceRisk += 16;
+        reasons.push("Contains repeated 3-word phrase");
+      }
+      if (!/[,:;!?]/.test(sentence) && sentenceWords.length > 15) {
+        sentenceRisk += 8;
+        reasons.push("Low punctuation variation");
+      }
+
+      if (!reasons.length) return null;
+      return {
+        index: index + 1,
+        risk: clampScore(Math.round(sentenceRisk), 1, 99),
+        sentence,
+        reasons,
+      };
+    })
+    .filter((row): row is AiSentenceRiskRow => Boolean(row))
+    .sort((left, right) => right.risk - left.risk)
+    .slice(0, 12);
 
   const signals: string[] = [];
   if (lexicalDiversity < 0.38) signals.push("Low lexical diversity");
   if (burstiness < 0.35) signals.push("Very uniform sentence lengths");
   if (repeatedPhraseCoverage > 0.1) signals.push("Repeated phrase patterns");
   if (transitionDensity > 0.6) signals.push("High transition-word density");
+  if (tokenEntropy < 4) signals.push("Low token entropy across vocabulary");
+  if (stopWordRatio > 0.6) signals.push("High common-word ratio");
   if (wordCount < 120) signals.push("Short sample reduces reliability");
   if (!signals.length) signals.push("Mixed signals");
 
@@ -4273,6 +5954,7 @@ function buildAiDetectorReport(value: string): AiDetectorReport | null {
   if (repeatedPhraseCoverage > 0.1) rewriteTips.push("Replace repeated 3-word phrases with varied wording.");
   if (lexicalDiversity < 0.4) rewriteTips.push("Use more specific vocabulary and concrete details.");
   if (transitionDensity > 0.6) rewriteTips.push("Reduce formulaic connectors and use direct transitions.");
+  if (tokenEntropy < 4) rewriteTips.push("Introduce domain-specific terminology to widen lexical distribution.");
   if (!rewriteTips.length) rewriteTips.push("Add personal examples and domain-specific references.");
 
   const confidenceLengthFactor = Math.min(1, wordCount / 500);
@@ -4304,12 +5986,21 @@ function buildAiDetectorReport(value: string): AiDetectorReport | null {
     confidence,
     verdict,
     verdictTone,
+    profile,
     wordCount,
     sentenceCount,
     lexicalDiversity,
     burstiness,
+    averageSentenceLength,
+    sentenceStdDev,
     repeatedPhraseCoverage,
+    transitionDensity,
+    punctuationPerSentence,
+    stopWordRatio,
+    readingEase,
+    tokenEntropy,
     repeatedPhrases,
+    sentenceRiskRows,
     signals,
     rewriteTips,
   };
@@ -4317,11 +6008,14 @@ function buildAiDetectorReport(value: string): AiDetectorReport | null {
 
 function AiDetectorTool() {
   const [text, setText] = useState("");
+  const [profile, setProfile] = useState<AiDetectorProfile>("balanced");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
   const [report, setReport] = useState<AiDetectorReport | null>(null);
   const [status, setStatus] = useState("Paste text and run analysis.");
 
   const runAnalysis = useCallback(() => {
-    const nextReport = buildAiDetectorReport(text);
+    const nextReport = buildAiDetectorReport(text, profile);
     if (!nextReport) {
       setReport(null);
       setStatus("Enter enough text to analyze (at least a short paragraph).");
@@ -4333,16 +6027,77 @@ function AiDetectorTool() {
       words: nextReport.wordCount,
       riskScore: nextReport.riskScore,
       confidence: nextReport.confidence,
+      profile,
     });
-  }, [text]);
+  }, [profile, text]);
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const shouldExtractHtml = convertHtmlUploadToText && (extension === "html" || extension === "htm");
+        const imported = shouldExtractHtml ? extractPlainTextFromHtml(raw) : normalizeUploadedText(raw);
+        const merged = mergeUploadedText(text, imported, uploadMode);
+        setText(merged);
+        setStatus(`Imported ${file.name} (${formatNumericValue(countWords(imported))} words).`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import text file.");
+      }
+    },
+    [convertHtmlUploadToText, text, uploadMode],
+  );
+
+  const summary = report
+    ? [
+        `Verdict: ${report.verdict}`,
+        `Risk score: ${report.riskScore}/100`,
+        `Confidence: ${report.confidence}%`,
+        `Profile: ${report.profile}`,
+        `Words: ${report.wordCount} | Sentences: ${report.sentenceCount}`,
+        `Lexical diversity: ${(report.lexicalDiversity * 100).toFixed(1)}%`,
+        `Burstiness: ${report.burstiness.toFixed(2)}`,
+        `Token entropy: ${report.tokenEntropy.toFixed(3)}`,
+        `Signals: ${report.signals.join("; ")}`,
+        `Rewrite tips: ${report.rewriteTips.join("; ")}`,
+      ].join("\n")
+    : "";
 
   return (
     <section className="tool-surface">
       <ToolHeading
         icon={Sparkles}
         title="AI detector"
-        subtitle="Estimate AI-likeness with burstiness, repetition, and lexical variation signals."
+        subtitle="Run multi-signal AI-likeness analysis with profile modes, sentence diagnostics, and rewrite guidance."
       />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Detection profile</span>
+          <select value={profile} onChange={(event) => setProfile(event.target.value as AiDetectorProfile)}>
+            <option value="balanced">Balanced</option>
+            <option value="strict">Strict (higher sensitivity)</option>
+            <option value="lenient">Lenient (lower false positives)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace editor content</option>
+            <option value="append">Append imported text</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={convertHtmlUploadToText}
+          onChange={(event) => setConvertHtmlUploadToText(event.target.checked)}
+        />
+        Convert uploaded HTML files to plain text before analysis
+      </label>
 
       <label className="field">
         <span>Text to analyze</span>
@@ -4354,9 +6109,43 @@ function AiDetectorTool() {
         />
       </label>
 
+      <label className="field">
+        <span>Upload text / HTML / Markdown file</span>
+        <input type="file" accept=".txt,.md,.markdown,.html,.htm,.rtf" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+      </label>
+
       <div className="button-row">
         <button className="action-button" type="button" onClick={runAnalysis}>
           Analyze text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(summary);
+            setStatus(ok ? "Executive summary copied." : "Nothing to copy.");
+          }}
+          disabled={!report}
+        >
+          <Copy size={15} />
+          Copy summary
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            report
+              ? downloadTextFile(
+                  "ai-detector-report.json",
+                  JSON.stringify(report, null, 2),
+                  "application/json;charset=utf-8;",
+                )
+              : undefined
+          }
+          disabled={!report}
+        >
+          <Download size={15} />
+          Download JSON report
         </button>
         <button
           className="action-button secondary"
@@ -4391,11 +6180,17 @@ function AiDetectorTool() {
             rows={[
               { label: "Lexical diversity", value: `${(report.lexicalDiversity * 100).toFixed(1)}%` },
               { label: "Sentence burstiness", value: report.burstiness.toFixed(2) },
+              { label: "Average sentence length", value: report.averageSentenceLength.toFixed(1) },
+              { label: "Sentence std. dev.", value: report.sentenceStdDev.toFixed(2) },
               {
                 label: "Repeated phrase coverage",
                 value: `${(report.repeatedPhraseCoverage * 100).toFixed(1)}%`,
               },
-              { label: "Signals found", value: formatNumericValue(report.signals.length) },
+              { label: "Transition density", value: report.transitionDensity.toFixed(2) },
+              { label: "Punctuation / sentence", value: report.punctuationPerSentence.toFixed(2) },
+              { label: "Stop-word ratio", value: `${(report.stopWordRatio * 100).toFixed(1)}%` },
+              { label: "Token entropy", value: report.tokenEntropy.toFixed(3) },
+              { label: "Reading ease", value: report.readingEase != null ? report.readingEase.toFixed(1) : "N/A" },
             ]}
           />
 
@@ -4407,6 +6202,34 @@ function AiDetectorTool() {
               ))}
             </ul>
           </div>
+
+          {report.sentenceRiskRows.length ? (
+            <div className="mini-panel">
+              <h3>Highest-risk sentences</h3>
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Risk</th>
+                      <th>Sentence</th>
+                      <th>Reasons</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.sentenceRiskRows.map((entry) => (
+                      <tr key={`${entry.index}-${entry.risk}`}>
+                        <td>{entry.index}</td>
+                        <td>{entry.risk}</td>
+                        <td>{entry.sentence}</td>
+                        <td>{entry.reasons.join(", ")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
 
           {report.repeatedPhrases.length ? (
             <div className="mini-panel">
@@ -4583,6 +6406,7 @@ function PlagiarismCheckerTool() {
   const [candidateText, setCandidateText] = useState("");
   const [sourcesInput, setSourcesInput] = useState("");
   const [nGramSize, setNGramSize] = useState(6);
+  const [sourcesUploadMode, setSourcesUploadMode] = useState<TextUploadMergeMode>("append");
   const [report, setReport] = useState<PlagiarismReport | null>(null);
   const [status, setStatus] = useState("Paste a target text and one or more source texts.");
 
@@ -4624,6 +6448,52 @@ function PlagiarismCheckerTool() {
     });
   }, [candidateText, nGramSize, sourcesInput]);
 
+  const handleCandidateUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file);
+      const extension = getFileExtension(file.name);
+      const normalized =
+        extension === "html" || extension === "htm" ? extractPlainTextFromHtml(raw) : normalizeUploadedText(raw);
+      setCandidateText(normalized);
+      setStatus(`Loaded target text from ${file.name}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not load target file.");
+    }
+  }, []);
+
+  const handleSourcesUpload = useCallback(
+    async (files: FileList | null) => {
+      if (!files?.length) return;
+      try {
+        const chunks: string[] = [];
+        for (const file of Array.from(files)) {
+          const raw = await readTextFileWithLimit(file);
+          const extension = getFileExtension(file.name);
+          const normalized =
+            extension === "html" || extension === "htm" ? extractPlainTextFromHtml(raw) : normalizeUploadedText(raw);
+          if (normalized.trim()) {
+            chunks.push(normalized.trim());
+          }
+        }
+        if (!chunks.length) {
+          setStatus("No usable source text found in uploaded files.");
+          return;
+        }
+        const mergedSourceBlock = chunks.join("\n\n---\n\n");
+        const nextValue =
+          sourcesUploadMode === "replace" || !sourcesInput.trim()
+            ? mergedSourceBlock
+            : `${sourcesInput.trimEnd()}\n\n---\n\n${mergedSourceBlock}`;
+        setSourcesInput(nextValue);
+        setStatus(`Loaded ${formatNumericValue(chunks.length)} source file(s).`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load source files.");
+      }
+    },
+    [sourcesInput, sourcesUploadMode],
+  );
+
   return (
     <section className="tool-surface">
       <ToolHeading
@@ -4641,6 +6511,10 @@ function PlagiarismCheckerTool() {
           placeholder="Paste the text you want to check."
         />
       </label>
+      <label className="field">
+        <span>Upload target file</span>
+        <input type="file" accept=".txt,.md,.markdown,.html,.htm" onChange={(event) => void handleCandidateUpload(event.target.files?.[0] ?? null)} />
+      </label>
 
       <label className="field">
         <span>Source text(s)</span>
@@ -4654,6 +6528,19 @@ function PlagiarismCheckerTool() {
           Separate each source with a standalone line containing `---`.
         </small>
       </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload one or more source files</span>
+          <input type="file" multiple accept=".txt,.md,.markdown,.html,.htm" onChange={(event) => void handleSourcesUpload(event.target.files)} />
+        </label>
+        <label className="field">
+          <span>Source upload behavior</span>
+          <select value={sourcesUploadMode} onChange={(event) => setSourcesUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append uploaded sources</option>
+            <option value="replace">Replace existing sources</option>
+          </select>
+        </label>
+      </div>
 
       <div className="field-grid">
         <label className="field">
@@ -4687,6 +6574,30 @@ function PlagiarismCheckerTool() {
         >
           <Trash2 size={15} />
           Clear
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            report
+              ? downloadCsv(
+                  "plagiarism-report.csv",
+                  ["Source", "Words", "Similarity %", "Source Coverage %", "Overlap Count", "Sentence Matches"],
+                  report.results.map((result) => [
+                    result.sourceLabel,
+                    result.sourceWordCount.toString(),
+                    result.similarity.toFixed(2),
+                    result.sourceCoverage.toFixed(2),
+                    result.overlapCount.toString(),
+                    result.sentenceMatches.toString(),
+                  ]),
+                )
+              : undefined
+          }
+          disabled={!report}
+        >
+          <Download size={15} />
+          Download CSV
         </button>
       </div>
 
@@ -11233,6 +13144,9 @@ function normalizeDocumentText(value: string): string {
 }
 
 function extractTextFromHtmlMarkup(markup: string): string {
+  if (typeof DOMParser === "undefined") {
+    return normalizeDocumentText(decodeBasicHtmlEntities(stripTagsFromMarkup(markup)));
+  }
   const parser = new DOMParser();
   const documentNode = parser.parseFromString(markup, "text/html");
   const blockNodes = Array.from(documentNode.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,tr,blockquote,pre,div"));
