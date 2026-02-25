@@ -757,6 +757,17 @@ const developerTools: ToolDefinition[] = [
     faq: baseFaq("Timestamp Converter"),
   },
   {
+    slug: "time-zone-converter",
+    category: "developer-tools",
+    title: "Time Zone Converter",
+    summary: "Convert date and time between global time zones with offset and day-shift details.",
+    description:
+      "Plan cross-region work by converting one source timezone time into target timezone values, UTC, and global comparison slots.",
+    keywords: ["time zone converter", "timezone converter", "convert time zone", "world clock converter"],
+    engine: { kind: "developer-tool", id: "time-zone-converter" },
+    faq: baseFaq("Time Zone Converter"),
+  },
+  {
     slug: "markdown-to-html",
     category: "developer-tools",
     title: "Markdown to HTML",

@@ -4445,6 +4445,463 @@ function UrlEncoderDecoderTool() {
   );
 }
 
+interface TimeZoneOption {
+  value: string;
+  label: string;
+}
+
+const TIME_ZONE_PRIORITY = [
+  "UTC",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "Europe/London",
+  "Europe/Berlin",
+  "Africa/Lagos",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+];
+
+const TIME_ZONE_COMPARE_DEFAULTS = [
+  "UTC",
+  "America/New_York",
+  "Europe/London",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Australia/Sydney",
+];
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const zonePartsFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const zoneDisplayFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function isValidTimeZoneValue(value: string): boolean {
+  if (!value.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeTimeZoneValue(value: string, fallback = "UTC"): string {
+  const trimmed = value.trim();
+  return isValidTimeZoneValue(trimmed) ? trimmed : fallback;
+}
+
+function getZonePartsFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = zonePartsFormatterCache.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  zonePartsFormatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+function getZoneDisplayFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = zoneDisplayFormatterCache.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "short",
+  });
+  zoneDisplayFormatterCache.set(timeZone, formatter);
+  return formatter;
+}
+
+function getDatePartsInTimeZone(date: Date, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
+  const parts = getZonePartsFormatter(timeZone).formatToParts(date);
+  const map = new Map(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(map.get("year") ?? "0"),
+    month: Number(map.get("month") ?? "0"),
+    day: Number(map.get("day") ?? "0"),
+    hour: Number(map.get("hour") ?? "0"),
+    minute: Number(map.get("minute") ?? "0"),
+    second: Number(map.get("second") ?? "0"),
+  };
+}
+
+function parseDateTimeLocalValue(value: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+} | null {
+  const matched = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!matched) return null;
+  const year = Number(matched[1]);
+  const month = Number(matched[2]);
+  const day = Number(matched[3]);
+  const hour = Number(matched[4]);
+  const minute = Number(matched[5]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { year, month, day, hour, minute };
+}
+
+function formatDateTimeLocalForZone(date: Date, timeZone: string): string {
+  const parts = getDatePartsInTimeZone(date, timeZone);
+  return `${parts.year.toString().padStart(4, "0")}-${parts.month.toString().padStart(2, "0")}-${parts.day
+    .toString()
+    .padStart(2, "0")}T${parts.hour.toString().padStart(2, "0")}:${parts.minute.toString().padStart(2, "0")}`;
+}
+
+function getTimeZoneOffsetMinutes(date: Date, timeZone: string): number {
+  const parts = getDatePartsInTimeZone(date, timeZone);
+  const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return Math.round((asUtc - date.getTime()) / 60000);
+}
+
+function formatOffsetMinutes(offsetMinutes: number): string {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = Math.floor(absolute / 60)
+    .toString()
+    .padStart(2, "0");
+  const minutes = (absolute % 60).toString().padStart(2, "0");
+  return `UTC${sign}${hours}:${minutes}`;
+}
+
+function getDayStampForZone(date: Date, timeZone: string): number {
+  const parts = getDatePartsInTimeZone(date, timeZone);
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / DAY_IN_MS);
+}
+
+function resolveZonedDateTime(value: string, timeZone: string): { date: Date | null; exact: boolean } {
+  const parsed = parseDateTimeLocalValue(value);
+  if (!parsed || !isValidTimeZoneValue(timeZone)) return { date: null, exact: false };
+
+  const expected = Date.UTC(parsed.year, parsed.month - 1, parsed.day, parsed.hour, parsed.minute, 0, 0);
+  let guess = expected;
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const offsetMinutes = getTimeZoneOffsetMinutes(new Date(guess), timeZone);
+    const nextGuess = expected - offsetMinutes * 60_000;
+    if (Math.abs(nextGuess - guess) < 1000) {
+      guess = nextGuess;
+      break;
+    }
+    guess = nextGuess;
+  }
+
+  const candidates = [guess, guess - 60 * 60 * 1000, guess + 60 * 60 * 1000];
+  for (const candidateMs of candidates) {
+    const candidateDate = new Date(candidateMs);
+    const parts = getDatePartsInTimeZone(candidateDate, timeZone);
+    if (
+      parts.year === parsed.year &&
+      parts.month === parsed.month &&
+      parts.day === parsed.day &&
+      parts.hour === parsed.hour &&
+      parts.minute === parsed.minute
+    ) {
+      return { date: candidateDate, exact: true };
+    }
+  }
+
+  return { date: new Date(guess), exact: false };
+}
+
+function getSupportedTimeZoneOptions(localTimeZone: string): TimeZoneOption[] {
+  const intlWithSupported = Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] };
+  const fallback = TIME_ZONE_PRIORITY.filter((entry) => isValidTimeZoneValue(entry));
+  const supported = intlWithSupported.supportedValuesOf?.("timeZone") ?? fallback;
+  const normalizedLocal = normalizeTimeZoneValue(localTimeZone, "UTC");
+
+  const seen = new Set<string>();
+  const ordered = [...TIME_ZONE_PRIORITY, normalizedLocal, ...supported];
+  const unique = ordered.filter((entry) => {
+    const normalized = normalizeTimeZoneValue(entry, "");
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+
+  return unique.map((value) => ({
+    value,
+    label: value.replace(/_/g, " "),
+  }));
+}
+
+function formatTimeZoneDate(date: Date, timeZone: string): string {
+  return getZoneDisplayFormatter(timeZone).format(date);
+}
+
+function TimeZoneConverterTool() {
+  const browserTimeZone = useMemo(
+    () => normalizeTimeZoneValue(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", "UTC"),
+    [],
+  );
+  const timeZoneOptions = useMemo(() => getSupportedTimeZoneOptions(browserTimeZone), [browserTimeZone]);
+  const [fromTimeZone, setFromTimeZone] = useState(browserTimeZone);
+  const [toTimeZone, setToTimeZone] = useState("UTC");
+  const [dateTimeInput, setDateTimeInput] = useState(() => formatDateTimeLocalForZone(new Date(), browserTimeZone));
+  const [compareZoneInput, setCompareZoneInput] = useState("Europe/London");
+  const [compareZones, setCompareZones] = useState<string[]>(TIME_ZONE_COMPARE_DEFAULTS);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (timeZoneOptions.some((option) => option.value === fromTimeZone)) return;
+    setFromTimeZone(browserTimeZone);
+  }, [browserTimeZone, fromTimeZone, timeZoneOptions]);
+
+  useEffect(() => {
+    if (timeZoneOptions.some((option) => option.value === toTimeZone)) return;
+    setToTimeZone("UTC");
+  }, [timeZoneOptions, toTimeZone]);
+
+  const conversion = useMemo(() => {
+    const normalizedFrom = normalizeTimeZoneValue(fromTimeZone, browserTimeZone);
+    const normalizedTo = normalizeTimeZoneValue(toTimeZone, "UTC");
+    const resolved = resolveZonedDateTime(dateTimeInput, normalizedFrom);
+    if (!resolved.date) {
+      return {
+        valid: false as const,
+        message: "Enter a valid date/time to convert.",
+      };
+    }
+
+    const instant = resolved.date;
+    const sourceOffsetMinutes = getTimeZoneOffsetMinutes(instant, normalizedFrom);
+    const targetOffsetMinutes = getTimeZoneOffsetMinutes(instant, normalizedTo);
+    const sourceDayStamp = getDayStampForZone(instant, normalizedFrom);
+    const targetDayStamp = getDayStampForZone(instant, normalizedTo);
+    const dayShift = targetDayStamp - sourceDayStamp;
+
+    return {
+      valid: true as const,
+      instant,
+      exact: resolved.exact,
+      fromTimeZone: normalizedFrom,
+      toTimeZone: normalizedTo,
+      sourceOffsetMinutes,
+      targetOffsetMinutes,
+      dayShift,
+      fromFormatted: formatTimeZoneDate(instant, normalizedFrom),
+      toFormatted: formatTimeZoneDate(instant, normalizedTo),
+      utcFormatted: instant.toISOString(),
+      unixSeconds: Math.floor(instant.getTime() / 1000),
+      unixMilliseconds: instant.getTime(),
+    };
+  }, [browserTimeZone, dateTimeInput, fromTimeZone, toTimeZone]);
+
+  const comparisonRows = useMemo(() => {
+    if (!conversion.valid) return [];
+    const uniqueZones = Array.from(
+      new Set([conversion.fromTimeZone, conversion.toTimeZone, ...compareZones].map((entry) => normalizeTimeZoneValue(entry, ""))),
+    ).filter(Boolean);
+
+    return uniqueZones.slice(0, 12).map((zone) => {
+      const offset = getTimeZoneOffsetMinutes(conversion.instant, zone);
+      return {
+        zone,
+        formatted: formatTimeZoneDate(conversion.instant, zone),
+        offset: formatOffsetMinutes(offset),
+      };
+    });
+  }, [compareZones, conversion]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Tags}
+        title="Time zone converter"
+        subtitle="Convert a source timezone datetime into global timezones with offset and day-shift visibility."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Source date and time</span>
+          <input type="datetime-local" value={dateTimeInput} onChange={(event) => setDateTimeInput(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>From timezone</span>
+          <select value={fromTimeZone} onChange={(event) => setFromTimeZone(event.target.value)}>
+            {timeZoneOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>To timezone</span>
+          <select value={toTimeZone} onChange={(event) => setToTimeZone(event.target.value)}>
+            {timeZoneOptions.map((option) => (
+              <option key={`to-${option.value}`} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setDateTimeInput(formatDateTimeLocalForZone(new Date(), fromTimeZone));
+            setStatus(`Loaded current time in ${fromTimeZone}.`);
+          }}
+        >
+          Use now in source timezone
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setFromTimeZone(toTimeZone);
+            setToTimeZone(fromTimeZone);
+            setStatus("Swapped source and target timezones.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Swap timezones
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            if (!conversion.valid) return;
+            const payload = [
+              `Source (${conversion.fromTimeZone}): ${conversion.fromFormatted}`,
+              `Target (${conversion.toTimeZone}): ${conversion.toFormatted}`,
+              `UTC: ${conversion.utcFormatted}`,
+            ].join("\n");
+            const ok = await copyTextToClipboard(payload);
+            setStatus(ok ? "Conversion summary copied." : "Could not copy conversion summary.");
+          }}
+          disabled={!conversion.valid}
+        >
+          <Copy size={15} />
+          Copy summary
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {!conversion.valid ? (
+        <p className="error-text">{conversion.message}</p>
+      ) : (
+        <>
+          {!conversion.exact ? (
+            <p className="supporting-text">
+              This local time may fall in a DST transition gap/overlap. Closest valid instant is shown.
+            </p>
+          ) : null}
+          <ResultList
+            rows={[
+              { label: `Source (${conversion.fromTimeZone})`, value: conversion.fromFormatted },
+              { label: `Target (${conversion.toTimeZone})`, value: conversion.toFormatted },
+              { label: "UTC", value: conversion.utcFormatted },
+              { label: "Source offset", value: formatOffsetMinutes(conversion.sourceOffsetMinutes) },
+              { label: "Target offset", value: formatOffsetMinutes(conversion.targetOffsetMinutes) },
+              {
+                label: "Offset difference (target - source)",
+                value: `${formatNumericValue((conversion.targetOffsetMinutes - conversion.sourceOffsetMinutes) / 60)} hours`,
+              },
+              {
+                label: "Day shift",
+                value:
+                  conversion.dayShift === 0
+                    ? "Same calendar day"
+                    : conversion.dayShift > 0
+                      ? `Target is +${conversion.dayShift} day(s)`
+                      : `Target is ${conversion.dayShift} day(s)`,
+              },
+              { label: "Unix seconds", value: conversion.unixSeconds.toString() },
+              { label: "Unix milliseconds", value: conversion.unixMilliseconds.toString() },
+            ]}
+          />
+
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3>World compare grid</h3>
+              <div className="button-row">
+                <label className="field">
+                  <span>Add timezone</span>
+                  <select value={compareZoneInput} onChange={(event) => setCompareZoneInput(event.target.value)}>
+                    {timeZoneOptions.map((option) => (
+                      <option key={`compare-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() =>
+                    setCompareZones((current) =>
+                      current.includes(compareZoneInput) ? current : [...current, compareZoneInput].slice(0, 12),
+                    )
+                  }
+                >
+                  Add
+                </button>
+                <button className="action-button secondary" type="button" onClick={() => setCompareZones(TIME_ZONE_COMPARE_DEFAULTS)}>
+                  Reset list
+                </button>
+              </div>
+            </div>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Timezone</th>
+                    <th>Local time</th>
+                    <th>UTC offset</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonRows.map((row) => (
+                    <tr key={row.zone}>
+                      <td>{row.zone}</td>
+                      <td>{row.formatted}</td>
+                      <td>{row.offset}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function TimestampConverterTool() {
   const [unixInput, setUnixInput] = useState(Math.floor(Date.now() / 1000).toString());
   const [dateInput, setDateInput] = useState(new Date().toISOString().slice(0, 16));
@@ -7337,6 +7794,8 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
       return <UrlEncoderDecoderTool />;
     case "timestamp-converter":
       return <TimestampConverterTool />;
+    case "time-zone-converter":
+      return <TimeZoneConverterTool />;
     case "markdown-to-html":
       return <MarkdownToHtmlTool />;
     case "user-agent-checker":

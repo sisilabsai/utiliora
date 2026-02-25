@@ -94,6 +94,7 @@ export type DeveloperToolId =
   | "uuid-generator"
   | "url-encoder-decoder"
   | "timestamp-converter"
+  | "time-zone-converter"
   | "markdown-to-html"
   | "user-agent-checker"
   | "ip-address-checker"
