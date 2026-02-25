@@ -113,6 +113,7 @@ export type ImageToolId =
   | "qr-code-generator"
   | "color-picker"
   | "hex-rgb-converter"
+  | "background-remover"
   | "image-resizer"
   | "image-compressor"
   | "jpg-to-png"

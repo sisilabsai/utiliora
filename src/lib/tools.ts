@@ -665,6 +665,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("HEX-RGB Converter"),
   },
   {
+    slug: "background-remover",
+    category: "image-tools",
+    title: "Background Remover",
+    summary: "Remove image backgrounds in-browser with AI edge segmentation and transparent export.",
+    description:
+      "Use open-source in-browser background removal to isolate subjects, export transparent PNG/WebP output, and continue editing workflows without server uploads.",
+    keywords: ["background remover", "remove background from image", "transparent png", "ai background removal"],
+    engine: { kind: "image-tool", id: "background-remover" },
+    faq: baseFaq("Background Remover"),
+  },
+  {
     slug: "image-resizer",
     category: "image-tools",
     title: "Image Resizer",

@@ -1238,6 +1238,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "qr-code-generator": "qr-code-generator",
   "color-picker": "color-picker",
   "hex-rgb-converter": "hex-rgb-converter",
+  "background-remover": "background-remover",
   "image-resizer": "image-resizer",
   "image-compressor": "image-compressor",
   "jpg-to-png": "jpg-to-png-converter",
@@ -1257,6 +1258,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "qr-code-generator": "QR Code Generator",
   "color-picker": "Color Picker",
   "hex-rgb-converter": "HEX-RGB Converter",
+  "background-remover": "Background Remover",
   "image-resizer": "Image Resizer",
   "image-compressor": "Image Compressor",
   "jpg-to-png": "JPG -> PNG",
@@ -1273,11 +1275,12 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
 };
 
 const IMAGE_WORKFLOW_TARGET_OPTIONS: Partial<Record<ImageToolId, ImageToolId[]>> = {
-  "image-resizer": ["image-compressor", "png-to-webp", "image-cropper", "image-to-pdf", "jpg-to-png"],
-  "image-compressor": ["png-to-webp", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
-  "jpg-to-png": ["png-to-webp", "image-cropper", "image-to-pdf", "image-compressor", "image-resizer"],
-  "png-to-webp": ["image-compressor", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
-  "image-cropper": ["image-compressor", "png-to-webp", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "background-remover": ["image-cropper", "image-compressor", "png-to-webp", "image-to-pdf", "image-resizer"],
+  "image-resizer": ["background-remover", "image-compressor", "png-to-webp", "image-cropper", "image-to-pdf", "jpg-to-png"],
+  "image-compressor": ["background-remover", "png-to-webp", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "jpg-to-png": ["background-remover", "png-to-webp", "image-cropper", "image-to-pdf", "image-compressor", "image-resizer"],
+  "png-to-webp": ["background-remover", "image-compressor", "image-cropper", "image-to-pdf", "image-resizer", "jpg-to-png"],
+  "image-cropper": ["background-remover", "image-compressor", "png-to-webp", "image-to-pdf", "image-resizer", "jpg-to-png"],
   "pdf-to-jpg": ["image-cropper", "image-compressor", "png-to-webp", "image-resizer", "image-to-pdf"],
 };
 
@@ -13728,6 +13731,628 @@ function ImageTransformTool({
   );
 }
 
+type BackgroundRemovalModel = "isnet" | "isnet_fp16" | "isnet_quint8";
+
+interface BackgroundRemovalRunEntry {
+  id: string;
+  fileName: string;
+  sourceBytes: number;
+  outputBytes: number;
+  outputMimeType: OutputMimeType;
+  model: BackgroundRemovalModel;
+  createdAt: number;
+  durationMs: number;
+}
+
+const BACKGROUND_REMOVER_STORAGE_KEY = "utiliora-background-remover-state-v1";
+const BACKGROUND_REMOVER_HISTORY_LIMIT = 24;
+const BACKGROUND_REMOVER_CDN_URL = "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs";
+
+type BackgroundRemovalFn = (
+  image: Blob | File,
+  configuration?: {
+    model?: BackgroundRemovalModel;
+    output?: { format?: OutputMimeType; quality?: number };
+    progress?: (key: string, current: number, total: number) => void;
+  },
+) => Promise<Blob>;
+
+function sanitizeBackgroundRemovalRunEntry(candidate: unknown): BackgroundRemovalRunEntry | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const entry = candidate as Partial<BackgroundRemovalRunEntry>;
+  if (typeof entry.fileName !== "string" || !entry.fileName.trim()) return null;
+  const sourceBytes = Number.isFinite(entry.sourceBytes) ? Math.max(0, Math.round(entry.sourceBytes as number)) : 0;
+  const outputBytes = Number.isFinite(entry.outputBytes) ? Math.max(0, Math.round(entry.outputBytes as number)) : 0;
+  const outputMimeType =
+    entry.outputMimeType === "image/png" || entry.outputMimeType === "image/jpeg" || entry.outputMimeType === "image/webp"
+      ? entry.outputMimeType
+      : "image/png";
+  const model: BackgroundRemovalModel =
+    entry.model === "isnet" || entry.model === "isnet_fp16" || entry.model === "isnet_quint8"
+      ? entry.model
+      : "isnet_fp16";
+  return {
+    id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+    fileName: entry.fileName.slice(0, 180),
+    sourceBytes,
+    outputBytes,
+    outputMimeType,
+    model,
+    createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+    durationMs: Number.isFinite(entry.durationMs) ? Math.max(0, Math.round(entry.durationMs as number)) : 0,
+  };
+}
+
+function BackgroundRemoverTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
+  const sourceToolId: ImageToolId = "background-remover";
+  const workflowTargetOptions = getImageWorkflowTargetOptions(sourceToolId);
+  const sourceUrlRef = useRef("");
+  const resultUrlRef = useRef("");
+  const runIdRef = useRef(0);
+  const incomingTokenRef = useRef("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [file, setFile] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceDetails, setSourceDetails] = useState<ImageDetails | null>(null);
+  const [resultDetails, setResultDetails] = useState<OutputImageDetails | null>(null);
+  const [model, setModel] = useState<BackgroundRemovalModel>("isnet_fp16");
+  const [outputMimeType, setOutputMimeType] = useState<OutputMimeType>("image/png");
+  const [quality, setQuality] = useState(0.9);
+  const [autoProcess, setAutoProcess] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload an image to remove its background.");
+  const [history, setHistory] = useState<BackgroundRemovalRunEntry[]>([]);
+
+  const incomingRunContext = incomingFile?.runContext;
+  const nextWorkflowStep = useMemo(
+    () => getNextWorkflowStepContext(incomingRunContext, sourceToolId),
+    [incomingRunContext, sourceToolId],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(BACKGROUND_REMOVER_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        model?: BackgroundRemovalModel;
+        outputMimeType?: OutputMimeType;
+        quality?: number;
+        autoProcess?: boolean;
+        history?: unknown[];
+      };
+      if (parsed.model === "isnet" || parsed.model === "isnet_fp16" || parsed.model === "isnet_quint8") {
+        setModel(parsed.model);
+      }
+      if (
+        parsed.outputMimeType === "image/png" ||
+        parsed.outputMimeType === "image/jpeg" ||
+        parsed.outputMimeType === "image/webp"
+      ) {
+        setOutputMimeType(parsed.outputMimeType);
+      }
+      if (typeof parsed.quality === "number" && Number.isFinite(parsed.quality)) {
+        setQuality(Math.max(0.1, Math.min(1, parsed.quality)));
+      }
+      if (typeof parsed.autoProcess === "boolean") {
+        setAutoProcess(parsed.autoProcess);
+      }
+      if (Array.isArray(parsed.history)) {
+        const nextHistory = parsed.history
+          .map((entry) => sanitizeBackgroundRemovalRunEntry(entry))
+          .filter((entry): entry is BackgroundRemovalRunEntry => Boolean(entry))
+          .slice(0, BACKGROUND_REMOVER_HISTORY_LIMIT);
+        setHistory(nextHistory);
+      }
+    } catch {
+      // Ignore malformed local settings.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        BACKGROUND_REMOVER_STORAGE_KEY,
+        JSON.stringify({
+          model,
+          outputMimeType,
+          quality,
+          autoProcess,
+          history: history.slice(0, BACKGROUND_REMOVER_HISTORY_LIMIT),
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [autoProcess, history, model, outputMimeType, quality]);
+
+  const clearOutput = useCallback(() => {
+    if (resultUrlRef.current) {
+      URL.revokeObjectURL(resultUrlRef.current);
+      resultUrlRef.current = "";
+    }
+    setResultDetails(null);
+    setProgress(0);
+  }, []);
+
+  const clearAll = useCallback(() => {
+    if (sourceUrlRef.current) {
+      URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = "";
+    }
+    clearOutput();
+    setFile(null);
+    setSourceUrl("");
+    setSourceDetails(null);
+    setStatus("Upload an image to remove its background.");
+    runIdRef.current += 1;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [clearOutput]);
+
+  const handleFile = useCallback(
+    async (candidate: File | null) => {
+      if (!candidate) {
+        clearAll();
+        return;
+      }
+      if (!candidate.type.startsWith("image/")) {
+        setStatus("Please select a valid image.");
+        return;
+      }
+      const objectUrl = URL.createObjectURL(candidate);
+      if (sourceUrlRef.current) URL.revokeObjectURL(sourceUrlRef.current);
+      sourceUrlRef.current = objectUrl;
+      setSourceUrl(objectUrl);
+      setFile(candidate);
+      clearOutput();
+      setStatus("Reading image...");
+
+      try {
+        const image = await loadImage(objectUrl);
+        setSourceDetails({
+          filename: candidate.name,
+          sizeBytes: candidate.size,
+          mimeType: candidate.type || "image/png",
+          width: image.width,
+          height: image.height,
+        });
+        setStatus("Image loaded. Ready to remove background.");
+      } catch {
+        setStatus("Could not read this image file.");
+      }
+    },
+    [clearAll, clearOutput],
+  );
+
+  useEffect(() => {
+    if (!incomingFile || incomingTokenRef.current === incomingFile.token) return;
+    incomingTokenRef.current = incomingFile.token;
+    setStatus(`Workflow handoff received from ${incomingFile.sourceToolId}.`);
+    void handleFile(incomingFile.file);
+  }, [handleFile, incomingFile]);
+
+  const canSendToWorkflowTool = useCallback(
+    (targetToolId: ImageToolId) => {
+      if (!resultDetails) return false;
+      if (targetToolId === "png-to-webp") return resultDetails.mimeType === "image/png";
+      if (targetToolId === "jpg-to-png") return resultDetails.mimeType === "image/jpeg";
+      return true;
+    },
+    [resultDetails],
+  );
+
+  const runBackgroundRemoval = useCallback(
+    async (trigger: "manual" | "auto") => {
+      if (!file || !sourceDetails) {
+        setStatus("Select an image first.");
+        return;
+      }
+
+      const runId = ++runIdRef.current;
+      setProcessing(true);
+      setProgress(4);
+      const startedAt = Date.now();
+
+      try {
+        setStatus("Loading background removal model...");
+        const bgRuntime = (await import(/* webpackIgnore: true */ BACKGROUND_REMOVER_CDN_URL)) as {
+          removeBackground?: BackgroundRemovalFn;
+          default?: BackgroundRemovalFn;
+        };
+        const removeBackground = bgRuntime.removeBackground ?? bgRuntime.default;
+        if (typeof removeBackground !== "function") {
+          throw new Error("Background removal engine failed to load.");
+        }
+
+        setStatus("Running segmentation...");
+        const blob = await removeBackground(file, {
+          model,
+          output: {
+            format: outputMimeType,
+            quality,
+          },
+          progress: (key: string, current: number, total: number) => {
+            if (runId !== runIdRef.current) return;
+            const ratio = total > 0 ? current / total : 0;
+            const mapped = Math.max(8, Math.min(94, Math.round(ratio * 100)));
+            setProgress(mapped);
+            setStatus(`Processing (${key} ${current}/${total})...`);
+          },
+        });
+
+        if (runId !== runIdRef.current) return;
+
+        const outputUrl = URL.createObjectURL(blob);
+        if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+        resultUrlRef.current = outputUrl;
+
+        const outputImage = await loadImage(outputUrl);
+        const baseName = stripFileExtension(file.name) || "image";
+        const downloadName = `${baseName}-background-removed.${extensionFromMimeType(outputMimeType)}`;
+
+        setResultDetails({
+          url: outputUrl,
+          downloadName,
+          filename: downloadName,
+          sizeBytes: blob.size,
+          mimeType: outputMimeType,
+          width: outputImage.width,
+          height: outputImage.height,
+        });
+        setProgress(100);
+
+        const durationMs = Date.now() - startedAt;
+        setStatus(
+          `Background removed (${formatBytes(sourceDetails.sizeBytes)} -> ${formatBytes(blob.size)}) in ${(durationMs / 1000).toFixed(1)}s.`,
+        );
+        setHistory((current) =>
+          [
+            {
+              id: crypto.randomUUID(),
+              fileName: file.name,
+              sourceBytes: sourceDetails.sizeBytes,
+              outputBytes: blob.size,
+              outputMimeType,
+              model,
+              createdAt: Date.now(),
+              durationMs,
+            },
+            ...current,
+          ].slice(0, BACKGROUND_REMOVER_HISTORY_LIMIT),
+        );
+        trackEvent("tool_background_remover_run", { trigger, outputMimeType, model });
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : "Background removal failed.";
+        setStatus(message);
+      } finally {
+        if (runId === runIdRef.current) setProcessing(false);
+      }
+    },
+    [file, model, outputMimeType, quality, sourceDetails],
+  );
+
+  useEffect(() => {
+    if (!autoProcess || !file || !sourceDetails) return;
+    const timeout = window.setTimeout(() => {
+      void runBackgroundRemoval("auto");
+    }, 240);
+    return () => window.clearTimeout(timeout);
+  }, [autoProcess, file, model, outputMimeType, quality, runBackgroundRemoval, sourceDetails]);
+
+  const sendToWorkflowTool = useCallback(
+    async (targetToolId: ImageToolId) => {
+      if (!resultDetails) return;
+      if (!canSendToWorkflowTool(targetToolId)) {
+        setStatus(`Output format is not compatible with ${getImageToolLabel(targetToolId)}.`);
+        return;
+      }
+      setStatus(`Sending image to ${getImageToolLabel(targetToolId)}...`);
+      const ok = await handoffImageResultToTool({
+        sourceToolId,
+        targetToolId,
+        fileName: resultDetails.downloadName,
+        mimeType: resultDetails.mimeType,
+        sourceUrl: resultDetails.url,
+      });
+      if (!ok) {
+        setStatus(`Could not send result to ${getImageToolLabel(targetToolId)}.`);
+      }
+    },
+    [canSendToWorkflowTool, resultDetails, sourceToolId],
+  );
+
+  const continueWorkflowRun = useCallback(async () => {
+    if (!nextWorkflowStep || !resultDetails) return;
+    if (!canSendToWorkflowTool(nextWorkflowStep.nextToolId)) {
+      setStatus(`Current output cannot continue to ${getImageToolLabel(nextWorkflowStep.nextToolId)}.`);
+      return;
+    }
+    setStatus(`Continuing workflow to ${getImageToolLabel(nextWorkflowStep.nextToolId)}...`);
+    const ok = await handoffImageResultToTool({
+      sourceToolId,
+      targetToolId: nextWorkflowStep.nextToolId,
+      fileName: resultDetails.downloadName,
+      mimeType: resultDetails.mimeType,
+      sourceUrl: resultDetails.url,
+      runContext: nextWorkflowStep.nextRunContext,
+    });
+    if (!ok) {
+      setStatus("Could not continue workflow.");
+    } else {
+      trackEvent("tool_background_remover_workflow_continue", { nextToolId: nextWorkflowStep.nextToolId });
+    }
+  }, [canSendToWorkflowTool, nextWorkflowStep, resultDetails, sourceToolId]);
+
+  const comparisonText = useMemo(() => {
+    if (!sourceDetails || !resultDetails) return "";
+    const delta = resultDetails.sizeBytes - sourceDetails.sizeBytes;
+    if (delta === 0) return "No file size change.";
+    const pct = sourceDetails.sizeBytes > 0 ? (Math.abs(delta) / sourceDetails.sizeBytes) * 100 : 0;
+    if (delta < 0) return `Saved ${formatBytes(Math.abs(delta))} (${pct.toFixed(1)}%).`;
+    return `Increased by ${formatBytes(delta)} (${pct.toFixed(1)}%).`;
+  }, [resultDetails, sourceDetails]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Sparkles}
+        title="Background remover"
+        subtitle="Open-source AI background removal running fully in your browser with local history and workflow handoff."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload image</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(event) => {
+              void handleFile(event.target.files?.[0] ?? null);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Model</span>
+          <select value={model} onChange={(event) => setModel(event.target.value as BackgroundRemovalModel)}>
+            <option value="isnet_fp16">Balanced (FP16)</option>
+            <option value="isnet_quint8">Fast (Quantized)</option>
+            <option value="isnet">High quality</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Output format</span>
+          <select value={outputMimeType} onChange={(event) => setOutputMimeType(event.target.value as OutputMimeType)}>
+            <option value="image/png">PNG (transparent)</option>
+            <option value="image/webp">WebP</option>
+            <option value="image/jpeg">JPEG</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Quality ({quality.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.1}
+            max={1}
+            step={0.05}
+            value={quality}
+            onChange={(event) => setQuality(Number(event.target.value))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => {
+            void runBackgroundRemoval("manual");
+          }}
+          disabled={!file || processing}
+        >
+          {processing ? "Removing..." : "Remove background"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={clearAll}>
+          Clear
+        </button>
+        <label className="checkbox">
+          <input type="checkbox" checked={autoProcess} onChange={(event) => setAutoProcess(event.target.checked)} />
+          Auto run on setting changes
+        </label>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <div className="image-compare-grid">
+        <article className="image-card">
+          <h3>Original</h3>
+          <div className="image-frame">
+            {sourceUrl ? (
+              <NextImage
+                src={sourceUrl}
+                alt="Original uploaded image preview"
+                width={sourceDetails?.width ?? 800}
+                height={sourceDetails?.height ?? 600}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                unoptimized
+              />
+            ) : (
+              <p className="image-placeholder">Upload a file to preview the original image.</p>
+            )}
+          </div>
+          {sourceDetails ? (
+            <dl className="image-meta">
+              <div>
+                <dt>Name</dt>
+                <dd>{sourceDetails.filename}</dd>
+              </div>
+              <div>
+                <dt>Format</dt>
+                <dd>{labelForMimeType(sourceDetails.mimeType)}</dd>
+              </div>
+              <div>
+                <dt>Dimensions</dt>
+                <dd>
+                  {sourceDetails.width} x {sourceDetails.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{formatBytes(sourceDetails.sizeBytes)}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </article>
+
+        <article className="image-card">
+          <h3>Result</h3>
+          <div className="image-frame">
+            {resultDetails ? (
+              <NextImage
+                src={resultDetails.url}
+                alt="Background removed image preview"
+                width={resultDetails.width}
+                height={resultDetails.height}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                unoptimized
+              />
+            ) : (
+              <p className="image-placeholder">Processed output appears here after background removal.</p>
+            )}
+          </div>
+          {resultDetails ? (
+            <dl className="image-meta">
+              <div>
+                <dt>Name</dt>
+                <dd>{resultDetails.downloadName}</dd>
+              </div>
+              <div>
+                <dt>Format</dt>
+                <dd>{labelForMimeType(resultDetails.mimeType)}</dd>
+              </div>
+              <div>
+                <dt>Dimensions</dt>
+                <dd>
+                  {resultDetails.width} x {resultDetails.height}
+                </dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{formatBytes(resultDetails.sizeBytes)}</dd>
+              </div>
+            </dl>
+          ) : null}
+        </article>
+      </div>
+
+      {comparisonText ? <p className="supporting-text image-summary">{comparisonText}</p> : null}
+
+      {resultDetails ? (
+        <>
+          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+            Download {labelForMimeType(resultDetails.mimeType)}
+          </a>
+          <div className="button-row">
+            {workflowTargetOptions.slice(0, 4).map((targetToolId) => (
+              <button
+                key={targetToolId}
+                className="action-button secondary"
+                type="button"
+                disabled={processing || !canSendToWorkflowTool(targetToolId)}
+                onClick={() => {
+                  void sendToWorkflowTool(targetToolId);
+                }}
+              >
+                Send to {getImageToolLabel(targetToolId)}
+              </button>
+            ))}
+          </div>
+          {nextWorkflowStep ? (
+            <div className="button-row">
+              <button
+                className="action-button secondary"
+                type="button"
+                disabled={processing || !canSendToWorkflowTool(nextWorkflowStep.nextToolId)}
+                onClick={() => {
+                  void continueWorkflowRun();
+                }}
+              >
+                Continue workflow -&gt; {getImageToolLabel(nextWorkflowStep.nextToolId)}
+              </button>
+            </div>
+          ) : incomingRunContext && incomingRunContext.steps[incomingRunContext.currentStepIndex] === sourceToolId ? (
+            <p className="supporting-text">
+              Workflow &quot;{incomingRunContext.workflowName}&quot; completed at {getImageToolLabel(sourceToolId)}.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent background removal runs</h3>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => setHistory([])}
+            disabled={history.length === 0}
+          >
+            Clear history
+          </button>
+        </div>
+        <div className="button-row">
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() =>
+              downloadTextFile(
+                "background-remover-history.json",
+                JSON.stringify({ exportedAt: new Date().toISOString(), history }, null, 2),
+                "application/json;charset=utf-8;",
+              )
+            }
+            disabled={history.length === 0}
+          >
+            <Download size={15} />
+            Export JSON
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No runs yet. Process an image to capture performance and output stats.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.fileName}</strong>
+                  <span className="supporting-text">{new Date(entry.createdAt).toLocaleString("en-US")}</span>
+                </div>
+                <p className="supporting-text">
+                  {formatBytes(entry.sourceBytes)} {"->"} {formatBytes(entry.outputBytes)} | {labelForMimeType(entry.outputMimeType)} |{" "}
+                  {entry.model} | {(entry.durationMs / 1000).toFixed(1)}s
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 type CropAspectPreset = "free" | "1:1" | "4:3" | "16:9" | "3:2";
 
 const CROP_ASPECT_PRESETS: CropAspectPreset[] = ["free", "1:1", "4:3", "16:9", "3:2"];
@@ -17408,6 +18033,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <ColorPickerTool />;
     case "hex-rgb-converter":
       return <HexRgbConverterTool />;
+    case "background-remover":
+      return <BackgroundRemoverTool incomingFile={incomingFile} />;
     case "image-resizer":
       return <ImageTransformTool mode="resize" incomingFile={incomingFile} />;
     case "image-compressor":
