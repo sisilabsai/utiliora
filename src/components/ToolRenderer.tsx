@@ -785,6 +785,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "barcode-generator": "barcode-generator",
   "image-to-pdf": "image-to-pdf-converter",
   "pdf-merge": "pdf-merge",
+  "pdf-split": "pdf-split",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
 
@@ -800,6 +801,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "barcode-generator": "Barcode Generator",
   "image-to-pdf": "Image -> PDF",
   "pdf-merge": "PDF Merge",
+  "pdf-split": "PDF Split",
   "pdf-to-jpg": "PDF -> JPG",
 };
 
@@ -10632,6 +10634,336 @@ function PdfMergeTool() {
   );
 }
 
+type PdfSplitMode = "range" | "single-pages" | "fixed-chunk";
+
+const PDF_SPLIT_MODE_OPTIONS: Array<{ value: PdfSplitMode; label: string; hint: string }> = [
+  { value: "range", label: "Custom range", hint: "Export one PDF from selected pages" },
+  { value: "single-pages", label: "Single-page files", hint: "Create one PDF per page" },
+  { value: "fixed-chunk", label: "Fixed chunk size", hint: "Split into equal page groups" },
+];
+
+function PdfSplitTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [pageCount, setPageCount] = useState(0);
+  const [splitMode, setSplitMode] = useState<PdfSplitMode>("range");
+  const [pageRangeInput, setPageRangeInput] = useState("1-3");
+  const [chunkSize, setChunkSize] = useState(5);
+  const [renderScalePercent, setRenderScalePercent] = useState(140);
+  const [jpegQuality, setJpegQuality] = useState(0.86);
+  const [fitDpi, setFitDpi] = useState(150);
+  const [maxOutputPages, setMaxOutputPages] = useState(160);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a PDF to split into smaller files.");
+  const [lastOutputFiles, setLastOutputFiles] = useState(0);
+  const [lastOutputPages, setLastOutputPages] = useState(0);
+  const [lastOutputBytes, setLastOutputBytes] = useState(0);
+
+  const inspectPdfMeta = useCallback(async (nextFile: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      setStatus("Reading PDF metadata...");
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await nextFile.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+      setPageCount(pdfDocument.numPages);
+      setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
+    } catch {
+      setPageCount(0);
+      setStatus("Could not read PDF metadata.");
+    } finally {
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setPdfName("");
+        setPageCount(0);
+        setStatus("Upload a PDF to split into smaller files.");
+        return;
+      }
+
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF file.");
+        return;
+      }
+
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setProgress(0);
+      setLastOutputFiles(0);
+      setLastOutputPages(0);
+      setLastOutputBytes(0);
+      void inspectPdfMeta(candidate);
+      trackEvent("tool_pdf_split_upload", { size: candidate.size });
+    },
+    [inspectPdfMeta],
+  );
+
+  const splitPdf = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a PDF file first.");
+      return;
+    }
+    if (!pageCount) {
+      setStatus("PDF page count is not available yet.");
+      return;
+    }
+
+    const safeMaxOutputPages = Math.max(1, Math.min(500, Math.round(maxOutputPages)));
+    const safeScale = Math.max(80, Math.min(260, renderScalePercent)) / 100;
+    const safeQuality = Math.max(0.5, Math.min(1, jpegQuality));
+    const safeChunkSize = Math.max(1, Math.min(200, Math.round(chunkSize || 1)));
+
+    let groups: number[][] = [];
+    if (splitMode === "range") {
+      const pages = parsePageRangeInput(pageRangeInput, pageCount);
+      if (!pages?.length) {
+        setStatus("Invalid page range. Example: 1-3,5,8");
+        return;
+      }
+      groups = [pages.slice(0, safeMaxOutputPages)];
+    } else if (splitMode === "single-pages") {
+      const pages = Array.from({ length: Math.min(pageCount, safeMaxOutputPages) }, (_item, index) => index + 1);
+      groups = pages.map((page) => [page]);
+    } else {
+      const allPages = Array.from({ length: Math.min(pageCount, safeMaxOutputPages) }, (_item, index) => index + 1);
+      for (let index = 0; index < allPages.length; index += safeChunkSize) {
+        groups.push(allPages.slice(index, index + safeChunkSize));
+      }
+    }
+
+    const pagesToProcess = groups.flat().slice(0, safeMaxOutputPages);
+    if (!pagesToProcess.length) {
+      setStatus("No pages selected for split output.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(3);
+    setStatus("Preparing split output...");
+
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    let processedPages = 0;
+    let outputBytes = 0;
+
+    try {
+      const pdfjs = await loadPdfJsModule();
+      const { jsPDF } = await import("jspdf");
+      loadingTask = pdfjs.getDocument({
+        data: await file.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+
+      for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+        const pages = groups[groupIndex];
+        if (!pages.length) continue;
+
+        let outputDoc: JsPdfType | null = null;
+        for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+          const pageNumber = pages[pageIndex];
+          setStatus(
+            `Rendering page ${pageNumber} (${processedPages + 1}/${pagesToProcess.length}) for split file ${groupIndex + 1}/${groups.length}...`,
+          );
+
+          const page = await pdfDocument.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: safeScale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(viewport.width));
+          canvas.height = Math.max(1, Math.floor(viewport.height));
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error("Canvas context unavailable.");
+          }
+          await page.render({ canvasContext: context, viewport }).promise;
+
+          const pageSizeMm = resolvePdfPageSizeMm("fit-image", canvas.width, canvas.height, fitDpi);
+          const landscape = canvas.width > canvas.height;
+          const pageFormat: [number, number] = landscape ? [pageSizeMm[1], pageSizeMm[0]] : pageSizeMm;
+
+          if (!outputDoc) {
+            outputDoc = new jsPDF({
+              unit: "mm",
+              format: pageFormat,
+              compress: true,
+            });
+          } else {
+            outputDoc.addPage(pageFormat);
+          }
+
+          const pageWidth = outputDoc.internal.pageSize.getWidth();
+          const pageHeight = outputDoc.internal.pageSize.getHeight();
+          const imageData = canvas.toDataURL("image/jpeg", safeQuality);
+          outputDoc.addImage(imageData, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+
+          processedPages += 1;
+          const progressRatio = Math.min(0.97, processedPages / Math.max(1, pagesToProcess.length));
+          setProgress(Math.round(progressRatio * 100));
+        }
+
+        if (!outputDoc) continue;
+        const blob = outputDoc.output("blob");
+        outputBytes += blob.size;
+
+        const baseName = stripFileExtension(pdfName.trim()) || "split-document";
+        let filename = `${baseName}-part-${groupIndex + 1}.pdf`;
+        if (splitMode === "single-pages") {
+          filename = `${baseName}-page-${pages[0]}.pdf`;
+        } else if (splitMode === "range" && pages.length) {
+          const firstPage = pages[0];
+          const lastPage = pages[pages.length - 1];
+          filename = `${baseName}-pages-${firstPage}${lastPage !== firstPage ? `-${lastPage}` : ""}.pdf`;
+        }
+
+        const outputUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = outputUrl;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        URL.revokeObjectURL(outputUrl);
+        await new Promise((resolve) => setTimeout(resolve, 70));
+      }
+
+      setProgress(100);
+      setLastOutputFiles(groups.length);
+      setLastOutputPages(processedPages);
+      setLastOutputBytes(outputBytes);
+      setStatus(`Created ${groups.length} file(s) from ${processedPages} page(s).`);
+      trackEvent("tool_pdf_split_generate", {
+        mode: splitMode,
+        files: groups.length,
+        pages: processedPages,
+      });
+    } catch {
+      setStatus("PDF split failed. Try lower scale or fewer pages.");
+    } finally {
+      setProcessing(false);
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, [
+    chunkSize,
+    file,
+    fitDpi,
+    jpegQuality,
+    maxOutputPages,
+    pageCount,
+    pageRangeInput,
+    pdfName,
+    renderScalePercent,
+    splitMode,
+  ]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF split"
+        subtitle="Split PDFs by custom range, fixed chunk size, or single-page export mode."
+      />
+
+      <label className="field">
+        <span>Upload PDF</span>
+        <input type="file" accept="application/pdf" onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Split mode</span>
+          <select value={splitMode} onChange={(event) => setSplitMode(event.target.value as PdfSplitMode)}>
+            {PDF_SPLIT_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Output filename base</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} />
+        </label>
+        {splitMode === "range" ? (
+          <label className="field">
+            <span>Page range</span>
+            <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="1-3,5,8" />
+            <small className="supporting-text">Use commas and ranges. Example: 1-3,5,8</small>
+          </label>
+        ) : null}
+        {splitMode === "fixed-chunk" ? (
+          <label className="field">
+            <span>Chunk size (pages/file)</span>
+            <input type="number" min={1} max={200} value={chunkSize} onChange={(event) => setChunkSize(Number(event.target.value))} />
+          </label>
+        ) : null}
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Render scale ({renderScalePercent}%)</span>
+          <input type="range" min={80} max={260} step={10} value={renderScalePercent} onChange={(event) => setRenderScalePercent(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>JPEG quality ({jpegQuality.toFixed(2)})</span>
+          <input type="range" min={0.5} max={1} step={0.02} value={jpegQuality} onChange={(event) => setJpegQuality(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Fit DPI ({fitDpi})</span>
+          <input type="range" min={90} max={240} step={5} value={fitDpi} onChange={(event) => setFitDpi(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Max output pages</span>
+          <input type="number" min={1} max={500} value={maxOutputPages} onChange={(event) => setMaxOutputPages(Number(event.target.value))} />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!file || processing || !pageCount} onClick={() => void splitPdf()}>
+          {processing ? "Splitting..." : "Split PDF"}
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Loaded PDF pages", value: pageCount ? formatNumericValue(pageCount) : "-" },
+          { label: "Split mode", value: PDF_SPLIT_MODE_OPTIONS.find((entry) => entry.value === splitMode)?.label ?? splitMode },
+          { label: "Last output files", value: lastOutputFiles ? formatNumericValue(lastOutputFiles) : "-" },
+          { label: "Last output pages", value: lastOutputPages ? formatNumericValue(lastOutputPages) : "-" },
+          { label: "Last output size", value: lastOutputBytes ? formatBytes(lastOutputBytes) : "-" },
+        ]}
+      />
+    </section>
+  );
+}
+
 function PdfToJpgTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -11032,6 +11364,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <ImageToPdfTool incomingFile={incomingFile} />;
     case "pdf-merge":
       return <PdfMergeTool />;
+    case "pdf-split":
+      return <PdfSplitTool />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

@@ -721,6 +721,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("PDF Merge"),
   },
   {
+    slug: "pdf-split",
+    category: "image-tools",
+    title: "PDF Split",
+    summary: "Split PDFs by custom page range, chunk size, or single-page exports.",
+    description:
+      "Extract selected pages or split a PDF into multiple files with range, single-page, and fixed-chunk modes.",
+    keywords: ["pdf split", "split pdf pages", "extract pages from pdf", "pdf page splitter"],
+    engine: { kind: "image-tool", id: "pdf-split" },
+    faq: baseFaq("PDF Split"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",
