@@ -763,6 +763,129 @@ function ageMetrics(rawValues: Record<string, unknown>): AgeMetrics {
   };
 }
 
+interface DateDifferenceMetrics {
+  isValid: boolean;
+  startDate: Date | null;
+  endDate: Date | null;
+  orderedStart: Date | null;
+  orderedEnd: Date | null;
+  includeEndDate: boolean;
+  wasReversed: boolean;
+  years: number;
+  months: number;
+  days: number;
+  totalDays: number;
+  totalWeeks: number;
+  totalMonths: number;
+  businessDays: number;
+  weekendDays: number;
+}
+
+interface CalendarDifference {
+  years: number;
+  months: number;
+  days: number;
+}
+
+function calculateCalendarDifference(startDate: Date, endDate: Date): CalendarDifference {
+  let years = endDate.getFullYear() - startDate.getFullYear();
+  let months = endDate.getMonth() - startDate.getMonth();
+  let days = endDate.getDate() - startDate.getDate();
+
+  if (days < 0) {
+    const daysInPreviousMonth = new Date(endDate.getFullYear(), endDate.getMonth(), 0).getDate();
+    days += daysInPreviousMonth;
+    months -= 1;
+  }
+
+  if (months < 0) {
+    months += 12;
+    years -= 1;
+  }
+
+  return {
+    years: Math.max(0, years),
+    months: Math.max(0, months),
+    days: Math.max(0, days),
+  };
+}
+
+function countBusinessDays(startDate: Date, endDate: Date, includeEndDate: boolean): number {
+  const startDayNumber = toUtcDayNumber(startDate);
+  const endDayNumber = toUtcDayNumber(endDate);
+  const lastDayNumber = includeEndDate ? endDayNumber : endDayNumber - 1;
+  if (lastDayNumber < startDayNumber) return 0;
+
+  let businessDays = 0;
+  for (let dayNumber = startDayNumber; dayNumber <= lastDayNumber; dayNumber += 1) {
+    const weekDay = new Date(dayNumber * MS_PER_DAY).getUTCDay();
+    if (weekDay !== 0 && weekDay !== 6) {
+      businessDays += 1;
+    }
+  }
+
+  return businessDays;
+}
+
+function dateDifferenceMetrics(rawValues: Record<string, unknown>): DateDifferenceMetrics {
+  const startDate = parseDateInput(rawValues.startDate);
+  const endDate = parseDateInput(rawValues.endDate);
+  const includeEndDate = String(rawValues.includeEndDate ?? "no").trim().toLowerCase() === "yes";
+
+  if (!startDate || !endDate) {
+    return {
+      isValid: false,
+      startDate,
+      endDate,
+      orderedStart: null,
+      orderedEnd: null,
+      includeEndDate,
+      wasReversed: false,
+      years: 0,
+      months: 0,
+      days: 0,
+      totalDays: 0,
+      totalWeeks: 0,
+      totalMonths: 0,
+      businessDays: 0,
+      weekendDays: 0,
+    };
+  }
+
+  const startDayNumber = toUtcDayNumber(startDate);
+  const endDayNumber = toUtcDayNumber(endDate);
+  const wasReversed = startDayNumber > endDayNumber;
+  const orderedStart = wasReversed ? endDate : startDate;
+  const orderedEnd = wasReversed ? startDate : endDate;
+
+  const baseDayDifference = toUtcDayNumber(orderedEnd) - toUtcDayNumber(orderedStart);
+  const totalDays = Math.max(0, baseDayDifference + (includeEndDate ? 1 : 0));
+  const adjustedEndDate = includeEndDate
+    ? new Date(orderedEnd.getFullYear(), orderedEnd.getMonth(), orderedEnd.getDate() + 1, 12)
+    : orderedEnd;
+  const calendarDifference = calculateCalendarDifference(orderedStart, adjustedEndDate);
+  const businessDays = countBusinessDays(orderedStart, orderedEnd, includeEndDate);
+  const weekendDays = Math.max(0, totalDays - businessDays);
+
+  return {
+    isValid: true,
+    startDate,
+    endDate,
+    orderedStart,
+    orderedEnd,
+    includeEndDate,
+    wasReversed,
+    years: calendarDifference.years,
+    months: calendarDifference.months,
+    days: calendarDifference.days,
+    totalDays,
+    totalWeeks: totalDays / 7,
+    totalMonths: calendarDifference.years * 12 + calendarDifference.months + calendarDifference.days / 30.4375,
+    businessDays,
+    weekendDays,
+  };
+}
+
 interface StartupCostMetrics {
   oneTimeCosts: number;
   monthlyBurn: number;
@@ -988,6 +1111,21 @@ export function getCalculatorInsights(
         metrics.nextBirthday
           ? `Next birthday: ${formatDate(metrics.nextBirthday)} (${formatNumber(metrics.daysUntilNextBirthday)} days left).`
           : "Next birthday information is not available.",
+      ];
+    }
+    case "date-difference-calculator": {
+      const metrics = dateDifferenceMetrics(rawValues);
+      if (!metrics.isValid) {
+        return [
+          "Enter valid start and end dates to calculate the difference.",
+          "Use Inclusive mode when you want to count both start and end dates.",
+        ];
+      }
+      return [
+        `Exact difference: ${metrics.years} years ${metrics.months} months ${metrics.days} days.`,
+        metrics.wasReversed
+          ? "Start date is after end date. Results are shown as absolute difference."
+          : `Business-day span: ${formatNumber(metrics.businessDays)} days.`,
       ];
     }
     case "bmi-calculator": {
@@ -1263,6 +1401,29 @@ export function runCalculator(
         { label: "Total Days", value: formatNumber(metrics.totalDays) },
         { label: "Next Birthday", value: metrics.nextBirthday ? formatDate(metrics.nextBirthday) : "Not available" },
         { label: "Days Until Next Birthday", value: formatNumber(metrics.daysUntilNextBirthday) },
+      ];
+    }
+    case "date-difference-calculator": {
+      const metrics = dateDifferenceMetrics(rawValues);
+      if (!metrics.isValid) {
+        return [
+          { label: "Status", value: "Enter valid start and end dates" },
+          { label: "Tip", value: "Choose Inclusive mode if both boundary dates should be counted." },
+        ];
+      }
+
+      return [
+        { label: "Exact Difference", value: `${metrics.years} years ${metrics.months} months ${metrics.days} days` },
+        {
+          label: "Date Order",
+          value: metrics.wasReversed ? "Start date is after end date (absolute difference shown)" : "Start date is before end date",
+        },
+        { label: "Count Mode", value: metrics.includeEndDate ? "Inclusive (end date counted)" : "Exclusive (end date not counted)" },
+        { label: "Total Days", value: formatNumber(metrics.totalDays) },
+        { label: "Total Weeks (approx.)", value: formatNumber(metrics.totalWeeks) },
+        { label: "Total Months (approx.)", value: formatNumber(metrics.totalMonths) },
+        { label: "Business Days", value: formatNumber(metrics.businessDays) },
+        { label: "Weekend Days", value: formatNumber(metrics.weekendDays) },
       ];
     }
     case "bmi-calculator": {

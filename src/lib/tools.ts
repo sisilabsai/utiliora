@@ -212,6 +212,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Age Calculator"),
   },
   {
+    slug: "date-difference-calculator",
+    category: "calculators",
+    title: "Date Difference Calculator",
+    summary: "Calculate exact time difference between two dates with day, week, month, and business-day totals.",
+    description:
+      "Compare start and end dates with inclusive/exclusive options and get precise calendar differences for planning and deadlines.",
+    keywords: ["date difference calculator", "days between dates", "date duration calculator", "business days calculator"],
+    engine: { kind: "calculator", id: "date-difference-calculator" },
+    faq: baseFaq("Date Difference Calculator"),
+  },
+  {
     slug: "pregnancy-due-date-calculator",
     category: "calculators",
     title: "Pregnancy Due Date Calculator",

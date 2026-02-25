@@ -46,6 +46,7 @@ export type CalculatorId =
   | "calorie-needs-calculator"
   | "water-intake-calculator"
   | "age-calculator"
+  | "date-difference-calculator"
   | "pregnancy-due-date-calculator"
   | "savings-goal-calculator"
   | "break-even-calculator"

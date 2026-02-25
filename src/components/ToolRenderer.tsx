@@ -377,6 +377,21 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
       helper: "Leave empty to calculate age as of today.",
     },
   ],
+  "date-difference-calculator": [
+    { name: "startDate", label: "Start date", defaultValue: "2026-01-01", type: "date" },
+    { name: "endDate", label: "End date", defaultValue: "2026-12-31", type: "date" },
+    {
+      name: "includeEndDate",
+      label: "Count mode",
+      defaultValue: "no",
+      type: "select",
+      options: [
+        { label: "Exclusive (exclude end date)", value: "no" },
+        { label: "Inclusive (include end date)", value: "yes" },
+      ],
+      helper: "Inclusive mode counts both start and end dates.",
+    },
+  ],
   "pregnancy-due-date-calculator": [
     { name: "lmpDate", label: "First day of last period", defaultValue: "2026-01-01", type: "date" },
     { name: "cycleLengthDays", label: "Cycle length (days)", defaultValue: "28", min: 20, step: 1, type: "number" },
@@ -444,6 +459,7 @@ const calculatorSubtitles: Record<CalculatorId, string> = {
   "calorie-needs-calculator": "Estimate maintenance, cut, and gain calorie targets.",
   "water-intake-calculator": "Set a hydration target based on body weight and activity.",
   "age-calculator": "Calculate exact age, next birthday, and total time lived from birth date.",
+  "date-difference-calculator": "Compare two dates with exact calendar, day, and business-day differences.",
   "pregnancy-due-date-calculator": "Estimate due date and current gestational age from LMP.",
   "savings-goal-calculator": "Calculate the monthly contribution needed to hit your target.",
   "break-even-calculator": "See units and revenue needed to cover fixed and variable costs.",
@@ -575,6 +591,10 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "age-calculator": [
     { label: "Adult profile", values: { birthDate: "1995-01-15", asOfDate: "" } },
     { label: "School age profile", values: { birthDate: "2012-09-01", asOfDate: "" } },
+  ],
+  "date-difference-calculator": [
+    { label: "Q1 planning window", values: { startDate: "2026-01-01", endDate: "2026-03-31", includeEndDate: "no" } },
+    { label: "30-day sprint (inclusive)", values: { startDate: "2026-04-01", endDate: "2026-04-30", includeEndDate: "yes" } },
   ],
   "pregnancy-due-date-calculator": [
     { label: "28-day cycle", values: { lmpDate: "2026-01-01", cycleLengthDays: "28" } },
