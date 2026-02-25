@@ -2405,17 +2405,29 @@ function buildSmartActionPlan(
 }
 
 function CalculatorTool({ id }: { id: CalculatorId }) {
+  const toolSession = useToolSession({
+    toolKey: `calculator-${id}`,
+    defaultSessionLabel: "Calculator workspace",
+    newSessionPrefix: "calc",
+  });
   const fields = calculatorFields[id];
   const supportsDisplayCurrency = CALCULATORS_WITH_DISPLAY_CURRENCY.has(id);
   const isFinanceCalculator = FINANCE_CALCULATORS.has(id);
   const defaultValues = useMemo(() => Object.fromEntries(fields.map((field) => [field.name, field.defaultValue])), [fields]);
-  const storageKey = `utiliora-calculator-values-${id}`;
-  const autoModeKey = `utiliora-calculator-auto-${id}`;
-  const currencyStorageKey = `utiliora-calculator-currency-${id}`;
-  const scenarioStorageKey = `utiliora-calculator-scenarios-${id}`;
-  const comparisonStorageKey = `utiliora-calculator-compare-${id}`;
-  const goalStorageKey = `utiliora-calculator-goal-${id}`;
+  const storageKey = toolSession.storageKey(`utiliora-calculator-values-${id}`);
+  const autoModeKey = toolSession.storageKey(`utiliora-calculator-auto-${id}`);
+  const currencyStorageKey = toolSession.storageKey(`utiliora-calculator-currency-${id}`);
+  const scenarioStorageKey = toolSession.storageKey(`utiliora-calculator-scenarios-${id}`);
+  const comparisonStorageKey = toolSession.storageKey(`utiliora-calculator-compare-${id}`);
+  const goalStorageKey = toolSession.storageKey(`utiliora-calculator-goal-${id}`);
+  const legacyStorageKey = `utiliora-calculator-values-${id}`;
+  const legacyAutoModeKey = `utiliora-calculator-auto-${id}`;
+  const legacyCurrencyStorageKey = `utiliora-calculator-currency-${id}`;
+  const legacyScenarioStorageKey = `utiliora-calculator-scenarios-${id}`;
+  const legacyComparisonStorageKey = `utiliora-calculator-compare-${id}`;
+  const legacyGoalStorageKey = `utiliora-calculator-goal-${id}`;
   const isCurrencyConverter = id === "currency-converter-calculator";
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(defaultValues);
   const [selectedCurrency, setSelectedCurrency] = useState("USD");
   const [currencyOptions, setCurrencyOptions] = useState<CurrencyOption[]>(INVOICE_LOCAL_CURRENCIES);
@@ -2469,6 +2481,7 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   const funnelLinks = CALCULATOR_FUNNEL_LINKS[id] ?? [];
 
   useEffect(() => {
+    setIsSessionHydrated(false);
     setValues(defaultValues);
     setSelectedCurrency("USD");
     setResultRows(runCalculator(id, defaultValues, { currency: "USD" }));
@@ -2485,10 +2498,19 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   }, [defaultValues, id]);
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
     try {
-      const savedValues = localStorage.getItem(storageKey);
-      const savedAutoMode = localStorage.getItem(autoModeKey);
-      const savedCurrency = localStorage.getItem(currencyStorageKey);
+      const useLegacyFallback = toolSession.sessionId === TOOL_SESSION_DEFAULT_ID;
+      const savedValues =
+        localStorage.getItem(storageKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyStorageKey) : null);
+      const savedAutoMode =
+        localStorage.getItem(autoModeKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyAutoModeKey) : null);
+      const savedCurrency =
+        localStorage.getItem(currencyStorageKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyCurrencyStorageKey) : null);
       const nextValues: Record<string, string> = { ...defaultValues };
       let nextAutoCalculate = true;
       let nextCurrency = sanitizeCalculatorCurrencyCode(savedCurrency ?? undefined);
@@ -2544,8 +2566,22 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
       setResultRows(runCalculator(id, nextValues, { currency: nextCurrency }));
     } catch {
       // Ignore malformed storage values and continue with defaults.
+    } finally {
+      setIsSessionHydrated(true);
     }
-  }, [autoModeKey, currencyStorageKey, defaultValues, fields, id, storageKey]);
+  }, [
+    autoModeKey,
+    currencyStorageKey,
+    defaultValues,
+    fields,
+    id,
+    legacyAutoModeKey,
+    legacyCurrencyStorageKey,
+    legacyStorageKey,
+    storageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+  ]);
 
   useEffect(() => {
     try {
@@ -2568,8 +2604,12 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   }, [selectedFinanceProfileId]);
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
     try {
-      const savedScenarios = localStorage.getItem(scenarioStorageKey);
+      const useLegacyFallback = toolSession.sessionId === TOOL_SESSION_DEFAULT_ID;
+      const savedScenarios =
+        localStorage.getItem(scenarioStorageKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyScenarioStorageKey) : null);
       const parsedScenarios = savedScenarios ? (JSON.parse(savedScenarios) as CalculatorScenarioSnapshot[]) : [];
       const normalizedScenarios = Array.isArray(parsedScenarios)
         ? parsedScenarios
@@ -2578,7 +2618,9 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         : [];
       setScenarios(normalizedScenarios);
 
-      const savedComparisonIds = localStorage.getItem(comparisonStorageKey);
+      const savedComparisonIds =
+        localStorage.getItem(comparisonStorageKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyComparisonStorageKey) : null);
       const parsedComparisonIds = savedComparisonIds ? (JSON.parse(savedComparisonIds) as string[]) : [];
       const allowedIds = new Set(normalizedScenarios.map((entry) => entry.id));
       const normalizedComparisonIds = Array.isArray(parsedComparisonIds)
@@ -2586,7 +2628,9 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         : [];
       setComparisonScenarioIds(normalizedComparisonIds);
 
-      const savedGoal = localStorage.getItem(goalStorageKey);
+      const savedGoal =
+        localStorage.getItem(goalStorageKey) ??
+        (useLegacyFallback ? localStorage.getItem(legacyGoalStorageKey) : null);
       if (!savedGoal) {
         setGoalConfig(null);
         return;
@@ -2616,9 +2660,19 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
       setComparisonScenarioIds([]);
       setGoalConfig(null);
     }
-  }, [comparisonStorageKey, goalStorageKey, scenarioStorageKey]);
+  }, [
+    comparisonStorageKey,
+    goalStorageKey,
+    legacyComparisonStorageKey,
+    legacyGoalStorageKey,
+    legacyScenarioStorageKey,
+    scenarioStorageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+  ]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(values));
       localStorage.setItem(autoModeKey, autoCalculate ? "true" : "false");
@@ -2626,25 +2680,37 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     } catch {
       // Ignore storage failures.
     }
-  }, [autoCalculate, autoModeKey, currencyStorageKey, selectedCurrency, storageKey, values]);
+  }, [
+    autoCalculate,
+    autoModeKey,
+    currencyStorageKey,
+    isSessionHydrated,
+    selectedCurrency,
+    storageKey,
+    toolSession.isReady,
+    values,
+  ]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(scenarioStorageKey, JSON.stringify(scenarios.slice(0, 30)));
     } catch {
       // Ignore storage failures.
     }
-  }, [scenarioStorageKey, scenarios]);
+  }, [isSessionHydrated, scenarioStorageKey, scenarios, toolSession.isReady]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(comparisonStorageKey, JSON.stringify(comparisonScenarioIds.slice(0, 2)));
     } catch {
       // Ignore storage failures.
     }
-  }, [comparisonScenarioIds, comparisonStorageKey]);
+  }, [comparisonScenarioIds, comparisonStorageKey, isSessionHydrated, toolSession.isReady]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       if (!goalConfig) {
         localStorage.removeItem(goalStorageKey);
@@ -2654,7 +2720,7 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     } catch {
       // Ignore storage failures.
     }
-  }, [goalConfig, goalStorageKey]);
+  }, [goalConfig, goalStorageKey, isSessionHydrated, toolSession.isReady]);
 
   useEffect(() => {
     if (goalMetricLabel && resultRows.some((row) => row.label === goalMetricLabel)) return;
@@ -3051,6 +3117,21 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   return (
     <section className="tool-surface">
       <ToolHeading icon={Calculator} title="Calculator workspace" subtitle={calculatorSubtitles[id]} />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each calculator workspace session is saved locally and linked to this calculator route."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setCopyStatus("Switched calculator workspace session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setCopyStatus("Created a new calculator workspace session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
+      />
 
       {presets.length > 0 ? (
         <div className="preset-row">
@@ -3762,7 +3843,16 @@ const weightQuickPresets: Array<{ label: string; value: string; from: string; to
 ];
 
 function UnitConverterTool({ quantity }: { quantity: UnitQuantity }) {
+  const toolSession = useToolSession({
+    toolKey: `unit-converter-${quantity}`,
+    defaultSessionLabel: "Converter session",
+    newSessionPrefix: "convert",
+  });
   const units = useMemo(() => getUnitsForQuantity(quantity), [quantity]);
+  const stateStorageKey = toolSession.storageKey(`utiliora-unit-converter-state-${quantity}-v1`);
+  const historyStorageKey = toolSession.storageKey(`utiliora-weight-converter-history-v2`);
+  const legacyHistoryStorageKey = "utiliora-weight-converter-history-v1";
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [inputValue, setInputValue] = useState("1");
   const [from, setFrom] = useState(units[0]?.value ?? "");
   const [to, setTo] = useState(units[1]?.value ?? units[0]?.value ?? "");
@@ -3771,48 +3861,119 @@ function UnitConverterTool({ quantity }: { quantity: UnitQuantity }) {
   const [weightHistory, setWeightHistory] = useState<WeightHistoryEntry[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const isWeightConverter = quantity === "weight";
-  const historyStorageKey = "utiliora-weight-converter-history-v1";
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
+    setHistoryLoaded(false);
+    setIsSessionHydrated(false);
+
     const defaultFrom = units[0]?.value ?? "";
     const defaultTo = units[1]?.value ?? defaultFrom;
-    setFrom(defaultFrom);
-    setTo(defaultTo);
-    setInputValue("1");
-    setStatus("");
-  }, [quantity, units]);
+    const unitSet = new Set(units.map((unit) => unit.value));
 
-  useEffect(() => {
-    if (!isWeightConverter) {
-      setHistoryLoaded(true);
-      return;
-    }
+    let nextInput = "1";
+    let nextFrom = defaultFrom;
+    let nextTo = defaultTo;
+    let nextPrecision = "6";
+    let nextHistory: WeightHistoryEntry[] = [];
 
     try {
-      const raw = localStorage.getItem(historyStorageKey);
-      if (!raw) {
-        setHistoryLoaded(true);
-        return;
+      const rawState = localStorage.getItem(stateStorageKey);
+      if (rawState) {
+        const parsed = JSON.parse(rawState) as Partial<{
+          inputValue: string;
+          from: string;
+          to: string;
+          precision: string;
+        }>;
+        if (typeof parsed.inputValue === "string") nextInput = parsed.inputValue;
+        if (typeof parsed.from === "string" && unitSet.has(parsed.from)) nextFrom = parsed.from;
+        if (typeof parsed.to === "string" && unitSet.has(parsed.to)) nextTo = parsed.to;
+        if (parsed.precision === "2" || parsed.precision === "4" || parsed.precision === "6" || parsed.precision === "8") {
+          nextPrecision = parsed.precision;
+        }
       }
-      const parsed = JSON.parse(raw) as WeightHistoryEntry[];
-      if (Array.isArray(parsed)) {
-        setWeightHistory(parsed.slice(0, 10));
+
+      if (isWeightConverter) {
+        const rawHistory =
+          localStorage.getItem(historyStorageKey) ??
+          (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyHistoryStorageKey) : null);
+        if (rawHistory) {
+          const parsedHistory = JSON.parse(rawHistory) as unknown[];
+          if (Array.isArray(parsedHistory)) {
+            nextHistory = parsedHistory
+              .filter((entry) => Boolean(entry) && typeof entry === "object")
+              .map((entry) => {
+                const candidate = entry as Partial<WeightHistoryEntry>;
+                return {
+                  id: typeof candidate.id === "string" ? candidate.id : crypto.randomUUID(),
+                  input: Number(candidate.input),
+                  from: typeof candidate.from === "string" ? candidate.from : nextFrom,
+                  to: typeof candidate.to === "string" ? candidate.to : nextTo,
+                  output: Number(candidate.output),
+                  timestamp: typeof candidate.timestamp === "number" ? candidate.timestamp : Date.now(),
+                } satisfies WeightHistoryEntry;
+              })
+              .filter((entry) => Number.isFinite(entry.input) && Number.isFinite(entry.output))
+              .slice(0, 10);
+          }
+        }
       }
     } catch {
       // Ignore malformed storage and continue.
-    } finally {
-      setHistoryLoaded(true);
     }
-  }, [historyStorageKey, isWeightConverter]);
+
+    setInputValue(nextInput);
+    setFrom(nextFrom);
+    setTo(nextTo);
+    setPrecision(nextPrecision);
+    setStatus("");
+    setWeightHistory(nextHistory);
+    setHistoryLoaded(true);
+    setIsSessionHydrated(true);
+  }, [
+    historyStorageKey,
+    isWeightConverter,
+    legacyHistoryStorageKey,
+    quantity,
+    stateStorageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+    units,
+  ]);
 
   useEffect(() => {
-    if (!isWeightConverter || !historyLoaded) return;
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        stateStorageKey,
+        JSON.stringify({
+          inputValue,
+          from,
+          to,
+          precision,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [from, inputValue, isSessionHydrated, precision, stateStorageKey, to, toolSession.isReady]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated || !isWeightConverter || !historyLoaded) return;
     try {
       localStorage.setItem(historyStorageKey, JSON.stringify(weightHistory.slice(0, 10)));
     } catch {
       // Ignore storage failures.
     }
-  }, [historyLoaded, historyStorageKey, isWeightConverter, weightHistory]);
+  }, [
+    historyLoaded,
+    historyStorageKey,
+    isSessionHydrated,
+    isWeightConverter,
+    toolSession.isReady,
+    weightHistory,
+  ]);
 
   const parsedInput = Number(inputValue);
   const maxFractionDigits = Math.max(0, Math.min(10, Number(precision) || 6));
@@ -3859,6 +4020,21 @@ function UnitConverterTool({ quantity }: { quantity: UnitQuantity }) {
         icon={RefreshCw}
         title="Unit converter"
         subtitle="Fast, precise conversions with instant output updates and smart conversion helpers."
+      />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each converter session is saved locally and linked to this converter route."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched converter session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setStatus("Created a new converter session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
       />
 
       {isWeightConverter ? (
@@ -4111,12 +4287,59 @@ function NumberConverterTool({
 }: {
   mode: NumberConverterMode;
 }) {
+  const toolSession = useToolSession({
+    toolKey: `number-converter-${mode}`,
+    defaultSessionLabel: "Number converter",
+    newSessionPrefix: "numbers",
+  });
+  const storageKey = toolSession.storageKey(`utiliora-number-converter-input-${mode}-v1`);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [input, setInput] = useState("");
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+    try {
+      const saved = localStorage.getItem(storageKey);
+      setInput(typeof saved === "string" ? saved : "");
+    } catch {
+      setInput("");
+    } finally {
+      setStatus("");
+      setIsSessionHydrated(true);
+    }
+  }, [storageKey, toolSession.isReady]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(storageKey, input);
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [input, isSessionHydrated, storageKey, toolSession.isReady]);
+
   const result = useMemo(() => convertNumber(mode, input), [input, mode]);
 
   return (
     <section className="tool-surface">
-      <h2>Number converter</h2>
+      <ToolHeading icon={Hash} title="Number converter" subtitle="Convert between common number systems with saved sessions." />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each number-converter session is saved locally and linked to this route."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched number converter session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setStatus("Created a new number converter session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
+      />
       <label className="field">
         <span>Input</span>
         <input
@@ -4126,6 +4349,7 @@ function NumberConverterTool({
           placeholder="Enter value..."
         />
       </label>
+      {status ? <p className="supporting-text">{status}</p> : null}
       <div className="result-list">
         <div className="result-row">
           <span>Result</span>
