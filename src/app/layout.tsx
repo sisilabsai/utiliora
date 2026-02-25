@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
+import { AccessibilityFab } from "@/components/AccessibilityFab";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 
@@ -14,6 +15,40 @@ const geistMono = localFont({
   variable: "--font-geist-mono",
   weight: "100 900",
 });
+
+const accessibilityBootScript = `
+(() => {
+  try {
+    const key = "utiliora-accessibility-v1";
+    const root = document.documentElement;
+    const raw = localStorage.getItem(key);
+    const fallbackTheme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+    if (!raw) {
+      root.dataset.theme = fallbackTheme;
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+    root.dataset.theme = parsed?.theme === "dark" || parsed?.theme === "light" ? parsed.theme : fallbackTheme;
+
+    const fontScale = Number(parsed?.fontScale);
+    if (Number.isFinite(fontScale)) {
+      const clamped = Math.max(0.9, Math.min(1.25, fontScale));
+      root.style.setProperty("--font-scale", clamped.toFixed(2));
+    }
+
+    if (parsed?.lineSpacing) root.classList.add("a11y-line-spacing");
+    if (parsed?.reduceMotion) root.classList.add("a11y-reduce-motion");
+    if (parsed?.highContrast) root.classList.add("a11y-high-contrast");
+    if (parsed?.highlightLinks) root.classList.add("a11y-highlight-links");
+    if (parsed?.readableFont) root.classList.add("a11y-readable-font");
+  } catch {
+    const root = document.documentElement;
+    root.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+})();
+`;
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://utiliora.com"),
@@ -66,7 +101,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="light">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <a className="skip-link" href="#content">
           Skip to content
@@ -75,6 +113,7 @@ export default function RootLayout({
         <main id="content" className="site-main">
           {children}
         </main>
+        <AccessibilityFab />
         <SiteFooter />
       </body>
     </html>
