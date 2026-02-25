@@ -788,6 +788,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "pdf-split": "pdf-split",
   "pdf-compressor": "pdf-compressor",
   "pdf-to-word": "pdf-to-word-converter",
+  "word-to-pdf": "word-to-pdf-converter",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
 
@@ -806,6 +807,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "pdf-split": "PDF Split",
   "pdf-compressor": "PDF Compressor",
   "pdf-to-word": "PDF -> Word",
+  "word-to-pdf": "Word -> PDF",
   "pdf-to-jpg": "PDF -> JPG",
 };
 
@@ -9923,6 +9925,92 @@ async function loadPdfJsModule(): Promise<PdfJsModule> {
   return pdfJsModule;
 }
 
+async function loadJsZipModule() {
+  const jsZipModule = await import("jszip");
+  return jsZipModule.default;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&#x0*[dD];/g, "")
+    .replace(/&#x0*[aA];/g, "\n")
+    .replace(/&#13;/g, "")
+    .replace(/&#10;/g, "\n")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'");
+}
+
+function normalizeDocumentText(value: string): string {
+  return value
+    .replace(/\u0000/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractTextFromHtmlMarkup(markup: string): string {
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(markup, "text/html");
+  const blockNodes = Array.from(documentNode.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,tr,blockquote,pre,div"));
+  if (!blockNodes.length) {
+    return normalizeDocumentText(documentNode.body.textContent ?? "");
+  }
+
+  const lines = blockNodes
+    .map((node) => node.textContent?.trim() ?? "")
+    .filter(Boolean);
+  return normalizeDocumentText(lines.join("\n"));
+}
+
+async function extractTextFromDocx(file: File): Promise<string> {
+  const JSZip = await loadJsZipModule();
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const documentXmlFile = zip.file("word/document.xml");
+  if (!documentXmlFile) {
+    throw new Error("Could not locate word/document.xml in DOCX.");
+  }
+
+  let documentXml = await documentXmlFile.async("string");
+  documentXml = documentXml
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<w:br\/>/g, "\n")
+    .replace(/<w:cr\/>/g, "\n");
+
+  const rawParagraphs = documentXml.split("</w:p>");
+  const paragraphs: string[] = [];
+  for (const rawParagraph of rawParagraphs) {
+    const matches = Array.from(rawParagraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g));
+    const text = matches.map((match) => decodeXmlEntities(match[1] ?? "")).join("");
+    const normalized = normalizeDocumentText(text);
+    if (normalized) {
+      paragraphs.push(normalized);
+    }
+  }
+
+  return normalizeDocumentText(paragraphs.join("\n\n"));
+}
+
+async function extractTextFromDocumentFile(file: File): Promise<{ text: string; source: string }> {
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith(".docx")) {
+    const docxText = await extractTextFromDocx(file);
+    return { text: docxText, source: "DOCX" };
+  }
+
+  const rawText = await file.text();
+  const looksLikeHtml = /<\s*html|<\s*body|<\s*p|<\s*div/i.test(rawText);
+  if (lowerName.endsWith(".doc") || lowerName.endsWith(".html") || lowerName.endsWith(".htm") || looksLikeHtml) {
+    return { text: extractTextFromHtmlMarkup(rawText), source: lowerName.endsWith(".doc") ? "DOC (HTML)" : "HTML" };
+  }
+
+  return { text: normalizeDocumentText(rawText), source: "Text" };
+}
+
 function ImageToPdfTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
   const [items, setItems] = useState<ImageToPdfItem[]>([]);
   const [pdfName, setPdfName] = useState("utiliora-images");
@@ -11698,6 +11786,284 @@ function PdfToWordTool() {
   );
 }
 
+type PdfWordPagePreset = Exclude<PdfPageSizePreset, "fit-image">;
+
+function WordToPdfTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [documentSource, setDocumentSource] = useState("-");
+  const [documentText, setDocumentText] = useState("");
+  const [outputName, setOutputName] = useState("converted-document");
+  const [pagePreset, setPagePreset] = useState<PdfWordPagePreset>("a4");
+  const [fontSizePt, setFontSizePt] = useState(12);
+  const [lineHeight, setLineHeight] = useState(1.4);
+  const [marginMm, setMarginMm] = useState(14);
+  const [maxChars, setMaxChars] = useState(120000);
+  const [parsing, setParsing] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a Word-compatible document to convert.");
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [sourceWords, setSourceWords] = useState(0);
+  const [sourceChars, setSourceChars] = useState(0);
+  const [lastOutputBytes, setLastOutputBytes] = useState<number | null>(null);
+  const [lastOutputPages, setLastOutputPages] = useState(0);
+  const [lastRunMs, setLastRunMs] = useState<number | null>(null);
+
+  const isBusy = parsing || processing;
+  const safeMaxChars = Math.max(1000, Math.min(400000, Math.round(maxChars || 1000)));
+  const charsToRender = useMemo(
+    () => Math.min(normalizeDocumentText(documentText).length, safeMaxChars),
+    [documentText, safeMaxChars],
+  );
+
+  const parseFile = useCallback(async (nextFile: File) => {
+    setParsing(true);
+    setProgress(8);
+    setStatus("Extracting document text...");
+    try {
+      const extracted = await extractTextFromDocumentFile(nextFile);
+      const normalized = normalizeDocumentText(extracted.text);
+      setDocumentSource(extracted.source);
+      setDocumentText(normalized);
+      setSourceWords(countWords(normalized));
+      setSourceChars(countCharacters(normalized, true));
+      setProgress(100);
+      if (normalized) {
+        setStatus(
+          `Loaded ${extracted.source} content with ${formatNumericValue(countWords(normalized))} words.`,
+        );
+      } else {
+        setStatus("No readable text found in the selected document.");
+      }
+    } catch {
+      setDocumentSource("-");
+      setDocumentText("");
+      setSourceWords(0);
+      setSourceChars(0);
+      setStatus("Could not read this document. Try DOCX, DOC (HTML), TXT, Markdown, or HTML.");
+    } finally {
+      setParsing(false);
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setDocumentSource("-");
+        setDocumentText("");
+        setOutputName("converted-document");
+        setSourceBytes(0);
+        setSourceWords(0);
+        setSourceChars(0);
+        setLastOutputBytes(null);
+        setLastOutputPages(0);
+        setLastRunMs(null);
+        setStatus("Upload a Word-compatible document to convert.");
+        return;
+      }
+
+      setFile(candidate);
+      setSourceBytes(candidate.size);
+      setOutputName(stripFileExtension(candidate.name) || "converted-document");
+      setProgress(0);
+      setLastOutputBytes(null);
+      setLastOutputPages(0);
+      setLastRunMs(null);
+      void parseFile(candidate);
+      const lowerName = candidate.name.toLowerCase();
+      const extension = lowerName.includes(".") ? lowerName.slice(lowerName.lastIndexOf(".") + 1) : "unknown";
+      trackEvent("tool_word_to_pdf_upload", { size: candidate.size, extension });
+    },
+    [parseFile],
+  );
+
+  const convertToPdf = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a document first.");
+      return;
+    }
+
+    const normalized = normalizeDocumentText(documentText);
+    const textToRender = normalized.slice(0, safeMaxChars);
+    if (!textToRender) {
+      setStatus("No text available to convert.");
+      return;
+    }
+
+    const safeMargin = Math.max(6, Math.min(40, marginMm));
+    const safeFontSize = Math.max(8, Math.min(20, fontSizePt));
+    const safeLineHeightMultiplier = Math.max(1.1, Math.min(2.4, lineHeight));
+    const startedAt = Date.now();
+
+    setProcessing(true);
+    setProgress(5);
+    setStatus("Building PDF document...");
+
+    try {
+      const { jsPDF } = await import("jspdf");
+      const pdf = new jsPDF({
+        unit: "mm",
+        format: PDF_PAGE_SIZE_PRESETS[pagePreset].sizeMm,
+        compress: true,
+      });
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(safeFontSize);
+
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const maxLineWidth = Math.max(40, pageWidth - safeMargin * 2);
+      const lineHeightMm = Math.max(3.8, safeFontSize * safeLineHeightMultiplier * 0.352778);
+      const paragraphGapMm = Math.max(1.8, lineHeightMm * 0.45);
+      const paragraphs = textToRender.split(/\n+/).map((entry) => entry.trim()).filter(Boolean);
+
+      let y = safeMargin;
+      for (let index = 0; index < paragraphs.length; index += 1) {
+        const paragraph = paragraphs[index];
+        const lines = pdf.splitTextToSize(paragraph, maxLineWidth) as string[];
+        for (const line of lines) {
+          if (y + lineHeightMm > pageHeight - safeMargin) {
+            pdf.addPage();
+            y = safeMargin;
+          }
+          pdf.text(line || " ", safeMargin, y);
+          y += lineHeightMm;
+        }
+
+        y += paragraphGapMm;
+        if (y > pageHeight - safeMargin) {
+          pdf.addPage();
+          y = safeMargin;
+        }
+
+        const progressRatio = Math.min(0.95, (index + 1) / Math.max(1, paragraphs.length));
+        setProgress(Math.round(progressRatio * 100));
+      }
+
+      setStatus("Finalizing PDF download...");
+      setProgress(99);
+      const blob = pdf.output("blob");
+      const filenameBase = stripFileExtension(outputName.trim()) || "converted-document";
+      const filename = `${filenameBase}.pdf`;
+      const outputUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = outputUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(outputUrl);
+
+      const elapsed = Date.now() - startedAt;
+      setProgress(100);
+      setLastOutputBytes(blob.size);
+      setLastOutputPages(pdf.getNumberOfPages());
+      setLastRunMs(elapsed);
+      setStatus(`Converted ${filename} in ${(elapsed / 1000).toFixed(1)}s.`);
+      trackEvent("tool_word_to_pdf_convert", {
+        source: documentSource,
+        pages: pdf.getNumberOfPages(),
+        chars: textToRender.length,
+        pagePreset,
+      });
+    } catch {
+      setStatus("Word to PDF conversion failed. Try fewer characters or simpler content.");
+    } finally {
+      setProcessing(false);
+    }
+  }, [documentSource, documentText, file, fontSizePt, lineHeight, marginMm, outputName, pagePreset, safeMaxChars]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Word to PDF converter"
+        subtitle="Convert DOCX, DOC (HTML), TXT, Markdown, or HTML text into a downloadable PDF."
+      />
+
+      <label className="field">
+        <span>Upload document</span>
+        <input
+          type="file"
+          accept=".doc,.docx,.txt,.md,.html,.htm,.rtf,text/plain,text/markdown,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+          onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)}
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={outputName} onChange={(event) => setOutputName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Page size</span>
+          <select value={pagePreset} onChange={(event) => setPagePreset(event.target.value as PdfWordPagePreset)}>
+            {(Object.entries(PDF_PAGE_SIZE_PRESETS) as Array<[PdfWordPagePreset, { label: string }]>).map(([value, config]) => (
+              <option key={value} value={value}>
+                {config.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Font size ({fontSizePt} pt)</span>
+          <input type="range" min={8} max={20} step={1} value={fontSizePt} onChange={(event) => setFontSizePt(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Line height ({lineHeight.toFixed(2)})</span>
+          <input type="range" min={1.1} max={2.4} step={0.05} value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Margins ({marginMm} mm)</span>
+          <input type="range" min={6} max={40} step={1} value={marginMm} onChange={(event) => setMarginMm(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Max characters per run</span>
+          <input type="number" min={1000} max={400000} step={500} value={maxChars} onChange={(event) => setMaxChars(Number(event.target.value))} />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={() => file && void parseFile(file)} disabled={!file || isBusy}>
+          {parsing ? "Reading..." : "Re-read document"}
+        </button>
+        <button className="action-button" type="button" onClick={() => void convertToPdf()} disabled={!documentText || isBusy}>
+          {processing ? "Converting..." : "Convert to PDF"}
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Detected format", value: documentSource },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Source words", value: sourceWords ? formatNumericValue(sourceWords) : "-" },
+          { label: "Source characters", value: sourceChars ? formatNumericValue(sourceChars) : "-" },
+          { label: "Characters to render", value: documentText ? formatNumericValue(charsToRender) : "-" },
+          { label: "Last output pages", value: lastOutputPages ? formatNumericValue(lastOutputPages) : "-" },
+          { label: "Last output size", value: lastOutputBytes ? formatBytes(lastOutputBytes) : "-" },
+          { label: "Last run", value: lastRunMs ? `${(lastRunMs / 1000).toFixed(1)}s` : "-" },
+        ]}
+      />
+
+      <label className="field">
+        <span>Document text (editable before conversion)</span>
+        <textarea value={documentText} onChange={(event) => setDocumentText(event.target.value)} rows={10} />
+        <small className="supporting-text">
+          DOCX and DOC formatting is flattened to text paragraphs before PDF export.
+        </small>
+      </label>
+    </section>
+  );
+}
+
 function PdfToJpgTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -12104,6 +12470,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <PdfCompressorTool />;
     case "pdf-to-word":
       return <PdfToWordTool />;
+    case "word-to-pdf":
+      return <WordToPdfTool />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

@@ -120,6 +120,7 @@ export type ImageToolId =
   | "pdf-split"
   | "pdf-compressor"
   | "pdf-to-word"
+  | "word-to-pdf"
   | "pdf-to-jpg";
 
 export type ProductivityToolId =

@@ -754,6 +754,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("PDF to Word Converter"),
   },
   {
+    slug: "word-to-pdf-converter",
+    category: "image-tools",
+    title: "Word to PDF Converter",
+    summary: "Convert Word, DOCX, DOC, TXT, or HTML documents into a downloadable PDF.",
+    description:
+      "Import Word-compatible files, adjust page layout and typography settings, and export a clean PDF directly in your browser.",
+    keywords: ["word to pdf", "docx to pdf", "doc to pdf", "convert word document to pdf"],
+    engine: { kind: "image-tool", id: "word-to-pdf" },
+    faq: baseFaq("Word to PDF Converter"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",
