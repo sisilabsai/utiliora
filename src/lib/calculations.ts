@@ -157,29 +157,25 @@ interface LoanMetrics {
   totalInterest: number;
 }
 
+function amortizedMonthlyPayment(principal: number, annualRate: number, months: number): number {
+  const safePrincipal = Math.max(0, principal);
+  const safeAnnualRate = Math.max(0, annualRate);
+  const safeMonths = Math.max(1, Math.round(months));
+  const monthlyRate = safeAnnualRate / 12 / 100;
+  if (monthlyRate === 0) return safePrincipal / safeMonths;
+  const multiplier = Math.pow(1 + monthlyRate, safeMonths);
+  return (safePrincipal * monthlyRate * multiplier) / (multiplier - 1);
+}
+
 function loanMetrics(rawValues: Record<string, unknown>): LoanMetrics {
   const principal = Math.max(0, toNumber(rawValues.principal));
   const annualRate = Math.max(0, toNumber(rawValues.annualRate));
   const months = Math.max(1, Math.round(toNumber(rawValues.months, 12)));
   const monthlyRate = annualRate / 12 / 100;
 
-  if (monthlyRate === 0) {
-    const emi = principal / months;
-    return {
-      principal,
-      annualRate,
-      months,
-      monthlyRate,
-      emi,
-      totalPayment: principal,
-      totalInterest: 0,
-    };
-  }
-
-  const multiplier = Math.pow(1 + monthlyRate, months);
-  const emi = (principal * monthlyRate * multiplier) / (multiplier - 1);
+  const emi = amortizedMonthlyPayment(principal, annualRate, months);
   const totalPayment = emi * months;
-  const totalInterest = totalPayment - principal;
+  const totalInterest = Math.max(0, totalPayment - principal);
 
   return {
     principal,
@@ -262,6 +258,78 @@ function autoLoanMetrics(rawValues: Record<string, unknown>): AutoLoanMetrics {
     totalInterest,
     totalCost,
     loanToValue,
+  };
+}
+
+interface RefinanceMetrics {
+  currentBalance: number;
+  currentRate: number;
+  remainingMonths: number;
+  currentMonthlyPayment: number;
+  currentTotalPayment: number;
+  currentTotalInterest: number;
+  newRate: number;
+  newMonths: number;
+  closingCosts: number;
+  cashOutAmount: number;
+  rollClosingCosts: boolean;
+  refinancePrincipal: number;
+  upfrontRefinanceCost: number;
+  newMonthlyPayment: number;
+  newTotalPayment: number;
+  newTotalInterest: number;
+  monthlySavings: number;
+  lifetimeSavings: number;
+  breakEvenMonths: number;
+  breakEvenPossible: boolean;
+}
+
+function refinanceMetrics(rawValues: Record<string, unknown>): RefinanceMetrics {
+  const currentBalance = Math.max(0, toNumber(rawValues.currentBalance));
+  const currentRate = Math.max(0, toNumber(rawValues.currentRate));
+  const remainingMonths = Math.max(1, Math.round(toNumber(rawValues.remainingMonths, 300)));
+  const newRate = Math.max(0, toNumber(rawValues.newRate));
+  const newMonths = Math.max(1, Math.round(toNumber(rawValues.newMonths, 360)));
+  const closingCosts = Math.max(0, toNumber(rawValues.closingCosts));
+  const cashOutAmount = Math.max(0, toNumber(rawValues.cashOutAmount));
+  const rollClosingCosts = String(rawValues.rollClosingCosts ?? "yes").toLowerCase() !== "no";
+
+  const currentMonthlyPayment = amortizedMonthlyPayment(currentBalance, currentRate, remainingMonths);
+  const currentTotalPayment = currentMonthlyPayment * remainingMonths;
+  const currentTotalInterest = Math.max(0, currentTotalPayment - currentBalance);
+
+  const refinancePrincipal =
+    currentBalance + cashOutAmount + (rollClosingCosts ? closingCosts : 0);
+  const upfrontRefinanceCost = rollClosingCosts ? 0 : closingCosts;
+  const newMonthlyPayment = amortizedMonthlyPayment(refinancePrincipal, newRate, newMonths);
+  const newTotalPayment = newMonthlyPayment * newMonths;
+  const newTotalInterest = Math.max(0, newTotalPayment - refinancePrincipal);
+  const monthlySavings = currentMonthlyPayment - newMonthlyPayment;
+  const lifetimeSavings = currentTotalPayment - (newTotalPayment + upfrontRefinanceCost);
+  const breakEvenPossible = monthlySavings > 0 && upfrontRefinanceCost > 0;
+  const breakEvenMonths = breakEvenPossible ? upfrontRefinanceCost / monthlySavings : 0;
+
+  return {
+    currentBalance,
+    currentRate,
+    remainingMonths,
+    currentMonthlyPayment,
+    currentTotalPayment,
+    currentTotalInterest,
+    newRate,
+    newMonths,
+    closingCosts,
+    cashOutAmount,
+    rollClosingCosts,
+    refinancePrincipal,
+    upfrontRefinanceCost,
+    newMonthlyPayment,
+    newTotalPayment,
+    newTotalInterest,
+    monthlySavings,
+    lifetimeSavings,
+    breakEvenMonths,
+    breakEvenPossible,
   };
 }
 
@@ -1279,6 +1347,23 @@ export function getCalculatorInsights(
         `Every 1% rate increase can significantly raise lifetime cost on long tenures.`,
       ];
     }
+    case "refinance-calculator": {
+      const metrics = refinanceMetrics(rawValues);
+      const breakEvenText =
+        metrics.upfrontRefinanceCost <= 0
+          ? "No upfront refinance costs to recover."
+          : metrics.breakEvenPossible
+            ? `Estimated break-even: ${formatNumber(metrics.breakEvenMonths)} months.`
+            : "No break-even at current assumptions.";
+      return [
+        `Current payment vs new payment: ${formatMoney(metrics.currentMonthlyPayment)} -> ${formatMoney(
+          metrics.newMonthlyPayment,
+        )} (${metrics.monthlySavings >= 0 ? "+" : ""}${formatMoney(Math.abs(metrics.monthlySavings))}/month cash-flow impact).`,
+        `${breakEvenText} Lifetime impact: ${metrics.lifetimeSavings >= 0 ? "save" : "cost"} ${formatMoney(
+          Math.abs(metrics.lifetimeSavings),
+        )}.`,
+      ];
+    }
     case "auto-loan-calculator": {
       const metrics = autoLoanMetrics(rawValues);
       const interestShare = metrics.totalPayment === 0 ? 0 : (metrics.totalInterest / metrics.totalPayment) * 100;
@@ -1505,6 +1590,25 @@ export function runCalculator(
         { label: "Total Payment", value: formatMoney(metrics.totalPayment) },
         { label: "Total Interest", value: formatMoney(metrics.totalInterest) },
         { label: "Interest Share", value: formatPercent(interestShare) },
+      ];
+    }
+    case "refinance-calculator": {
+      const metrics = refinanceMetrics(rawValues);
+      const breakEvenValue =
+        metrics.upfrontRefinanceCost <= 0
+          ? "Immediate (no upfront closing costs)"
+          : metrics.breakEvenPossible
+            ? `${formatNumber(metrics.breakEvenMonths)} months`
+            : "Not reached";
+      return [
+        { label: "Current Monthly Payment", value: formatMoney(metrics.currentMonthlyPayment) },
+        { label: "New Monthly Payment", value: formatMoney(metrics.newMonthlyPayment) },
+        { label: "Monthly Payment Change", value: formatMoney(metrics.monthlySavings) },
+        { label: "Refinanced Principal", value: formatMoney(metrics.refinancePrincipal) },
+        { label: "Current Total Remaining Cost", value: formatMoney(metrics.currentTotalPayment) },
+        { label: "New Total Cost (incl. upfront costs)", value: formatMoney(metrics.newTotalPayment + metrics.upfrontRefinanceCost) },
+        { label: "Lifetime Savings", value: formatMoney(metrics.lifetimeSavings) },
+        { label: "Break-even Time", value: breakEvenValue },
       ];
     }
     case "auto-loan-calculator": {

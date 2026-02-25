@@ -43,6 +43,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Auto Loan Calculator"),
   },
   {
+    slug: "refinance-calculator",
+    category: "calculators",
+    title: "Refinance Calculator",
+    summary: "Compare current loan vs refinance terms with break-even timing and lifetime savings.",
+    description:
+      "Evaluate refinancing by comparing payment, total remaining cost, closing costs, and break-even period under new rate and term assumptions.",
+    keywords: ["refinance calculator", "mortgage refinance", "loan refinance break even"],
+    engine: { kind: "calculator", id: "refinance-calculator" },
+    faq: baseFaq("Refinance Calculator"),
+  },
+  {
     slug: "mortgage-calculator",
     category: "calculators",
     title: "Mortgage Calculator",

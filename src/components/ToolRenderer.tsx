@@ -203,6 +203,79 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
       ],
     },
   ],
+  "refinance-calculator": [
+    {
+      name: "currentBalance",
+      label: "Current loan balance (USD)",
+      defaultValue: "320000",
+      min: 0,
+      step: 100,
+      type: "number",
+    },
+    {
+      name: "currentRate",
+      label: "Current interest rate (%)",
+      defaultValue: "7.1",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "remainingMonths",
+      label: "Remaining term (months)",
+      defaultValue: "324",
+      min: 1,
+      step: 1,
+      type: "number",
+    },
+    {
+      name: "newRate",
+      label: "New refinance rate (%)",
+      defaultValue: "5.9",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "newMonths",
+      label: "New term",
+      defaultValue: "360",
+      type: "select",
+      options: [
+        { label: "120 months", value: "120" },
+        { label: "180 months", value: "180" },
+        { label: "240 months", value: "240" },
+        { label: "300 months", value: "300" },
+        { label: "360 months", value: "360" },
+      ],
+    },
+    {
+      name: "closingCosts",
+      label: "Closing costs (USD)",
+      defaultValue: "6500",
+      min: 0,
+      step: 50,
+      type: "number",
+    },
+    {
+      name: "cashOutAmount",
+      label: "Cash-out amount (USD)",
+      defaultValue: "0",
+      min: 0,
+      step: 100,
+      type: "number",
+    },
+    {
+      name: "rollClosingCosts",
+      label: "Roll closing costs into new loan",
+      defaultValue: "yes",
+      type: "select",
+      options: [
+        { label: "Yes (finance costs)", value: "yes" },
+        { label: "No (pay upfront)", value: "no" },
+      ],
+    },
+  ] satisfies CalculatorField[],
   "mortgage-calculator": [
     {
       name: "homePrice",
@@ -637,6 +710,7 @@ interface CalculatorPreset {
 const calculatorSubtitles: Record<CalculatorId, string> = {
   "loan-emi-calculator": "Plan loan payments with amortization detail and repayment impact.",
   "auto-loan-calculator": "Estimate realistic car-financing cost with tax, fees, trade-in, and APR.",
+  "refinance-calculator": "Compare refinance options with payment delta, break-even time, and lifetime cost impact.",
   "mortgage-calculator": "Estimate all-in home payments with taxes, insurance, and HOA included.",
   "debt-to-income-calculator": "Model lender-style front-end/back-end DTI and affordability headroom in one view.",
   "compound-interest-calculator": "Model long-term growth and compounding outcomes year by year.",
@@ -703,6 +777,47 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
         dealerFees: "1200",
         annualRate: "5.5",
         months: "48",
+      },
+    },
+  ],
+  "refinance-calculator": [
+    {
+      label: "Rate drop refinance",
+      values: {
+        currentBalance: "320000",
+        currentRate: "7.1",
+        remainingMonths: "324",
+        newRate: "5.9",
+        newMonths: "360",
+        closingCosts: "6500",
+        cashOutAmount: "0",
+        rollClosingCosts: "yes",
+      },
+    },
+    {
+      label: "Shorter term refinance",
+      values: {
+        currentBalance: "280000",
+        currentRate: "6.8",
+        remainingMonths: "300",
+        newRate: "5.75",
+        newMonths: "240",
+        closingCosts: "5500",
+        cashOutAmount: "0",
+        rollClosingCosts: "yes",
+      },
+    },
+    {
+      label: "Cash-out refinance",
+      values: {
+        currentBalance: "240000",
+        currentRate: "6.4",
+        remainingMonths: "264",
+        newRate: "6.1",
+        newMonths: "300",
+        closingCosts: "7000",
+        cashOutAmount: "25000",
+        rollClosingCosts: "yes",
       },
     },
   ],
@@ -926,6 +1041,7 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
 const CALCULATORS_WITH_DISPLAY_CURRENCY = new Set<CalculatorId>([
   "loan-emi-calculator",
   "auto-loan-calculator",
+  "refinance-calculator",
   "mortgage-calculator",
   "debt-to-income-calculator",
   "compound-interest-calculator",
@@ -2225,6 +2341,7 @@ const FINANCE_PROFILE_PRESETS: FinanceProfilePreset[] = [
 const FINANCE_CALCULATORS = new Set<CalculatorId>([
   "loan-emi-calculator",
   "auto-loan-calculator",
+  "refinance-calculator",
   "mortgage-calculator",
   "debt-to-income-calculator",
   "compound-interest-calculator",
@@ -2274,6 +2391,18 @@ const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink
       description: "Model high-interest debt payoff so auto financing stays manageable.",
     },
   ],
+  "refinance-calculator": [
+    {
+      id: "debt-to-income-calculator",
+      label: "Validate new payment",
+      description: "Push the refinanced monthly payment into DTI and confirm affordability.",
+    },
+    {
+      id: "savings-goal-calculator",
+      label: "Deploy monthly savings",
+      description: "Turn payment savings into an automatic savings/investment timeline.",
+    },
+  ],
   "mortgage-calculator": [
     {
       id: "debt-to-income-calculator",
@@ -2284,6 +2413,11 @@ const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink
       id: "savings-goal-calculator",
       label: "Plan down payment",
       description: "Create a timeline to build your down-payment target.",
+    },
+    {
+      id: "refinance-calculator",
+      label: "Test refinance scenario",
+      description: "Compare your existing mortgage setup against a potential refinance offer.",
     },
   ],
   "debt-to-income-calculator": [
@@ -2301,6 +2435,11 @@ const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink
       id: "auto-loan-calculator",
       label: "Estimate car loan payment",
       description: "Convert your debt headroom into a realistic auto-loan scenario.",
+    },
+    {
+      id: "refinance-calculator",
+      label: "Estimate refinance impact",
+      description: "Measure if a refinance payment helps or hurts your total debt position.",
     },
     {
       id: "credit-card-payoff-calculator",
@@ -2385,6 +2524,25 @@ function buildFunnelPrefillValues(
     };
   }
 
+  if (sourceId === "mortgage-calculator" && targetId === "refinance-calculator") {
+    const homePrice = Math.max(0, safeNumberValue(values.homePrice));
+    const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+    const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+    const years = Math.max(1, Math.round(safeNumberValue(values.years)));
+    const principal = Math.max(0, homePrice - downPayment);
+    const remainingMonths = years * 12;
+    return {
+      currentBalance: principal.toFixed(0),
+      currentRate: annualRate.toFixed(2),
+      remainingMonths: remainingMonths.toString(),
+      newRate: Math.max(0, annualRate - 0.75).toFixed(2),
+      newMonths: remainingMonths.toString(),
+      closingCosts: Math.max(2500, principal * 0.015).toFixed(0),
+      cashOutAmount: "0",
+      rollClosingCosts: "yes",
+    };
+  }
+
   if (sourceId === "loan-emi-calculator" && targetId === "debt-to-income-calculator") {
     const principal = Math.max(0, safeNumberValue(values.principal));
     const annualRate = Math.max(0, safeNumberValue(values.annualRate));
@@ -2438,6 +2596,20 @@ function buildFunnelPrefillValues(
       annualPropertyTaxRate: "1.2",
       annualHomeInsurance: "1800",
       monthlyHoa: "0",
+    };
+  }
+
+  if (sourceId === "refinance-calculator" && targetId === "debt-to-income-calculator") {
+    const currentBalance = Math.max(0, safeNumberValue(values.currentBalance));
+    const cashOutAmount = Math.max(0, safeNumberValue(values.cashOutAmount));
+    const closingCosts = Math.max(0, safeNumberValue(values.closingCosts));
+    const rollClosingCosts = String(values.rollClosingCosts ?? "yes").toLowerCase() !== "no";
+    const newRate = Math.max(0, safeNumberValue(values.newRate));
+    const newMonths = Math.max(1, safeNumberValue(values.newMonths));
+    const principal = currentBalance + cashOutAmount + (rollClosingCosts ? closingCosts : 0);
+    const monthlyHousingPayment = estimateMonthlyPayment(principal, newRate, newMonths);
+    return {
+      monthlyHousingPayment: monthlyHousingPayment.toFixed(2),
     };
   }
 
@@ -2536,6 +2708,28 @@ function buildSmartActionPlan(
       `Compare ${months}-month financing against a shorter term and target APR under ${formatNumericValue(
         Math.max(0, annualRate - 1),
       )}% before signing.`,
+    );
+    return plans;
+  }
+
+  if (id === "refinance-calculator") {
+    const monthlyDelta = getRowNumericValue(resultRows, "Monthly Payment Change") ?? 0;
+    const breakEven = getRowNumericValue(resultRows, "Break-even Time");
+    const lifetimeSavings = getRowNumericValue(resultRows, "Lifetime Savings") ?? 0;
+    plans.push(
+      monthlyDelta >= 0
+        ? `Estimated monthly payment drops by about ${formatMoney(monthlyDelta)}; redirect this to principal or investments immediately.`
+        : `Refinance increases payment by about ${formatMoney(Math.abs(monthlyDelta))}; only proceed if term reduction or other goals justify it.`,
+    );
+    plans.push(
+      breakEven !== null && breakEven > 0
+        ? `Break-even is around ${formatNumericValue(breakEven)} months. Keep the loan beyond that horizon to capture value.`
+        : "No meaningful break-even under current assumptions. Revisit rate, term, and closing-cost structure.",
+    );
+    plans.push(
+      `Lifetime impact estimate: ${lifetimeSavings >= 0 ? "save" : "spend"} about ${formatMoney(
+        Math.abs(lifetimeSavings),
+      )} versus staying in the current loan.`,
     );
     return plans;
   }
@@ -3194,6 +3388,16 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
       const principal = Math.max(0, vehiclePrice + salesTaxAmount + dealerFees - downPayment - tradeInValue);
       return getLoanAmortizationSchedule({ principal, annualRate, months });
     }
+    if (id === "refinance-calculator") {
+      const currentBalance = Math.max(0, safeNumberValue(values.currentBalance));
+      const cashOutAmount = Math.max(0, safeNumberValue(values.cashOutAmount));
+      const closingCosts = Math.max(0, safeNumberValue(values.closingCosts));
+      const rollClosingCosts = String(values.rollClosingCosts ?? "yes").toLowerCase() !== "no";
+      const annualRate = Math.max(0, safeNumberValue(values.newRate));
+      const months = Math.max(1, Math.round(safeNumberValue(values.newMonths)));
+      const principal = currentBalance + cashOutAmount + (rollClosingCosts ? closingCosts : 0);
+      return getLoanAmortizationSchedule({ principal, annualRate, months });
+    }
     if (id === "mortgage-calculator") {
       const homePrice = Math.max(0, safeNumberValue(values.homePrice));
       const downPayment = Math.max(0, safeNumberValue(values.downPayment));
@@ -3744,7 +3948,7 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         </div>
       ) : null}
 
-      {(id === "loan-emi-calculator" || id === "auto-loan-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
+      {(id === "loan-emi-calculator" || id === "auto-loan-calculator" || id === "refinance-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
         <div className="mini-panel">
           <div className="panel-head">
             <h3>Amortization schedule</h3>
