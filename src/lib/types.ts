@@ -134,6 +134,7 @@ export type ProductivityToolId =
   | "simple-todo-list"
   | "notes-pad"
   | "text-translator"
+  | "document-translator"
   | "resume-builder"
   | "invoice-generator";
 

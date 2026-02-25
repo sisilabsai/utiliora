@@ -47,6 +47,17 @@ import {
 import { trackEvent } from "@/lib/analytics";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
+  buildDocumentTranslationWordMarkup,
+  DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
+  DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
+  parseGlossaryTerms,
+  protectGlossaryTerms,
+  restoreGlossaryTokens,
+  sanitizeDocumentTranslationText,
+  splitDocumentIntoTranslationChunks,
+  summarizeProviderCounts,
+} from "@/lib/document-translator";
+import {
   beautifyHtml,
   countCharacters,
   countWords,
@@ -15653,6 +15664,71 @@ async function extractTextFromDocumentFile(file: File): Promise<{ text: string; 
   return { text: normalizeDocumentText(rawText), source: "Text" };
 }
 
+interface PdfDocumentTextExtractionOptions {
+  pageRangeInput?: string;
+  maxPages?: number;
+  includePageMarkers?: boolean;
+  onProgress?: (options: { processed: number; total: number; pageNumber: number }) => void;
+}
+
+interface PdfDocumentTextExtractionResult {
+  text: string;
+  totalPages: number;
+  selectedPages: number[];
+}
+
+async function extractTextFromPdfDocument(
+  file: File,
+  options: PdfDocumentTextExtractionOptions = {},
+): Promise<PdfDocumentTextExtractionResult> {
+  let loadingTask: PdfJsLoadingTask | null = null;
+  let pdfDocument: PdfJsDocument | null = null;
+  try {
+    const pdfjs = await loadPdfJsModule();
+    const bytes = await readPdfFileBytes(file);
+    const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+    loadingTask = opened.loadingTask;
+    pdfDocument = opened.pdfDocument;
+    const totalPages = pdfDocument.numPages;
+
+    const rawSelectedPages = parsePageRangeInput(options.pageRangeInput ?? "all", totalPages);
+    if (!rawSelectedPages?.length) {
+      throw new Error("Invalid page range.");
+    }
+    const safeMaxPages = Math.max(1, Math.min(300, Math.round(options.maxPages ?? 120)));
+    const selectedPages = rawSelectedPages.slice(0, safeMaxPages);
+    if (!selectedPages.length) {
+      throw new Error("No pages selected.");
+    }
+
+    const includePageMarkers = options.includePageMarkers ?? true;
+    const sections: string[] = [];
+
+    for (let index = 0; index < selectedPages.length; index += 1) {
+      const pageNumber = selectedPages[index];
+      const page = await pdfDocument.getPage(pageNumber);
+      const textContent = page.getTextContent ? await page.getTextContent() : null;
+      const items = textContent && Array.isArray(textContent.items) ? textContent.items : [];
+      const lines = extractPdfTextLines(items as PdfJsTextItem[]);
+      const content = lines.length ? lines.join("\n") : "[No extractable text on this page]";
+      sections.push(includePageMarkers ? `Page ${pageNumber}\n${content}` : content);
+      options.onProgress?.({
+        processed: index + 1,
+        total: selectedPages.length,
+        pageNumber,
+      });
+    }
+
+    return {
+      text: normalizeDocumentText(sections.join("\n\n")),
+      totalPages,
+      selectedPages,
+    };
+  } finally {
+    await closePdfDocumentResources(loadingTask, pdfDocument);
+  }
+}
+
 function ImageToPdfTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomingFile | null }) {
   const [items, setItems] = useState<ImageToPdfItem[]>([]);
   const [pdfName, setPdfName] = useState("utiliora-images");
@@ -19734,6 +19810,733 @@ function TextTranslatorTool() {
   );
 }
 
+interface DocumentTranslatorHistoryEntry {
+  id: string;
+  documentName: string;
+  documentSource: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  detectedSourceLanguage: string;
+  providerSummary: string;
+  sourceChars: number;
+  translatedChars: number;
+  chunkCount: number;
+  durationMs: number;
+  sourcePreview: string;
+  translatedPreview: string;
+  sourceExcerpt: string;
+  translatedExcerpt: string;
+  createdAt: number;
+}
+
+const DOCUMENT_TRANSLATOR_DEFAULT_CHUNK_SIZE = 3200;
+const DOCUMENT_TRANSLATOR_HISTORY_EXCERPT_LIMIT = 12_000;
+
+function sanitizeDocumentTranslatorHistoryEntry(candidate: unknown): DocumentTranslatorHistoryEntry | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const entry = candidate as Partial<DocumentTranslatorHistoryEntry>;
+  if (typeof entry.documentName !== "string") return null;
+  const sourceLanguage = resolveTranslationLanguage(entry.sourceLanguage, TRANSLATION_AUTO_LANGUAGE_CODE, {
+    allowAuto: true,
+    supportedOnly: true,
+  });
+  const targetLanguage = resolveTranslationLanguage(entry.targetLanguage, "en", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+  const detectedSourceLanguage = resolveTranslationLanguage(entry.detectedSourceLanguage, "", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+  const sourcePreview =
+    typeof entry.sourcePreview === "string"
+      ? entry.sourcePreview.slice(0, 320)
+      : typeof entry.sourceExcerpt === "string"
+        ? buildTranslationPreview(entry.sourceExcerpt, 320)
+        : "";
+  const translatedPreview =
+    typeof entry.translatedPreview === "string"
+      ? entry.translatedPreview.slice(0, 320)
+      : typeof entry.translatedExcerpt === "string"
+        ? buildTranslationPreview(entry.translatedExcerpt, 320)
+        : "";
+  const sourceExcerpt =
+    typeof entry.sourceExcerpt === "string"
+      ? entry.sourceExcerpt.slice(0, DOCUMENT_TRANSLATOR_HISTORY_EXCERPT_LIMIT)
+      : sourcePreview;
+  const translatedExcerpt =
+    typeof entry.translatedExcerpt === "string"
+      ? entry.translatedExcerpt.slice(0, DOCUMENT_TRANSLATOR_HISTORY_EXCERPT_LIMIT)
+      : translatedPreview;
+  if (!sourcePreview.trim() || !translatedPreview.trim()) return null;
+
+  return {
+    id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+    documentName: entry.documentName.slice(0, 140) || "Document",
+    documentSource: typeof entry.documentSource === "string" ? entry.documentSource.slice(0, 80) : "Unknown",
+    sourceLanguage,
+    targetLanguage,
+    detectedSourceLanguage,
+    providerSummary: typeof entry.providerSummary === "string" ? entry.providerSummary.slice(0, 180) : "unknown",
+    sourceChars: Number.isFinite(entry.sourceChars) ? Math.max(0, Math.round(entry.sourceChars as number)) : 0,
+    translatedChars: Number.isFinite(entry.translatedChars) ? Math.max(0, Math.round(entry.translatedChars as number)) : 0,
+    chunkCount: Number.isFinite(entry.chunkCount) ? Math.max(0, Math.round(entry.chunkCount as number)) : 0,
+    durationMs: Number.isFinite(entry.durationMs) ? Math.max(0, Math.round(entry.durationMs as number)) : 0,
+    sourcePreview,
+    translatedPreview,
+    sourceExcerpt,
+    translatedExcerpt,
+    createdAt: typeof entry.createdAt === "number" ? entry.createdAt : Date.now(),
+  };
+}
+
+interface DocumentTranslatorWorkspaceSnapshot {
+  documentName: string;
+  documentSource: string;
+  sourceText: string;
+  translatedText: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  detectedSourceLanguage: string;
+  providerSummary: string;
+  glossaryInput: string;
+  chunkSize: number;
+  pageRangeInput: string;
+  maxPdfPages: number;
+  includePdfPageMarkers: boolean;
+  includeSourceOnDocExport: boolean;
+  sourceTotalPages: number;
+  sourceSelectedPages: number;
+  lastChunkCount: number;
+  lastDurationMs: number;
+}
+
+function sanitizeDocumentTranslatorWorkspaceSnapshot(candidate: unknown): DocumentTranslatorWorkspaceSnapshot {
+  const entry = candidate && typeof candidate === "object"
+    ? (candidate as Partial<DocumentTranslatorWorkspaceSnapshot>)
+    : {};
+  const sourceText = sanitizeDocumentTranslationText(typeof entry.sourceText === "string" ? entry.sourceText : "").slice(
+    0,
+    DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
+  );
+  const translatedText = sanitizeDocumentTranslationText(
+    typeof entry.translatedText === "string" ? entry.translatedText : "",
+  ).slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+  const sourceLanguage = resolveTranslationLanguage(entry.sourceLanguage, TRANSLATION_AUTO_LANGUAGE_CODE, {
+    allowAuto: true,
+    supportedOnly: true,
+  });
+  const targetLanguage = resolveTranslationLanguage(entry.targetLanguage, "en", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+  const detectedSourceLanguage = resolveTranslationLanguage(entry.detectedSourceLanguage, "", {
+    allowAuto: false,
+    supportedOnly: true,
+  });
+  const chunkSize = Number.isFinite(entry.chunkSize)
+    ? Math.max(600, Math.min(4000, Math.round(entry.chunkSize as number)))
+    : DOCUMENT_TRANSLATOR_DEFAULT_CHUNK_SIZE;
+  const maxPdfPages = Number.isFinite(entry.maxPdfPages)
+    ? Math.max(1, Math.min(300, Math.round(entry.maxPdfPages as number)))
+    : 80;
+  const sourceTotalPages = Number.isFinite(entry.sourceTotalPages)
+    ? Math.max(0, Math.min(3000, Math.round(entry.sourceTotalPages as number)))
+    : 0;
+  const sourceSelectedPages = Number.isFinite(entry.sourceSelectedPages)
+    ? Math.max(0, Math.min(sourceTotalPages || 3000, Math.round(entry.sourceSelectedPages as number)))
+    : 0;
+  return {
+    documentName: typeof entry.documentName === "string" ? entry.documentName.slice(0, 140) || "Untitled document" : "Untitled document",
+    documentSource: typeof entry.documentSource === "string" ? entry.documentSource.slice(0, 120) || "No file loaded" : "No file loaded",
+    sourceText,
+    translatedText,
+    sourceLanguage,
+    targetLanguage,
+    detectedSourceLanguage,
+    providerSummary: typeof entry.providerSummary === "string" ? entry.providerSummary.slice(0, 220) : "",
+    glossaryInput: typeof entry.glossaryInput === "string" ? entry.glossaryInput.slice(0, 10_000) : "",
+    chunkSize,
+    pageRangeInput: typeof entry.pageRangeInput === "string" ? entry.pageRangeInput.slice(0, 80) || "all" : "all",
+    maxPdfPages,
+    includePdfPageMarkers: entry.includePdfPageMarkers ?? true,
+    includeSourceOnDocExport: entry.includeSourceOnDocExport ?? true,
+    sourceTotalPages,
+    sourceSelectedPages,
+    lastChunkCount: Number.isFinite(entry.lastChunkCount) ? Math.max(0, Math.round(entry.lastChunkCount as number)) : 0,
+    lastDurationMs: Number.isFinite(entry.lastDurationMs) ? Math.max(0, Math.round(entry.lastDurationMs as number)) : 0,
+  };
+}
+
+function DocumentTranslatorTool() {
+  const toolSession = useToolSession({
+    toolKey: "document-translator",
+    defaultSessionLabel: "Document translation workspace",
+    newSessionPrefix: "doc-translator",
+  });
+  const workspaceStorageKey = toolSession.storageKey("utiliora-document-translator-workspace-v1");
+  const historyStorageKey = toolSession.storageKey("utiliora-document-translator-history-v1");
+  const legacyWorkspaceStorageKey = "utiliora-document-translator-workspace-v1";
+  const legacyHistoryStorageKey = "utiliora-document-translator-history-v1";
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const [activeFile, setActiveFile] = useState<File | null>(null);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const [documentName, setDocumentName] = useState("Untitled document");
+  const [documentSource, setDocumentSource] = useState("No file loaded");
+  const [sourceText, setSourceText] = useState("");
+  const [translatedText, setTranslatedText] = useState("");
+  const [sourceLanguage, setSourceLanguage] = useState(TRANSLATION_AUTO_LANGUAGE_CODE);
+  const [targetLanguage, setTargetLanguage] = useState("en");
+  const [detectedSourceLanguage, setDetectedSourceLanguage] = useState("");
+  const [providerSummary, setProviderSummary] = useState("");
+  const [glossaryInput, setGlossaryInput] = useState("");
+  const [chunkSize, setChunkSize] = useState(DOCUMENT_TRANSLATOR_DEFAULT_CHUNK_SIZE);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPdfPages, setMaxPdfPages] = useState(80);
+  const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(true);
+  const [includeSourceOnDocExport, setIncludeSourceOnDocExport] = useState(true);
+  const [sourceTotalPages, setSourceTotalPages] = useState(0);
+  const [sourceSelectedPages, setSourceSelectedPages] = useState(0);
+  const [isParsing, setIsParsing] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [lastChunkCount, setLastChunkCount] = useState(0);
+  const [lastDurationMs, setLastDurationMs] = useState(0);
+  const [status, setStatus] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const [history, setHistory] = useState<DocumentTranslatorHistoryEntry[]>([]);
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setActiveFile(null);
+    setIsParsing(false);
+    setIsTranslating(false);
+    setProgress(0);
+    setStatus("");
+    setCopyStatus("");
+
+    let nextWorkspace = sanitizeDocumentTranslatorWorkspaceSnapshot(null);
+    let nextHistory: DocumentTranslatorHistoryEntry[] = [];
+    try {
+      const rawWorkspace =
+        localStorage.getItem(workspaceStorageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyWorkspaceStorageKey) : null);
+      if (rawWorkspace) {
+        nextWorkspace = sanitizeDocumentTranslatorWorkspaceSnapshot(JSON.parse(rawWorkspace));
+      }
+      const rawHistory =
+        localStorage.getItem(historyStorageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyHistoryStorageKey) : null);
+      if (rawHistory) {
+        const parsed = JSON.parse(rawHistory) as unknown[];
+        if (Array.isArray(parsed)) {
+          nextHistory = parsed
+            .map((entry) => sanitizeDocumentTranslatorHistoryEntry(entry))
+            .filter((entry): entry is DocumentTranslatorHistoryEntry => Boolean(entry))
+            .slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT);
+        }
+      }
+    } catch {
+      // Ignore malformed workspace data.
+    }
+
+    setDocumentName(nextWorkspace.documentName);
+    setDocumentSource(nextWorkspace.documentSource);
+    setSourceText(nextWorkspace.sourceText);
+    setTranslatedText(nextWorkspace.translatedText);
+    setSourceLanguage(nextWorkspace.sourceLanguage);
+    setTargetLanguage(nextWorkspace.targetLanguage);
+    setDetectedSourceLanguage(nextWorkspace.detectedSourceLanguage);
+    setProviderSummary(nextWorkspace.providerSummary);
+    setGlossaryInput(nextWorkspace.glossaryInput);
+    setChunkSize(nextWorkspace.chunkSize);
+    setPageRangeInput(nextWorkspace.pageRangeInput);
+    setMaxPdfPages(nextWorkspace.maxPdfPages);
+    setIncludePdfPageMarkers(nextWorkspace.includePdfPageMarkers);
+    setIncludeSourceOnDocExport(nextWorkspace.includeSourceOnDocExport);
+    setSourceTotalPages(nextWorkspace.sourceTotalPages);
+    setSourceSelectedPages(nextWorkspace.sourceSelectedPages);
+    setLastChunkCount(nextWorkspace.lastChunkCount);
+    setLastDurationMs(nextWorkspace.lastDurationMs);
+    setHistory(nextHistory);
+    setIsSessionHydrated(true);
+  }, [
+    historyStorageKey,
+    legacyHistoryStorageKey,
+    legacyWorkspaceStorageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+    workspaceStorageKey,
+  ]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        workspaceStorageKey,
+        JSON.stringify({
+          documentName,
+          documentSource,
+          sourceText,
+          translatedText,
+          sourceLanguage,
+          targetLanguage,
+          detectedSourceLanguage,
+          providerSummary,
+          glossaryInput,
+          chunkSize,
+          pageRangeInput,
+          maxPdfPages,
+          includePdfPageMarkers,
+          includeSourceOnDocExport,
+          sourceTotalPages,
+          sourceSelectedPages,
+          lastChunkCount,
+          lastDurationMs,
+        } satisfies DocumentTranslatorWorkspaceSnapshot),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    chunkSize,
+    detectedSourceLanguage,
+    documentName,
+    documentSource,
+    glossaryInput,
+    includePdfPageMarkers,
+    includeSourceOnDocExport,
+    isSessionHydrated,
+    lastChunkCount,
+    lastDurationMs,
+    maxPdfPages,
+    pageRangeInput,
+    providerSummary,
+    sourceLanguage,
+    sourceSelectedPages,
+    sourceText,
+    sourceTotalPages,
+    targetLanguage,
+    toolSession.isReady,
+    translatedText,
+    workspaceStorageKey,
+  ]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey, isSessionHydrated, toolSession.isReady]);
+
+  const glossaryTerms = useMemo(() => parseGlossaryTerms(glossaryInput), [glossaryInput]);
+  const effectiveDetectedSource =
+    detectedSourceLanguage ||
+    (sourceLanguage !== TRANSLATION_AUTO_LANGUAGE_CODE ? sourceLanguage : "");
+  const isBusy = isParsing || isTranslating;
+
+  const sourceStats = useMemo(() => {
+    const normalized = sanitizeDocumentTranslationText(sourceText);
+    return { words: countWords(normalized), chars: normalized.length };
+  }, [sourceText]);
+
+  const translatedStats = useMemo(() => {
+    const normalized = sanitizeDocumentTranslationText(translatedText);
+    return { words: countWords(normalized), chars: normalized.length };
+  }, [translatedText]);
+
+  const pushHistoryEntry = useCallback((entry: Omit<DocumentTranslatorHistoryEntry, "id" | "createdAt">) => {
+    if (!entry.sourcePreview.trim() || !entry.translatedPreview.trim()) return;
+    setHistory((current) => [
+      { id: crypto.randomUUID(), createdAt: Date.now(), ...entry },
+      ...current,
+    ].slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT));
+  }, []);
+
+  const parseFile = useCallback(async (file: File) => {
+    setIsParsing(true);
+    setProgress(5);
+    setStatus("Extracting readable text...");
+    const lowerName = file.name.toLowerCase();
+    const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+    try {
+      let extractedText = "";
+      let sourceLabel = "Text";
+      let totalPages = 0;
+      let selectedPages = 0;
+
+      if (isPdf) {
+        const extracted = await extractTextFromPdfDocument(file, {
+          pageRangeInput,
+          maxPages: maxPdfPages,
+          includePageMarkers: includePdfPageMarkers,
+          onProgress: ({ processed, total }) => {
+            const ratio = total > 0 ? processed / total : 0;
+            setProgress(Math.max(6, Math.min(80, Math.round(ratio * 75))));
+          },
+        });
+        extractedText = extracted.text;
+        totalPages = extracted.totalPages;
+        selectedPages = extracted.selectedPages.length;
+        sourceLabel = `PDF (${selectedPages}/${totalPages} pages)`;
+      } else {
+        const extracted = await extractTextFromDocumentFile(file);
+        extractedText = extracted.text;
+        sourceLabel = extracted.source;
+        setProgress(70);
+      }
+
+      const normalized = sanitizeDocumentTranslationText(extractedText);
+      const bounded = normalized.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+      const wasTrimmed = bounded.length < normalized.length;
+      setDocumentName(stripFileExtension(file.name) || "Untitled document");
+      setDocumentSource(sourceLabel);
+      setSourceText(bounded);
+      setTranslatedText("");
+      setDetectedSourceLanguage("");
+      setProviderSummary("");
+      setSourceTotalPages(totalPages);
+      setSourceSelectedPages(selectedPages);
+      setLastChunkCount(0);
+      setLastDurationMs(0);
+      setProgress(100);
+      if (!bounded) {
+        setStatus("No readable text found in this document.");
+      } else if (wasTrimmed) {
+        setStatus(`Loaded ${sourceLabel}. Input was trimmed to ${formatNumericValue(DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH)} characters.`);
+      } else {
+        setStatus(`Loaded ${sourceLabel} with ${formatNumericValue(countWords(bounded))} words.`);
+      }
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not read this document.";
+      setStatus(isPdf ? `Could not read this PDF. ${message}` : "Could not read this document.");
+      setProgress(0);
+    } finally {
+      setIsParsing(false);
+    }
+  }, [includePdfPageMarkers, maxPdfPages, pageRangeInput]);
+
+  const translateDocument = useCallback(async () => {
+    const normalizedSource = sanitizeDocumentTranslationText(sourceText).slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+    if (!normalizedSource) {
+      setStatus("Load or paste document text before translating.");
+      return;
+    }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsTranslating(true);
+    setProgress(2);
+    setStatus("Preparing translation chunks...");
+    setCopyStatus("");
+    const startedAt = Date.now();
+
+    try {
+      const protectedText = protectGlossaryTerms(normalizedSource, glossaryTerms);
+      const chunks = splitDocumentIntoTranslationChunks(protectedText.text, chunkSize);
+      if (!chunks.length) {
+        setStatus("Source text is empty after normalization.");
+        setProgress(0);
+        return;
+      }
+
+      const translatedChunks: string[] = [];
+      const providerCounts: Record<string, number> = {};
+      let resolvedDetectedSource = "";
+
+      for (let index = 0; index < chunks.length; index += 1) {
+        const response = await fetch("/api/text-translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: chunks[index], sourceLanguage, targetLanguage }),
+          signal: controller.signal,
+        });
+        const payload = (await response.json().catch(() => null)) as TextTranslateApiPayload | null;
+        if (!response.ok || !payload || payload.ok !== true) {
+          const message = payload && payload.ok === false && typeof payload.error === "string"
+            ? payload.error
+            : `Translation failed on chunk ${index + 1}.`;
+          throw new Error(message);
+        }
+        translatedChunks.push(payload.translatedText);
+        providerCounts[payload.provider || "unknown"] = (providerCounts[payload.provider || "unknown"] ?? 0) + 1;
+        if (!resolvedDetectedSource) {
+          resolvedDetectedSource = resolveTranslationLanguage(payload.detectedSourceLanguage, "", {
+            allowAuto: false,
+            supportedOnly: true,
+          });
+        }
+        const ratio = (index + 1) / Math.max(1, chunks.length);
+        setProgress(Math.max(4, Math.min(94, Math.round(ratio * 90) + 4)));
+        setStatus(`Translating chunk ${index + 1}/${chunks.length}...`);
+      }
+
+      const normalizedTranslated = sanitizeDocumentTranslationText(
+        restoreGlossaryTokens(translatedChunks.join(""), protectedText.tokenMap),
+      ).slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+      const durationMs = Date.now() - startedAt;
+      const detected = resolvedDetectedSource || (sourceLanguage !== TRANSLATION_AUTO_LANGUAGE_CODE ? sourceLanguage : "");
+      const summary = summarizeProviderCounts(providerCounts);
+
+      setTranslatedText(normalizedTranslated);
+      setDetectedSourceLanguage(detected);
+      setProviderSummary(summary);
+      setLastChunkCount(chunks.length);
+      setLastDurationMs(durationMs);
+      setProgress(100);
+      setStatus(`Translated ${formatNumericValue(chunks.length)} chunks via ${summary} in ${(durationMs / 1000).toFixed(1)}s.`);
+      pushHistoryEntry({
+        documentName,
+        documentSource,
+        sourceLanguage,
+        targetLanguage,
+        detectedSourceLanguage: detected,
+        providerSummary: summary,
+        sourceChars: normalizedSource.length,
+        translatedChars: normalizedTranslated.length,
+        chunkCount: chunks.length,
+        durationMs,
+        sourcePreview: buildTranslationPreview(normalizedSource, 260),
+        translatedPreview: buildTranslationPreview(normalizedTranslated, 260),
+        sourceExcerpt: normalizedSource.slice(0, DOCUMENT_TRANSLATOR_HISTORY_EXCERPT_LIMIT),
+        translatedExcerpt: normalizedTranslated.slice(0, DOCUMENT_TRANSLATOR_HISTORY_EXCERPT_LIMIT),
+      });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "AbortError") {
+        setStatus("Translation stopped.");
+      } else {
+        const message = error instanceof Error && error.message ? error.message : "Translation failed.";
+        setStatus(message);
+      }
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
+      setIsTranslating(false);
+    }
+  }, [chunkSize, documentName, documentSource, glossaryTerms, pushHistoryEntry, sourceLanguage, sourceText, targetLanguage]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Document translator"
+        subtitle="Translate PDF, DOCX, HTML, and text files with glossary locking and chunk-level progress."
+      />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each document translator session is saved locally and linked to this /productivity-tools URL."
+        onSelectSession={(nextSessionId) => {
+          abortRef.current?.abort();
+          abortRef.current = null;
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched document translator session.");
+        }}
+        onCreateSession={() => {
+          abortRef.current?.abort();
+          abortRef.current = null;
+          toolSession.createSession();
+          setStatus("Created a new document translator session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
+      />
+      <label className="field">
+        <span>Upload document</span>
+        <input
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.md,.html,.htm,text/plain,text/markdown,text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+          onChange={(event) => {
+            const file = event.target.files?.[0] ?? null;
+            if (!file) return;
+            setActiveFile(file);
+            setProgress(0);
+            void parseFile(file);
+            event.target.value = "";
+          }}
+        />
+      </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Document title</span>
+          <input type="text" value={documentName} onChange={(event) => setDocumentName(event.target.value.slice(0, 140))} />
+        </label>
+        <label className="field">
+          <span>Source language</span>
+          <select value={sourceLanguage} onChange={(event) => setSourceLanguage(resolveTranslationLanguage(event.target.value, TRANSLATION_AUTO_LANGUAGE_CODE, { allowAuto: true, supportedOnly: true }))}>
+            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>Auto detect</option>
+            {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
+              <option key={`doc-source-${entry.code}`} value={entry.code}>{entry.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Target language</span>
+          <select value={targetLanguage} onChange={(event) => setTargetLanguage(resolveTranslationLanguage(event.target.value, "en", { allowAuto: false, supportedOnly: true }))}>
+            {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
+              <option key={`doc-target-${entry.code}`} value={entry.code}>{entry.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Chunk size</span>
+          <input type="number" min={600} max={4000} step={50} value={chunkSize} onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            setChunkSize(Number.isFinite(parsed) ? Math.max(600, Math.min(4000, parsed)) : DOCUMENT_TRANSLATOR_DEFAULT_CHUNK_SIZE);
+          }} />
+        </label>
+        <label className="field">
+          <span>PDF page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value.slice(0, 80))} />
+        </label>
+        <label className="field">
+          <span>Max PDF pages</span>
+          <input type="number" min={1} max={300} step={1} value={maxPdfPages} onChange={(event) => {
+            const parsed = Number.parseInt(event.target.value, 10);
+            setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : 80);
+          }} />
+        </label>
+      </div>
+      <label className="field">
+        <span>Source document text</span>
+        <textarea rows={8} value={sourceText} onChange={(event) => setSourceText(event.target.value.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH))} />
+      </label>
+      <label className="field">
+        <span>Glossary lock terms (one per line)</span>
+        <textarea rows={3} value={glossaryInput} onChange={(event) => setGlossaryInput(event.target.value.slice(0, 10000))} />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void translateDocument()} disabled={isBusy || !sourceText.trim()}>
+          {isTranslating ? "Translating..." : "Translate document"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => activeFile && void parseFile(activeFile)} disabled={!activeFile || isBusy}>
+          {isParsing ? "Re-reading..." : "Re-read upload"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => abortRef.current?.abort()} disabled={!isBusy}>Stop</button>
+        <button className="action-button secondary" type="button" onClick={async () => {
+          const copied = await copyTextToClipboard(translatedText);
+          setCopyStatus(copied ? "Copied translated text." : "Could not copy translated text.");
+        }} disabled={!translatedText.trim()}>
+          <Copy size={15} />
+          Copy
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => downloadTextFile(`${stripFileExtension(documentName.trim()) || "translated-document"}-${targetLanguage}.txt`, translatedText, "text/plain;charset=utf-8;")} disabled={!translatedText.trim()}>
+          <Download size={15} />
+          TXT
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => downloadTextFile(`${stripFileExtension(documentName.trim()) || "translated-document"}.doc`, buildDocumentTranslationWordMarkup({
+          title: documentName,
+          sourceLanguageLabel: getTranslationLanguageLabel(sourceLanguage),
+          targetLanguageLabel: getTranslationLanguageLabel(targetLanguage),
+          translatedText,
+          sourceText,
+          includeSourceText: includeSourceOnDocExport,
+          includeHeader: true,
+        }), "application/msword;charset=utf-8;")} disabled={!translatedText.trim()}>
+          <Download size={15} />
+          DOC
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => downloadTextFile(`document-translator-${toolSession.sessionId}.json`, JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), sessionId: toolSession.sessionId, workspace: { documentName, documentSource, sourceText, translatedText, sourceLanguage, targetLanguage, detectedSourceLanguage, providerSummary, glossaryInput, chunkSize, pageRangeInput, maxPdfPages, includePdfPageMarkers, includeSourceOnDocExport, sourceTotalPages, sourceSelectedPages, lastChunkCount, lastDurationMs }, history }, null, 2), "application/json;charset=utf-8;")}>
+          <Download size={15} />
+          Export JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
+          <Plus size={15} />
+          Import JSON
+        </button>
+        <input
+          ref={importRef}
+          type="file"
+          hidden
+          accept=".json,application/json"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              const payload = JSON.parse(await file.text()) as unknown;
+              const historySource = Array.isArray(payload)
+                ? payload
+                : payload && typeof payload === "object" && Array.isArray((payload as { history?: unknown[] }).history)
+                  ? ((payload as { history: unknown[] }).history ?? [])
+                  : [];
+              const importedHistory = historySource
+                .map((entry) => sanitizeDocumentTranslatorHistoryEntry(entry))
+                .filter((entry): entry is DocumentTranslatorHistoryEntry => Boolean(entry))
+                .slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT);
+              if (importedHistory.length) {
+                setHistory((current) => [...importedHistory, ...current].slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT));
+                setStatus(`Imported ${importedHistory.length} history entries.`);
+              } else {
+                setStatus("Could not import this JSON file.");
+              }
+            } catch {
+              setStatus("Could not import this JSON file.");
+            } finally {
+              event.target.value = "";
+            }
+          }}
+        />
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Include source text in DOC export</span>
+          <select value={includeSourceOnDocExport ? "yes" : "no"} onChange={(event) => setIncludeSourceOnDocExport(event.target.value === "yes")}>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Detected source</span>
+          <input type="text" readOnly value={effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Unknown"} />
+        </label>
+      </div>
+      <label className="field">
+        <span>Translated text</span>
+        <textarea rows={8} value={translatedText} readOnly placeholder="Translation output appears here..." />
+      </label>
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status || "Load a document and run translation."}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Session", value: toolSession.sessionLabel },
+          { label: "Document source", value: documentSource },
+          { label: "Source words", value: formatNumericValue(sourceStats.words) },
+          { label: "Source characters", value: formatNumericValue(sourceStats.chars) },
+          { label: "Translated words", value: formatNumericValue(translatedStats.words) },
+          { label: "Translated characters", value: formatNumericValue(translatedStats.chars) },
+          { label: "Glossary terms", value: formatNumericValue(glossaryTerms.length) },
+          { label: "Provider summary", value: providerSummary || "Not run yet" },
+          { label: "Chunks last run", value: formatNumericValue(lastChunkCount) },
+          { label: "Last run", value: lastDurationMs ? `${(lastDurationMs / 1000).toFixed(1)}s` : "-" },
+          { label: "Saved history", value: formatNumericValue(history.length) },
+        ]}
+      />
+    </section>
+  );
+}
 type TodoPriority = "high" | "medium" | "low";
 type TodoPriorityFilter = TodoPriority | "all";
 type TodoFilter = "all" | "active" | "completed" | "overdue" | "today";
@@ -23967,6 +24770,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <NotesPadTool />;
     case "text-translator":
       return <TextTranslatorTool />;
+    case "document-translator":
+      return <DocumentTranslatorTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "invoice-generator":

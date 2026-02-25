@@ -30,7 +30,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 12 | Plagiarism Checker | SEO/Content | Strong student/content demand | Done |
 | 13 | Background Remover | Image Tools | Very high creator/ecommerce demand | Done |
 | 14 | Text Translator | Productivity/SEO | Massive multilingual demand | Done |
-| 15 | Document Translator | Productivity | High practical workflow demand | Planned |
+| 15 | Document Translator | Productivity | High practical workflow demand | Done |
 | 16 | Auto Loan Calculator | Calculators | High financial intent traffic | Planned |
 | 17 | Debt-to-Income (DTI) Calculator | Calculators | Mortgage/loan funnel demand | Done |
 | 18 | Refinance Calculator | Calculators | High-value finance traffic | Planned |
@@ -51,4 +51,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `Debt-to-Income (DTI) Calculator` (`/calculators/debt-to-income-calculator`)
 - Completed feature: `Text Translator` (`/productivity-tools/text-translator`)
 - Completed feature: `Background Remover` (`/image-tools/background-remover`)
-- Active next feature: `Document Translator`
+- Completed feature: `Document Translator` (`/productivity-tools/document-translator`)
+- Active next feature: `Auto Loan Calculator`

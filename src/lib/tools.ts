@@ -1041,6 +1041,23 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Text Translator"),
   },
   {
+    slug: "document-translator",
+    category: "productivity-tools",
+    title: "Document Translator",
+    summary: "Translate DOCX, PDF, HTML, and text files with chunked processing, glossary locking, and export-ready output.",
+    description:
+      "Import documents, extract readable text, translate large files safely with chunk-level progress, preserve critical terms via glossary locking, and export translated docs.",
+    keywords: [
+      "document translator",
+      "pdf translator",
+      "docx translator",
+      "translate file online",
+      "multilingual document translation",
+    ],
+    engine: { kind: "productivity-tool", id: "document-translator" },
+    faq: baseFaq("Document Translator"),
+  },
+  {
     slug: "resume-builder",
     category: "productivity-tools",
     title: "Resume Builder",
