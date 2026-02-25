@@ -23,7 +23,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 5 | PDF Merge | Image/PDF | Very high utility demand | Done |
 | 6 | PDF Split | Image/PDF | Very high utility demand | Done |
 | 7 | PDF Compressor | Image/PDF | Very high utility demand | Done |
-| 8 | PDF to Word Converter | Image/PDF | Very high conversion intent | Planned |
+| 8 | PDF to Word Converter | Image/PDF | Very high conversion intent | Done |
 | 9 | Word to PDF Converter | Image/PDF | Very high conversion intent | Planned |
 | 10 | Internet Speed Test | Developer/Utility | Massive evergreen demand | Planned |
 | 11 | AI Detector | SEO/Content | Strong current demand | Planned |
@@ -43,4 +43,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `PDF Merge` (`/image-tools/pdf-merge`)
 - Completed feature: `PDF Split` (`/image-tools/pdf-split`)
 - Completed feature: `PDF Compressor` (`/image-tools/pdf-compressor`)
-- Active next feature: `PDF to Word Converter`
+- Completed feature: `PDF to Word Converter` (`/image-tools/pdf-to-word-converter`)
+- Active next feature: `Word to PDF Converter`

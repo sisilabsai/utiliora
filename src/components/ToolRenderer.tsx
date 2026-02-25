@@ -787,6 +787,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "pdf-merge": "pdf-merge",
   "pdf-split": "pdf-split",
   "pdf-compressor": "pdf-compressor",
+  "pdf-to-word": "pdf-to-word-converter",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
 
@@ -804,6 +805,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "pdf-merge": "PDF Merge",
   "pdf-split": "PDF Split",
   "pdf-compressor": "PDF Compressor",
+  "pdf-to-word": "PDF -> Word",
   "pdf-to-jpg": "PDF -> JPG",
 };
 
@@ -9709,12 +9711,22 @@ interface PdfJsPageViewport {
   height: number;
 }
 
+interface PdfJsTextItem {
+  str?: string;
+  hasEOL?: boolean;
+}
+
+interface PdfJsTextContent {
+  items: PdfJsTextItem[];
+}
+
 interface PdfJsPage {
   getViewport(params: { scale: number }): PdfJsPageViewport;
   render(params: {
     canvasContext: CanvasRenderingContext2D;
     viewport: PdfJsPageViewport;
   }): { promise: Promise<void> };
+  getTextContent?: () => Promise<PdfJsTextContent>;
 }
 
 interface PdfJsDocument {
@@ -9834,6 +9846,35 @@ function applyGrayscaleToCanvas(
     pixels[index + 2] = gray;
   }
   context.putImageData(imageData, 0, 0);
+}
+
+function extractPdfTextLines(items: PdfJsTextItem[]): string[] {
+  const lines: string[] = [];
+  let currentLine = "";
+
+  for (const item of items) {
+    const text = typeof item?.str === "string" ? item.str.trim() : "";
+    if (text) {
+      if (!currentLine) {
+        currentLine = text;
+      } else if (/^[,.;:!?)]/.test(text)) {
+        currentLine = `${currentLine}${text}`;
+      } else {
+        currentLine = `${currentLine} ${text}`;
+      }
+    }
+
+    if (item?.hasEOL && currentLine) {
+      lines.push(currentLine.trim());
+      currentLine = "";
+    }
+  }
+
+  if (currentLine) {
+    lines.push(currentLine.trim());
+  }
+
+  return lines;
 }
 
 function parsePageRangeInput(input: string, totalPages: number): number[] | null {
@@ -11340,6 +11381,323 @@ function PdfCompressorTool() {
   );
 }
 
+function PdfToWordTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [pageCount, setPageCount] = useState(0);
+  const [selectionPreset, setSelectionPreset] = useState<PageSelectionPreset>("all");
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPages, setMaxPages] = useState(60);
+  const [includePageHeadings, setIncludePageHeadings] = useState(true);
+  const [preserveLineBreaks, setPreserveLineBreaks] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a PDF to export Word-compatible text.");
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [lastDocBytes, setLastDocBytes] = useState<number | null>(null);
+  const [lastPages, setLastPages] = useState(0);
+  const [lastWords, setLastWords] = useState(0);
+  const [lastChars, setLastChars] = useState(0);
+  const [lastRunMs, setLastRunMs] = useState<number | null>(null);
+  const [previewText, setPreviewText] = useState("");
+
+  const inspectPdfMeta = useCallback(async (nextFile: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      setStatus("Reading PDF metadata...");
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await nextFile.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+      setPageCount(pdfDocument.numPages);
+      setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
+    } catch {
+      setPageCount(0);
+      setStatus("Could not read PDF metadata.");
+    } finally {
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setPdfName("");
+        setPageCount(0);
+        setSourceBytes(0);
+        setLastDocBytes(null);
+        setLastPages(0);
+        setLastWords(0);
+        setLastChars(0);
+        setLastRunMs(null);
+        setPreviewText("");
+        setStatus("Upload a PDF to export Word-compatible text.");
+        return;
+      }
+
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF file.");
+        return;
+      }
+
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setSourceBytes(candidate.size);
+      setProgress(0);
+      setLastDocBytes(null);
+      setLastPages(0);
+      setLastWords(0);
+      setLastChars(0);
+      setLastRunMs(null);
+      setPreviewText("");
+      void inspectPdfMeta(candidate);
+      trackEvent("tool_pdf_to_word_upload", { size: candidate.size });
+    },
+    [inspectPdfMeta],
+  );
+
+  const exportToWord = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a PDF file first.");
+      return;
+    }
+    if (!pageCount) {
+      setStatus("PDF page count is not available yet.");
+      return;
+    }
+
+    const selectedPages = parsePageRangeInput(pageRangeInput, pageCount);
+    if (!selectedPages?.length) {
+      setStatus("Invalid page range. Example: 1-3,5,8");
+      return;
+    }
+
+    const boundedSelection = selectedPages.slice(0, Math.max(1, Math.min(120, Math.round(maxPages || 1))));
+    if (!boundedSelection.length) {
+      setStatus("No pages selected for export.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(3);
+    setStatus(`Extracting text from ${boundedSelection.length} page(s)...`);
+    const startedAt = Date.now();
+
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await file.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+
+      const sections: Array<{ pageNumber: number; lines: string[] }> = [];
+      for (let index = 0; index < boundedSelection.length; index += 1) {
+        const pageNumber = boundedSelection[index];
+        setStatus(`Extracting page ${pageNumber} (${index + 1}/${boundedSelection.length})...`);
+        const page = await pdfDocument.getPage(pageNumber);
+        if (!page.getTextContent) {
+          sections.push({ pageNumber, lines: [] });
+          continue;
+        }
+        const textContent = await page.getTextContent();
+        const items = Array.isArray(textContent.items) ? textContent.items : [];
+        const lines = extractPdfTextLines(items);
+        sections.push({ pageNumber, lines });
+        const progressRatio = Math.min(0.92, (index + 1) / boundedSelection.length);
+        setProgress(Math.round(progressRatio * 100));
+      }
+
+      const title = escapeHtml(stripFileExtension(pdfName.trim()) || "converted-document");
+      const documentLines: string[] = [];
+      for (const section of sections) {
+        if (includePageHeadings) {
+          documentLines.push(`Page ${section.pageNumber}`);
+        }
+        if (section.lines.length) {
+          if (preserveLineBreaks) {
+            documentLines.push(...section.lines);
+          } else {
+            documentLines.push(section.lines.join(" "));
+          }
+        } else {
+          documentLines.push("[No extractable text on this page]");
+        }
+        documentLines.push("");
+      }
+
+      const combinedText = documentLines.join("\n").trim();
+      const htmlSections = sections
+        .map((section) => {
+          const heading = includePageHeadings ? `<h2>Page ${section.pageNumber}</h2>` : "";
+          if (!section.lines.length) {
+            return `<section>${heading}<p><em>No extractable text on this page.</em></p></section>`;
+          }
+          const content = preserveLineBreaks
+            ? section.lines.map((line) => escapeHtml(line)).join("<br/>")
+            : escapeHtml(section.lines.join(" "));
+          return `<section>${heading}<p>${content}</p></section>`;
+        })
+        .join("<hr/>");
+
+      const htmlDocument = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${title}</title>
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; line-height: 1.45; margin: 24px; color: #111; }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    h2 { margin: 20px 0 8px; font-size: 16px; }
+    p { margin: 0 0 12px; white-space: normal; }
+    hr { border: 0; border-top: 1px solid #d0d0d0; margin: 18px 0; }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  ${htmlSections || "<p><em>No text extracted.</em></p>"}
+</body>
+</html>`;
+
+      setStatus("Preparing Word file...");
+      setProgress(98);
+      const blob = new Blob(["\ufeff", htmlDocument], { type: "application/msword" });
+      const filenameBase = stripFileExtension(pdfName.trim()) || "converted-document";
+      const filename = `${filenameBase}.doc`;
+      const outputUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = outputUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(outputUrl);
+
+      const elapsed = Date.now() - startedAt;
+      setProgress(100);
+      setLastDocBytes(blob.size);
+      setLastPages(sections.length);
+      setLastWords(countWords(combinedText));
+      setLastChars(countCharacters(combinedText, true));
+      setLastRunMs(elapsed);
+      setPreviewText(combinedText.slice(0, 1800));
+      setStatus(`Exported ${filename} from ${sections.length} page(s) in ${(elapsed / 1000).toFixed(1)}s.`);
+      trackEvent("tool_pdf_to_word_export", {
+        pages: sections.length,
+        words: countWords(combinedText),
+        preserveLineBreaks,
+      });
+    } catch {
+      setStatus("PDF to Word conversion failed. Try fewer pages.");
+    } finally {
+      setProcessing(false);
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, [file, includePageHeadings, maxPages, pageCount, pageRangeInput, pdfName, preserveLineBreaks]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF to Word converter"
+        subtitle="Extract PDF text and export it as a Word-compatible .doc file."
+      />
+
+      <label className="field">
+        <span>Upload PDF</span>
+        <input type="file" accept="application/pdf" onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Page selection preset</span>
+          <select
+            value={selectionPreset}
+            onChange={(event) => {
+              const preset = event.target.value as PageSelectionPreset;
+              setSelectionPreset(preset);
+              setPageRangeInput(buildPageRangeFromPreset(preset));
+            }}
+          >
+            {PAGE_SELECTION_PRESETS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,5,8" />
+          <small className="supporting-text">Use commas and ranges, for example: 1-4,7,10</small>
+        </label>
+        <label className="field">
+          <span>Max pages per run</span>
+          <input type="number" min={1} max={120} value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <label className="checkbox"><input type="checkbox" checked={includePageHeadings} onChange={(event) => setIncludePageHeadings(event.target.checked)} />Include page headings</label>
+        <label className="checkbox"><input type="checkbox" checked={preserveLineBreaks} onChange={(event) => setPreserveLineBreaks(event.target.checked)} />Preserve line breaks</label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!file || processing || !pageCount} onClick={() => void exportToWord()}>
+          {processing ? "Converting..." : "Export Word file"}
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "PDF pages", value: pageCount ? formatNumericValue(pageCount) : "-" },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Last export pages", value: lastPages ? formatNumericValue(lastPages) : "-" },
+          { label: "Last export words", value: lastWords ? formatNumericValue(lastWords) : "-" },
+          { label: "Last export characters", value: lastChars ? formatNumericValue(lastChars) : "-" },
+          { label: "Last file size", value: lastDocBytes ? formatBytes(lastDocBytes) : "-" },
+          { label: "Last run", value: lastRunMs ? `${(lastRunMs / 1000).toFixed(1)}s` : "-" },
+        ]}
+      />
+
+      {previewText ? (
+        <label className="field">
+          <span>Extract preview</span>
+          <textarea value={previewText} readOnly rows={8} />
+        </label>
+      ) : null}
+    </section>
+  );
+}
+
 function PdfToJpgTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -11744,6 +12102,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <PdfSplitTool />;
     case "pdf-compressor":
       return <PdfCompressorTool />;
+    case "pdf-to-word":
+      return <PdfToWordTool />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

@@ -743,6 +743,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("PDF Compressor"),
   },
   {
+    slug: "pdf-to-word-converter",
+    category: "image-tools",
+    title: "PDF to Word Converter",
+    summary: "Convert PDF text into an editable Word-compatible document.",
+    description:
+      "Extract text from selected PDF pages and export a Word-compatible .doc file with page sections for quick editing.",
+    keywords: ["pdf to word", "convert pdf to doc", "pdf text extraction", "pdf word converter"],
+    engine: { kind: "image-tool", id: "pdf-to-word" },
+    faq: baseFaq("PDF to Word Converter"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",
