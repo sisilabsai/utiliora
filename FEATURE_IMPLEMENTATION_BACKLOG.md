@@ -22,7 +22,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 4 | Meeting Time Planner | Productivity | Team scheduling demand | Done |
 | 5 | PDF Merge | Image/PDF | Very high utility demand | Done |
 | 6 | PDF Split | Image/PDF | Very high utility demand | Done |
-| 7 | PDF Compressor | Image/PDF | Very high utility demand | Planned |
+| 7 | PDF Compressor | Image/PDF | Very high utility demand | Done |
 | 8 | PDF to Word Converter | Image/PDF | Very high conversion intent | Planned |
 | 9 | Word to PDF Converter | Image/PDF | Very high conversion intent | Planned |
 | 10 | Internet Speed Test | Developer/Utility | Massive evergreen demand | Planned |
@@ -42,4 +42,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `Meeting Time Planner` (`/productivity-tools/meeting-time-planner`)
 - Completed feature: `PDF Merge` (`/image-tools/pdf-merge`)
 - Completed feature: `PDF Split` (`/image-tools/pdf-split`)
-- Active next feature: `PDF Compressor`
+- Completed feature: `PDF Compressor` (`/image-tools/pdf-compressor`)
+- Active next feature: `PDF to Word Converter`

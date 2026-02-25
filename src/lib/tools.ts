@@ -732,6 +732,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("PDF Split"),
   },
   {
+    slug: "pdf-compressor",
+    category: "image-tools",
+    title: "PDF Compressor",
+    summary: "Compress PDF files in-browser with quality and scale controls.",
+    description:
+      "Reduce PDF file size by re-rendering pages with adjustable quality, scale, and grayscale options before downloading a compressed copy.",
+    keywords: ["pdf compressor", "compress pdf", "reduce pdf size", "pdf optimization"],
+    engine: { kind: "image-tool", id: "pdf-compressor" },
+    faq: baseFaq("PDF Compressor"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",

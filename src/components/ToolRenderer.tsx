@@ -786,6 +786,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "image-to-pdf": "image-to-pdf-converter",
   "pdf-merge": "pdf-merge",
   "pdf-split": "pdf-split",
+  "pdf-compressor": "pdf-compressor",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
 
@@ -802,6 +803,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "image-to-pdf": "Image -> PDF",
   "pdf-merge": "PDF Merge",
   "pdf-split": "PDF Split",
+  "pdf-compressor": "PDF Compressor",
   "pdf-to-jpg": "PDF -> JPG",
 };
 
@@ -9816,6 +9818,24 @@ function resolvePdfPageSizeMm(
   return [widthMm, heightMm];
 }
 
+function applyGrayscaleToCanvas(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): void {
+  const imageData = context.getImageData(0, 0, width, height);
+  const pixels = imageData.data;
+  for (let index = 0; index < pixels.length; index += 4) {
+    const gray = Math.round(
+      pixels[index] * 0.299 + pixels[index + 1] * 0.587 + pixels[index + 2] * 0.114,
+    );
+    pixels[index] = gray;
+    pixels[index + 1] = gray;
+    pixels[index + 2] = gray;
+  }
+  context.putImageData(imageData, 0, 0);
+}
+
 function parsePageRangeInput(input: string, totalPages: number): number[] | null {
   const trimmed = input.trim();
   if (!trimmed || trimmed.toLowerCase() === "all") {
@@ -10964,6 +10984,362 @@ function PdfSplitTool() {
   );
 }
 
+type PdfCompressionPreset = "balanced" | "high-quality" | "small-size" | "smallest-size";
+
+const PDF_COMPRESSION_PRESETS: Array<{
+  value: PdfCompressionPreset;
+  label: string;
+  hint: string;
+  scalePercent: number;
+  quality: number;
+  fitDpi: number;
+}> = [
+  {
+    value: "balanced",
+    label: "Balanced",
+    hint: "Good quality with meaningful size reduction",
+    scalePercent: 110,
+    quality: 0.74,
+    fitDpi: 130,
+  },
+  {
+    value: "high-quality",
+    label: "High quality",
+    hint: "Best visual quality, lighter size reduction",
+    scalePercent: 130,
+    quality: 0.88,
+    fitDpi: 160,
+  },
+  {
+    value: "small-size",
+    label: "Small size",
+    hint: "Aggressive compression for sharing",
+    scalePercent: 95,
+    quality: 0.62,
+    fitDpi: 118,
+  },
+  {
+    value: "smallest-size",
+    label: "Smallest size",
+    hint: "Maximum shrink with lower visual detail",
+    scalePercent: 80,
+    quality: 0.5,
+    fitDpi: 100,
+  },
+];
+
+function getPdfCompressionPreset(preset: PdfCompressionPreset) {
+  return PDF_COMPRESSION_PRESETS.find((entry) => entry.value === preset) ?? PDF_COMPRESSION_PRESETS[0];
+}
+
+function PdfCompressorTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [pageCount, setPageCount] = useState(0);
+  const [preset, setPreset] = useState<PdfCompressionPreset>("balanced");
+  const [renderScalePercent, setRenderScalePercent] = useState(110);
+  const [jpegQuality, setJpegQuality] = useState(0.74);
+  const [fitDpi, setFitDpi] = useState(130);
+  const [maxPages, setMaxPages] = useState(160);
+  const [grayscale, setGrayscale] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a PDF to compress.");
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [lastOutputBytes, setLastOutputBytes] = useState<number | null>(null);
+  const [lastProcessedPages, setLastProcessedPages] = useState(0);
+  const [lastRunMs, setLastRunMs] = useState<number | null>(null);
+
+  const inspectPdfMeta = useCallback(async (nextFile: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      setStatus("Reading PDF metadata...");
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await nextFile.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+      setPageCount(pdfDocument.numPages);
+      setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
+    } catch {
+      setPageCount(0);
+      setStatus("Could not read PDF metadata.");
+    } finally {
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setPdfName("");
+        setPageCount(0);
+        setSourceBytes(0);
+        setLastOutputBytes(null);
+        setLastProcessedPages(0);
+        setLastRunMs(null);
+        setStatus("Upload a PDF to compress.");
+        return;
+      }
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF file.");
+        return;
+      }
+
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setSourceBytes(candidate.size);
+      setProgress(0);
+      setLastOutputBytes(null);
+      setLastProcessedPages(0);
+      setLastRunMs(null);
+      void inspectPdfMeta(candidate);
+      trackEvent("tool_pdf_compressor_upload", { size: candidate.size });
+    },
+    [inspectPdfMeta],
+  );
+
+  const handlePresetChange = useCallback((nextPreset: PdfCompressionPreset) => {
+    const config = getPdfCompressionPreset(nextPreset);
+    setPreset(nextPreset);
+    setRenderScalePercent(config.scalePercent);
+    setJpegQuality(config.quality);
+    setFitDpi(config.fitDpi);
+  }, []);
+
+  const plannedPages = useMemo(
+    () => Math.min(pageCount, Math.max(1, Math.min(500, Math.round(maxPages || 1)))),
+    [maxPages, pageCount],
+  );
+
+  const sizeChangeLabel = useMemo(() => {
+    if (!lastOutputBytes || !sourceBytes) return "-";
+    const delta = sourceBytes - lastOutputBytes;
+    const percent = Math.abs(delta / sourceBytes) * 100;
+    if (delta >= 0) {
+      return `Reduced by ${formatBytes(delta)} (${percent.toFixed(1)}%)`;
+    }
+    return `Increased by ${formatBytes(Math.abs(delta))} (${percent.toFixed(1)}%)`;
+  }, [lastOutputBytes, sourceBytes]);
+
+  const compressPdf = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a PDF file first.");
+      return;
+    }
+    if (!pageCount) {
+      setStatus("PDF page count is not available yet.");
+      return;
+    }
+
+    const safeScale = Math.max(80, Math.min(260, renderScalePercent)) / 100;
+    const safeQuality = Math.max(0.4, Math.min(0.98, jpegQuality));
+    const safeFitDpi = Math.max(90, Math.min(240, fitDpi));
+    const safeMaxPages = Math.max(1, Math.min(500, Math.round(maxPages)));
+    const pagesToProcess = Math.min(pageCount, safeMaxPages);
+
+    setProcessing(true);
+    setProgress(3);
+    setStatus("Preparing PDF compression...");
+    const startedAt = Date.now();
+
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    let output: JsPdfType | null = null;
+
+    try {
+      const pdfjs = await loadPdfJsModule();
+      const { jsPDF } = await import("jspdf");
+      loadingTask = pdfjs.getDocument({
+        data: await file.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+
+      for (let pageNumber = 1; pageNumber <= pagesToProcess; pageNumber += 1) {
+        setStatus(`Compressing page ${pageNumber}/${pagesToProcess}...`);
+        const page = await pdfDocument.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: safeScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas context unavailable.");
+        }
+
+        await page.render({ canvasContext: context, viewport }).promise;
+        if (grayscale) {
+          applyGrayscaleToCanvas(context, canvas.width, canvas.height);
+        }
+
+        const pageSizeMm = resolvePdfPageSizeMm("fit-image", canvas.width, canvas.height, safeFitDpi);
+        const landscape = canvas.width > canvas.height;
+        const pageFormat: [number, number] = landscape ? [pageSizeMm[1], pageSizeMm[0]] : pageSizeMm;
+        if (!output) {
+          output = new jsPDF({
+            unit: "mm",
+            format: pageFormat,
+            compress: true,
+          });
+        } else {
+          output.addPage(pageFormat);
+        }
+
+        const pageWidth = output.internal.pageSize.getWidth();
+        const pageHeight = output.internal.pageSize.getHeight();
+        const imageData = canvas.toDataURL("image/jpeg", safeQuality);
+        output.addImage(imageData, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+
+        const progressRatio = Math.min(0.96, pageNumber / Math.max(1, pagesToProcess));
+        setProgress(Math.round(progressRatio * 100));
+      }
+
+      if (!output) {
+        setStatus("Could not build compressed PDF.");
+        return;
+      }
+
+      setStatus("Finalizing compressed PDF...");
+      setProgress(99);
+      const blob = output.output("blob");
+      const sourceBase = stripFileExtension(file.name) || "document";
+      const defaultName = `${sourceBase}-compressed`;
+      const filenameBase = stripFileExtension(pdfName.trim()) || defaultName;
+      const filename = `${filenameBase}.pdf`;
+      const outputUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = outputUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(outputUrl);
+
+      const elapsed = Date.now() - startedAt;
+      setProgress(100);
+      setLastOutputBytes(blob.size);
+      setLastProcessedPages(pagesToProcess);
+      setLastRunMs(elapsed);
+      setStatus(`Compressed ${pagesToProcess} page(s) in ${(elapsed / 1000).toFixed(1)}s. Downloaded ${filename}.`);
+      trackEvent("tool_pdf_compressor_generate", {
+        pages: pagesToProcess,
+        preset,
+        scalePercent: renderScalePercent,
+        quality: jpegQuality,
+        grayscale,
+      });
+    } catch {
+      setStatus("PDF compression failed. Try fewer pages or lower scale.");
+    } finally {
+      setProcessing(false);
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, [
+    file,
+    fitDpi,
+    grayscale,
+    jpegQuality,
+    maxPages,
+    pageCount,
+    pdfName,
+    preset,
+    renderScalePercent,
+  ]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF compressor"
+        subtitle="Compress PDFs in-browser with quality presets, grayscale option, and page limits."
+      />
+
+      <label className="field">
+        <span>Upload PDF</span>
+        <input type="file" accept="application/pdf" onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Compression preset</span>
+          <select value={preset} onChange={(event) => handlePresetChange(event.target.value as PdfCompressionPreset)}>
+            {PDF_COMPRESSION_PRESETS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Max pages per run</span>
+          <input type="number" min={1} max={500} value={maxPages} onChange={(event) => setMaxPages(Number(event.target.value))} />
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Render scale ({renderScalePercent}%)</span>
+          <input type="range" min={80} max={260} step={10} value={renderScalePercent} onChange={(event) => setRenderScalePercent(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>JPEG quality ({jpegQuality.toFixed(2)})</span>
+          <input type="range" min={0.4} max={0.98} step={0.02} value={jpegQuality} onChange={(event) => setJpegQuality(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Fit DPI ({fitDpi})</span>
+          <input type="range" min={90} max={240} step={5} value={fitDpi} onChange={(event) => setFitDpi(Number(event.target.value))} />
+        </label>
+      </div>
+
+      <label className="checkbox"><input type="checkbox" checked={grayscale} onChange={(event) => setGrayscale(event.target.checked)} />Convert pages to grayscale before export</label>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!file || processing || !pageCount} onClick={() => void compressPdf()}>
+          {processing ? "Compressing..." : "Compress PDF"}
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Loaded PDF pages", value: pageCount ? formatNumericValue(pageCount) : "-" },
+          { label: "Pages to process", value: pageCount ? formatNumericValue(plannedPages) : "-" },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Last output size", value: lastOutputBytes ? formatBytes(lastOutputBytes) : "-" },
+          { label: "Size change", value: sizeChangeLabel },
+          { label: "Last output pages", value: lastProcessedPages ? formatNumericValue(lastProcessedPages) : "-" },
+          { label: "Last run", value: lastRunMs ? `${(lastRunMs / 1000).toFixed(1)}s` : "-" },
+        ]}
+      />
+    </section>
+  );
+}
+
 function PdfToJpgTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -11366,6 +11742,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <PdfMergeTool />;
     case "pdf-split":
       return <PdfSplitTool />;
+    case "pdf-compressor":
+      return <PdfCompressorTool />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

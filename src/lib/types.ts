@@ -118,6 +118,7 @@ export type ImageToolId =
   | "image-to-pdf"
   | "pdf-merge"
   | "pdf-split"
+  | "pdf-compressor"
   | "pdf-to-jpg";
 
 export type ProductivityToolId =
