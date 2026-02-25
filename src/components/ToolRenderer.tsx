@@ -14656,10 +14656,460 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
   );
 }
 
+interface MeetingSlotCandidate {
+  id: string;
+  instant: Date;
+  endInstant: Date;
+  overlapCount: number;
+  overlapPercent: number;
+  matchingZones: string[];
+  exact: boolean;
+}
+
+function MeetingTimePlannerTool() {
+  const browserTimeZone = useMemo(
+    () => normalizeTimeZoneValue(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", "UTC"),
+    [],
+  );
+  const timeZoneOptions = useMemo(() => getSupportedTimeZoneOptions(browserTimeZone), [browserTimeZone]);
+  const hourOptions = useMemo(() => Array.from({ length: 24 }, (_item, index) => index), []);
+  const endHourOptions = useMemo(() => Array.from({ length: 24 }, (_item, index) => index + 1), []);
+
+  const [hostTimeZone, setHostTimeZone] = useState(browserTimeZone);
+  const [meetingDate, setMeetingDate] = useState(() => formatDateTimeLocalForZone(new Date(), browserTimeZone).slice(0, 10));
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [hostStartHour, setHostStartHour] = useState(8);
+  const [hostEndHour, setHostEndHour] = useState(18);
+  const [participantStartHour, setParticipantStartHour] = useState(8);
+  const [participantEndHour, setParticipantEndHour] = useState(20);
+  const [participantZoneInput, setParticipantZoneInput] = useState("America/New_York");
+  const [participantZones, setParticipantZones] = useState<string[]>([
+    "America/New_York",
+    "Europe/London",
+    "Asia/Dubai",
+    "Asia/Singapore",
+  ]);
+  const [selectedSlotId, setSelectedSlotId] = useState("");
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (timeZoneOptions.some((option) => option.value === hostTimeZone)) return;
+    setHostTimeZone(browserTimeZone);
+  }, [browserTimeZone, hostTimeZone, timeZoneOptions]);
+
+  const normalizedHostZone = useMemo(() => normalizeTimeZoneValue(hostTimeZone, browserTimeZone), [browserTimeZone, hostTimeZone]);
+  const normalizedParticipantZones = useMemo(
+    () =>
+      Array.from(new Set(participantZones.map((zone) => normalizeTimeZoneValue(zone, "")).filter(Boolean))).filter(
+        (zone) => zone !== normalizedHostZone,
+      ),
+    [normalizedHostZone, participantZones],
+  );
+
+  const safeDurationMinutes = Math.max(15, Math.min(720, Math.round(durationMinutes || 60)));
+  const normalizedHostStartHour = Math.max(0, Math.min(23, Math.round(hostStartHour)));
+  const normalizedHostEndHour = Math.max(normalizedHostStartHour + 1, Math.min(24, Math.round(hostEndHour)));
+  const normalizedParticipantStartHour = Math.max(0, Math.min(23, Math.round(participantStartHour)));
+  const normalizedParticipantEndHour = Math.max(normalizedParticipantStartHour + 1, Math.min(24, Math.round(participantEndHour)));
+
+  const candidateSlots = useMemo(() => {
+    if (!meetingDate) return [] as MeetingSlotCandidate[];
+
+    const startMinutes = normalizedHostStartHour * 60;
+    const endMinutes = normalizedHostEndHour * 60;
+    const lastStartMinutes = endMinutes - safeDurationMinutes;
+    if (lastStartMinutes < startMinutes) return [] as MeetingSlotCandidate[];
+
+    const participantsForScoring = normalizedParticipantZones;
+    const slots: MeetingSlotCandidate[] = [];
+
+    for (let minute = startMinutes; minute <= lastStartMinutes; minute += 30) {
+      const hourPart = Math.floor(minute / 60)
+        .toString()
+        .padStart(2, "0");
+      const minutePart = (minute % 60).toString().padStart(2, "0");
+      const localDateTime = `${meetingDate}T${hourPart}:${minutePart}`;
+      const resolved = resolveZonedDateTime(localDateTime, normalizedHostZone);
+      if (!resolved.date) continue;
+
+      const instant = resolved.date;
+      const endInstant = new Date(instant.getTime() + safeDurationMinutes * 60_000);
+
+      const matchingZones = participantsForScoring.filter((zone) => {
+        const startParts = getDatePartsInTimeZone(instant, zone);
+        const endParts = getDatePartsInTimeZone(endInstant, zone);
+        const startDayStamp = getDayStampForZone(instant, zone);
+        const endDayStamp = getDayStampForZone(endInstant, zone);
+
+        const localStartMinutes = startParts.hour * 60 + startParts.minute;
+        const localEndMinutes = endParts.hour * 60 + endParts.minute + (endDayStamp - startDayStamp) * 1440;
+        return (
+          localStartMinutes >= normalizedParticipantStartHour * 60 &&
+          localEndMinutes <= normalizedParticipantEndHour * 60
+        );
+      });
+
+      const overlapBase = participantsForScoring.length || 1;
+      slots.push({
+        id: `${instant.getTime()}`,
+        instant,
+        endInstant,
+        overlapCount: matchingZones.length,
+        overlapPercent: (matchingZones.length / overlapBase) * 100,
+        matchingZones,
+        exact: resolved.exact,
+      });
+    }
+
+    return slots.sort((left, right) => {
+      if (right.overlapCount !== left.overlapCount) return right.overlapCount - left.overlapCount;
+      return left.instant.getTime() - right.instant.getTime();
+    });
+  }, [
+    meetingDate,
+    normalizedHostEndHour,
+    normalizedHostStartHour,
+    normalizedHostZone,
+    normalizedParticipantEndHour,
+    normalizedParticipantStartHour,
+    normalizedParticipantZones,
+    safeDurationMinutes,
+  ]);
+
+  useEffect(() => {
+    if (!candidateSlots.length) {
+      setSelectedSlotId("");
+      return;
+    }
+    if (candidateSlots.some((slot) => slot.id === selectedSlotId)) return;
+    setSelectedSlotId(candidateSlots[0].id);
+  }, [candidateSlots, selectedSlotId]);
+
+  const selectedSlot = useMemo(
+    () => candidateSlots.find((slot) => slot.id === selectedSlotId) ?? candidateSlots[0] ?? null,
+    [candidateSlots, selectedSlotId],
+  );
+
+  const slotDetailRows = useMemo(() => {
+    if (!selectedSlot) return [];
+    const rows = [normalizedHostZone, ...normalizedParticipantZones].map((zone) => {
+      const startParts = getDatePartsInTimeZone(selectedSlot.instant, zone);
+      const endParts = getDatePartsInTimeZone(selectedSlot.endInstant, zone);
+      const startDayStamp = getDayStampForZone(selectedSlot.instant, zone);
+      const endDayStamp = getDayStampForZone(selectedSlot.endInstant, zone);
+      const localStartMinutes = startParts.hour * 60 + startParts.minute;
+      const localEndMinutes = endParts.hour * 60 + endParts.minute + (endDayStamp - startDayStamp) * 1440;
+      const inPreferredWindow =
+        zone === normalizedHostZone
+          ? localStartMinutes >= normalizedHostStartHour * 60 &&
+            localEndMinutes <= normalizedHostEndHour * 60
+          : localStartMinutes >= normalizedParticipantStartHour * 60 &&
+            localEndMinutes <= normalizedParticipantEndHour * 60;
+
+      return {
+        zone,
+        start: formatTimeZoneDate(selectedSlot.instant, zone),
+        end: formatTimeZoneDate(selectedSlot.endInstant, zone),
+        offset: formatOffsetMinutes(getTimeZoneOffsetMinutes(selectedSlot.instant, zone)),
+        inPreferredWindow,
+        role: zone === normalizedHostZone ? "Host" : "Participant",
+      };
+    });
+    return rows;
+  }, [
+    normalizedHostEndHour,
+    normalizedHostStartHour,
+    normalizedHostZone,
+    normalizedParticipantEndHour,
+    normalizedParticipantStartHour,
+    normalizedParticipantZones,
+    selectedSlot,
+  ]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Briefcase}
+        title="Meeting time planner"
+        subtitle="Find the best cross-timezone meeting slots by overlap score and local-business-hour fit."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Meeting date</span>
+          <input type="date" value={meetingDate} onChange={(event) => setMeetingDate(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Duration (minutes)</span>
+          <input
+            type="number"
+            min={15}
+            max={720}
+            step={15}
+            value={safeDurationMinutes}
+            onChange={(event) => setDurationMinutes(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>Host timezone</span>
+          <select value={hostTimeZone} onChange={(event) => setHostTimeZone(event.target.value)}>
+            {timeZoneOptions.map((option) => (
+              <option key={`meeting-host-${option.value}`} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Host availability start</span>
+          <select value={normalizedHostStartHour} onChange={(event) => setHostStartHour(Number(event.target.value))}>
+            {hourOptions.map((hour) => (
+              <option key={`host-start-${hour}`} value={hour}>
+                {hour.toString().padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Host availability end</span>
+          <select value={normalizedHostEndHour} onChange={(event) => setHostEndHour(Number(event.target.value))}>
+            {endHourOptions.map((hour) => (
+              <option key={`host-end-${hour}`} value={hour}>
+                {hour.toString().padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Participant preferred start</span>
+          <select value={normalizedParticipantStartHour} onChange={(event) => setParticipantStartHour(Number(event.target.value))}>
+            {hourOptions.map((hour) => (
+              <option key={`participant-start-${hour}`} value={hour}>
+                {hour.toString().padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Participant preferred end</span>
+          <select value={normalizedParticipantEndHour} onChange={(event) => setParticipantEndHour(Number(event.target.value))}>
+            {endHourOptions.map((hour) => (
+              <option key={`participant-end-${hour}`} value={hour}>
+                {hour.toString().padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Participant timezones</h3>
+          <div className="button-row">
+            <label className="field">
+              <span>Add timezone</span>
+              <select value={participantZoneInput} onChange={(event) => setParticipantZoneInput(event.target.value)}>
+                {timeZoneOptions.map((option) => (
+                  <option key={`participant-input-${option.value}`} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                const normalized = normalizeTimeZoneValue(participantZoneInput, "");
+                if (!normalized) return;
+                if (normalized === normalizedHostZone) {
+                  setStatus("Host timezone is already included separately.");
+                  return;
+                }
+                setParticipantZones((current) => Array.from(new Set([...current, normalized])).slice(0, 12));
+                setStatus(`Added ${normalized}.`);
+              }}
+            >
+              Add participant zone
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setParticipantZones(TIME_ZONE_COMPARE_DEFAULTS.filter((zone) => zone !== normalizedHostZone));
+                setStatus("Reset participant timezone list.");
+              }}
+            >
+              Reset zones
+            </button>
+          </div>
+        </div>
+        <div className="chip-list">
+          {normalizedParticipantZones.length === 0 ? <span className="chip">No participant zones selected</span> : null}
+          {normalizedParticipantZones.map((zone) => (
+            <button
+              key={`participant-chip-${zone}`}
+              className="chip-button"
+              type="button"
+              onClick={() => setParticipantZones((current) => current.filter((entry) => entry !== zone))}
+            >
+              {zone} x
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setMeetingDate(formatDateTimeLocalForZone(new Date(), normalizedHostZone).slice(0, 10));
+            setStatus(`Loaded today's date in ${normalizedHostZone}.`);
+          }}
+        >
+          Use today
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            if (!selectedSlot) return;
+            const summary = [
+              `Host slot: ${formatTimeZoneDate(selectedSlot.instant, normalizedHostZone)} -> ${formatTimeZoneDate(
+                selectedSlot.endInstant,
+                normalizedHostZone,
+              )}`,
+              `Overlap: ${selectedSlot.overlapCount}/${Math.max(1, normalizedParticipantZones.length)} participant zones`,
+              ...slotDetailRows.map((row) => `${row.zone}: ${row.start} -> ${row.end}`),
+            ].join("\n");
+            const ok = await copyTextToClipboard(summary);
+            setStatus(ok ? "Selected slot details copied." : "No slot selected to copy.");
+          }}
+          disabled={!selectedSlot}
+        >
+          <Copy size={15} />
+          Copy selected slot
+        </button>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Host timezone", value: normalizedHostZone },
+          { label: "Participant zones", value: formatNumericValue(normalizedParticipantZones.length) },
+          { label: "Candidate slots", value: formatNumericValue(candidateSlots.length) },
+          {
+            label: "Best overlap",
+            value: candidateSlots.length
+              ? `${formatNumericValue(candidateSlots[0].overlapCount)} / ${formatNumericValue(Math.max(1, normalizedParticipantZones.length))}`
+              : "-",
+          },
+          {
+            label: "Top slot (host local)",
+            value: candidateSlots.length ? formatTimeZoneDate(candidateSlots[0].instant, normalizedHostZone) : "-",
+          },
+        ]}
+      />
+
+      {candidateSlots.length === 0 ? (
+        <p className="supporting-text">
+          No slots match the selected host window. Increase host availability or shorten meeting duration.
+        </p>
+      ) : (
+        <div className="mini-panel">
+          <h3>Top recommended slots</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Host local start</th>
+                  <th>UTC start</th>
+                  <th>Overlap score</th>
+                  <th>Exact match</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidateSlots.slice(0, 16).map((slot, index) => (
+                  <tr key={slot.id}>
+                    <td>{index + 1}</td>
+                    <td>{formatTimeZoneDate(slot.instant, normalizedHostZone)}</td>
+                    <td>{slot.instant.toISOString()}</td>
+                    <td>
+                      {formatNumericValue(slot.overlapCount)} / {formatNumericValue(Math.max(1, normalizedParticipantZones.length))} (
+                      {slot.overlapPercent.toFixed(0)}%)
+                    </td>
+                    <td>{slot.exact ? "Yes" : "Approximate"}</td>
+                    <td>
+                      <button
+                        className="action-button secondary"
+                        type="button"
+                        onClick={() => setSelectedSlotId(slot.id)}
+                      >
+                        Select
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {selectedSlot ? (
+        <div className="mini-panel">
+          <h3>Selected slot details</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Role</th>
+                  <th>Timezone</th>
+                  <th>Local start</th>
+                  <th>Local end</th>
+                  <th>Offset</th>
+                  <th>Preferred window</th>
+                </tr>
+              </thead>
+              <tbody>
+                {slotDetailRows.map((row) => (
+                  <tr key={`${row.role}-${row.zone}`}>
+                    <td>{row.role}</td>
+                    <td>{row.zone}</td>
+                    <td>{row.start}</td>
+                    <td>{row.end}</td>
+                    <td>{row.offset}</td>
+                    <td>{row.inPreferredWindow ? "Inside" : "Outside"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="supporting-text">
+            Host window: {normalizedHostStartHour.toString().padStart(2, "0")}:00-{normalizedHostEndHour
+              .toString()
+              .padStart(2, "0")}
+            :00 | Participant preferred window: {normalizedParticipantStartHour.toString().padStart(2, "0")}:00-
+            {normalizedParticipantEndHour.toString().padStart(2, "0")}:00
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ProductivityTool({ id }: { id: ProductivityToolId }) {
   switch (id) {
     case "pomodoro-timer":
       return <PomodoroTool />;
+    case "meeting-time-planner":
+      return <MeetingTimePlannerTool />;
     case "simple-todo-list":
       return <TodoListTool />;
     case "notes-pad":

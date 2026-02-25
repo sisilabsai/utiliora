@@ -881,6 +881,17 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Pomodoro Timer"),
   },
   {
+    slug: "meeting-time-planner",
+    category: "productivity-tools",
+    title: "Meeting Time Planner",
+    summary: "Find the best meeting slots across multiple time zones with overlap scoring.",
+    description:
+      "Plan cross-timezone meetings by comparing candidate slots against participant business-hour windows and selecting the best overlap.",
+    keywords: ["meeting time planner", "timezone meeting planner", "meeting scheduler", "global meeting time"],
+    engine: { kind: "productivity-tool", id: "meeting-time-planner" },
+    faq: baseFaq("Meeting Time Planner"),
+  },
+  {
     slug: "simple-todo-list",
     category: "productivity-tools",
     title: "Simple To-do List",

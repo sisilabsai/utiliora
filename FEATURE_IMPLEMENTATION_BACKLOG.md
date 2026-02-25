@@ -19,7 +19,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 1 | Age Calculator | Calculators | Very high long-tail search demand | Done |
 | 2 | Date Difference Calculator | Calculators | High recurring search demand | Done |
 | 3 | Time Zone Converter | Productivity/Developer | High global remote-work demand | Done |
-| 4 | Meeting Time Planner | Productivity | Team scheduling demand | Planned |
+| 4 | Meeting Time Planner | Productivity | Team scheduling demand | Done |
 | 5 | PDF Merge | Image/PDF | Very high utility demand | Planned |
 | 6 | PDF Split | Image/PDF | Very high utility demand | Planned |
 | 7 | PDF Compressor | Image/PDF | Very high utility demand | Planned |
@@ -39,4 +39,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `Age Calculator` (`/calculators/age-calculator`)
 - Completed feature: `Date Difference Calculator` (`/calculators/date-difference-calculator`)
 - Completed feature: `Time Zone Converter` (`/developer-tools/time-zone-converter`)
-- Active next feature: `Meeting Time Planner`
+- Completed feature: `Meeting Time Planner` (`/productivity-tools/meeting-time-planner`)
+- Active next feature: `PDF Merge`

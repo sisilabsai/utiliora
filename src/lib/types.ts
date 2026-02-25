@@ -120,6 +120,7 @@ export type ImageToolId =
 
 export type ProductivityToolId =
   | "pomodoro-timer"
+  | "meeting-time-planner"
   | "simple-todo-list"
   | "notes-pad"
   | "resume-builder"
