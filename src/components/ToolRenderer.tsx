@@ -4446,6 +4446,324 @@ function AiDetectorTool() {
   );
 }
 
+interface PlagiarismSourceResult {
+  sourceLabel: string;
+  sourceWordCount: number;
+  similarity: number;
+  sourceCoverage: number;
+  overlapCount: number;
+  sentenceMatches: number;
+  matchedPhrases: string[];
+}
+
+interface PlagiarismReport {
+  candidateWordCount: number;
+  sourceCount: number;
+  overallSimilarity: number;
+  overallCoverage: number;
+  flaggedSentenceCount: number;
+  verdict: string;
+  verdictTone: "ok" | "info" | "warn" | "bad";
+  results: PlagiarismSourceResult[];
+}
+
+function parsePlagiarismSources(value: string): string[] {
+  return value
+    .split(/\n-{3,}\n|\n={3,}\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function buildWordShingles(words: string[], size: number): string[] {
+  if (words.length < size) return [];
+  const phrases: string[] = [];
+  for (let index = 0; index <= words.length - size; index += 1) {
+    phrases.push(words.slice(index, index + size).join(" "));
+  }
+  return phrases;
+}
+
+function normalizeSentenceForSimilarity(value: string): string {
+  return tokenizeAiWords(value).join(" ");
+}
+
+function buildPlagiarismReport(candidateText: string, sources: string[], nGramSize: number): PlagiarismReport | null {
+  const candidateWords = tokenizeAiWords(candidateText);
+  const candidateWordCount = candidateWords.length;
+  if (candidateWordCount < Math.max(20, nGramSize * 4)) return null;
+
+  const candidateShingles = new Set(buildWordShingles(candidateWords, nGramSize));
+  if (!candidateShingles.size) return null;
+
+  const candidateSentences = splitAiSentences(candidateText)
+    .map((sentence) => normalizeSentenceForSimilarity(sentence))
+    .filter((sentence) => tokenizeAiWords(sentence).length >= 6);
+  const candidateSentenceSet = new Set(candidateSentences);
+
+  const aggregateOverlap = new Set<string>();
+  const aggregateSentenceMatches = new Set<string>();
+
+  const results = sources
+    .map((source, index): PlagiarismSourceResult => {
+      const sourceWords = tokenizeAiWords(source);
+      const sourceShingles = new Set(buildWordShingles(sourceWords, nGramSize));
+      const overlap: string[] = [];
+      const [smaller, larger] =
+        candidateShingles.size <= sourceShingles.size
+          ? [candidateShingles, sourceShingles]
+          : [sourceShingles, candidateShingles];
+
+      for (const phrase of smaller) {
+        if (larger.has(phrase) && candidateShingles.has(phrase)) {
+          overlap.push(phrase);
+          aggregateOverlap.add(phrase);
+        }
+      }
+
+      const sourceSentenceSet = new Set(
+        splitAiSentences(source)
+          .map((sentence) => normalizeSentenceForSimilarity(sentence))
+          .filter((sentence) => tokenizeAiWords(sentence).length >= 6),
+      );
+      let sentenceMatches = 0;
+      for (const sentence of candidateSentenceSet) {
+        if (sourceSentenceSet.has(sentence)) {
+          sentenceMatches += 1;
+          aggregateSentenceMatches.add(sentence);
+        }
+      }
+
+      const similarity = (overlap.length / candidateShingles.size) * 100;
+      const sourceCoverage = sourceShingles.size ? (overlap.length / sourceShingles.size) * 100 : 0;
+
+      return {
+        sourceLabel: `Source ${index + 1}`,
+        sourceWordCount: sourceWords.length,
+        similarity,
+        sourceCoverage,
+        overlapCount: overlap.length,
+        sentenceMatches,
+        matchedPhrases: overlap.slice(0, 6),
+      };
+    })
+    .sort((left, right) => right.similarity - left.similarity);
+
+  const overallSimilarity = (aggregateOverlap.size / candidateShingles.size) * 100;
+  const overallCoverage = results.length
+    ? results.reduce((sum, result) => sum + result.sourceCoverage, 0) / results.length
+    : 0;
+  const flaggedSentenceCount = aggregateSentenceMatches.size;
+
+  let verdict = "Low overlap detected";
+  let verdictTone: "ok" | "info" | "warn" | "bad" = "ok";
+  if (overallSimilarity >= 35 || flaggedSentenceCount >= 4) {
+    verdict = "High plagiarism risk";
+    verdictTone = "bad";
+  } else if (overallSimilarity >= 15 || flaggedSentenceCount >= 2) {
+    verdict = "Moderate overlap found";
+    verdictTone = "warn";
+  } else if (overallSimilarity >= 8) {
+    verdict = "Minor overlap found";
+    verdictTone = "info";
+  }
+
+  return {
+    candidateWordCount,
+    sourceCount: sources.length,
+    overallSimilarity,
+    overallCoverage,
+    flaggedSentenceCount,
+    verdict,
+    verdictTone,
+    results,
+  };
+}
+
+function PlagiarismCheckerTool() {
+  const [candidateText, setCandidateText] = useState("");
+  const [sourcesInput, setSourcesInput] = useState("");
+  const [nGramSize, setNGramSize] = useState(6);
+  const [report, setReport] = useState<PlagiarismReport | null>(null);
+  const [status, setStatus] = useState("Paste a target text and one or more source texts.");
+
+  const sourceCount = useMemo(() => parsePlagiarismSources(sourcesInput).length, [sourcesInput]);
+
+  const analyze = useCallback(() => {
+    const sources = parsePlagiarismSources(sourcesInput);
+    if (!candidateText.trim()) {
+      setStatus("Enter target text first.");
+      setReport(null);
+      return;
+    }
+    if (!sources.length) {
+      setStatus("Add at least one source text. Separate sources with a line containing ---");
+      setReport(null);
+      return;
+    }
+
+    const reportResult = buildPlagiarismReport(
+      candidateText,
+      sources,
+      Math.max(3, Math.min(10, Math.round(nGramSize))),
+    );
+    if (!reportResult) {
+      setStatus("Text is too short for reliable similarity analysis.");
+      setReport(null);
+      return;
+    }
+
+    setReport(reportResult);
+    setStatus(
+      `Analysis complete: ${reportResult.verdict} (${reportResult.overallSimilarity.toFixed(1)}% overall overlap).`,
+    );
+    trackEvent("tool_plagiarism_checker_analyze", {
+      words: reportResult.candidateWordCount,
+      sources: reportResult.sourceCount,
+      overlap: Number(reportResult.overallSimilarity.toFixed(1)),
+      flaggedSentences: reportResult.flaggedSentenceCount,
+    });
+  }, [candidateText, nGramSize, sourcesInput]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="Plagiarism checker"
+        subtitle="Compare text against multiple sources using n-gram overlap and matched phrase evidence."
+      />
+
+      <label className="field">
+        <span>Target text</span>
+        <textarea
+          value={candidateText}
+          onChange={(event) => setCandidateText(event.target.value)}
+          rows={8}
+          placeholder="Paste the text you want to check."
+        />
+      </label>
+
+      <label className="field">
+        <span>Source text(s)</span>
+        <textarea
+          value={sourcesInput}
+          onChange={(event) => setSourcesInput(event.target.value)}
+          rows={10}
+          placeholder={`Paste one or more source texts.\nUse a line with --- between sources.`}
+        />
+        <small className="supporting-text">
+          Separate each source with a standalone line containing `---`.
+        </small>
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>N-gram phrase size</span>
+          <input
+            type="number"
+            min={3}
+            max={10}
+            value={nGramSize}
+            onChange={(event) => setNGramSize(Number(event.target.value))}
+          />
+          <small className="supporting-text">
+            Larger values reduce false positives but may miss paraphrasing.
+          </small>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={analyze}>
+          Analyze similarity
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setCandidateText("");
+            setSourcesInput("");
+            setReport(null);
+            setStatus("Cleared plagiarism analysis.");
+          }}
+        >
+          <Trash2 size={15} />
+          Clear
+        </button>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+      <ResultList
+        rows={[
+          { label: "Target words", value: formatNumericValue(countWords(candidateText)) },
+          { label: "Sources loaded", value: formatNumericValue(sourceCount) },
+          { label: "N-gram size", value: formatNumericValue(Math.max(3, Math.min(10, Math.round(nGramSize || 3)))) },
+        ]}
+      />
+
+      {report ? (
+        <>
+          <p className={`status-badge ${report.verdictTone}`}>
+            {report.verdict} | Overall overlap: {report.overallSimilarity.toFixed(1)}% | Flagged sentence matches:{" "}
+            {report.flaggedSentenceCount}
+          </p>
+
+          <ResultList
+            rows={[
+              { label: "Overall overlap", value: `${report.overallSimilarity.toFixed(1)}%` },
+              { label: "Average source coverage", value: `${report.overallCoverage.toFixed(1)}%` },
+              { label: "Flagged sentence matches", value: formatNumericValue(report.flaggedSentenceCount) },
+              { label: "Compared sources", value: formatNumericValue(report.sourceCount) },
+            ]}
+          />
+
+          <div className="mini-panel">
+            <h3>Source comparison</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Source</th>
+                    <th>Words</th>
+                    <th>Similarity</th>
+                    <th>Source coverage</th>
+                    <th>Phrase overlaps</th>
+                    <th>Sentence matches</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.results.map((result) => (
+                    <tr key={result.sourceLabel}>
+                      <td>{result.sourceLabel}</td>
+                      <td>{formatNumericValue(result.sourceWordCount)}</td>
+                      <td>{result.similarity.toFixed(1)}%</td>
+                      <td>{result.sourceCoverage.toFixed(1)}%</td>
+                      <td>{formatNumericValue(result.overlapCount)}</td>
+                      <td>{formatNumericValue(result.sentenceMatches)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {report.results.some((result) => result.matchedPhrases.length) ? (
+            <div className="mini-panel">
+              <h3>Matched phrases</h3>
+              <ul className="plain-list">
+                {report.results.map((result) => (
+                  <li key={`${result.sourceLabel}-phrases`}>
+                    <strong>{result.sourceLabel}:</strong>{" "}
+                    {result.matchedPhrases.length ? result.matchedPhrases.join(" | ") : "No strong phrase overlaps"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function TextTool({ id }: { id: TextToolId }) {
   switch (id) {
     case "word-counter":
@@ -4480,6 +4798,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <Base64Tool />;
     case "ai-detector":
       return <AiDetectorTool />;
+    case "plagiarism-checker":
+      return <PlagiarismCheckerTool />;
     case "password-generator":
       return <PasswordGeneratorTool />;
     case "lorem-ipsum-generator":

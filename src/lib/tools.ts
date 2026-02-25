@@ -590,6 +590,17 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("AI Detector"),
   },
   {
+    slug: "plagiarism-checker",
+    category: "seo-tools",
+    title: "Plagiarism Checker",
+    summary: "Compare text against multiple sources with phrase-overlap and similarity scoring.",
+    description:
+      "Check copied or near-copied sections by analyzing n-gram overlap, source-level match percentages, and repeated phrase evidence.",
+    keywords: ["plagiarism checker", "duplicate content checker", "content similarity checker", "copied text detector"],
+    engine: { kind: "text-tool", id: "plagiarism-checker" },
+    faq: baseFaq("Plagiarism Checker"),
+  },
+  {
     slug: "password-generator",
     category: "seo-tools",
     title: "Password Generator",

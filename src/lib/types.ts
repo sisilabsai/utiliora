@@ -88,6 +88,7 @@ export type TextToolId =
   | "js-minifier"
   | "base64-encoder-decoder"
   | "ai-detector"
+  | "plagiarism-checker"
   | "password-generator"
   | "lorem-ipsum-generator";
 
