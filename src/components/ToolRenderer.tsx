@@ -140,6 +140,69 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     },
     { name: "months", label: "Loan tenure (months)", defaultValue: "60", min: 1, step: 1, type: "number" },
   ],
+  "auto-loan-calculator": [
+    {
+      name: "vehiclePrice",
+      label: "Vehicle price (USD)",
+      defaultValue: "42000",
+      min: 0,
+      step: 100,
+      type: "number",
+    },
+    {
+      name: "downPayment",
+      label: "Down payment (USD)",
+      defaultValue: "5000",
+      min: 0,
+      step: 50,
+      type: "number",
+    },
+    {
+      name: "tradeInValue",
+      label: "Trade-in value (USD)",
+      defaultValue: "3000",
+      min: 0,
+      step: 50,
+      type: "number",
+    },
+    {
+      name: "salesTaxRate",
+      label: "Sales tax (%)",
+      defaultValue: "7.5",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "dealerFees",
+      label: "Dealer fees (USD)",
+      defaultValue: "1200",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "annualRate",
+      label: "APR (%)",
+      defaultValue: "6.2",
+      min: 0,
+      step: 0.1,
+      type: "number",
+    },
+    {
+      name: "months",
+      label: "Loan term",
+      defaultValue: "60",
+      type: "select",
+      options: [
+        { label: "36 months", value: "36" },
+        { label: "48 months", value: "48" },
+        { label: "60 months", value: "60" },
+        { label: "72 months", value: "72" },
+        { label: "84 months", value: "84" },
+      ],
+    },
+  ],
   "mortgage-calculator": [
     {
       name: "homePrice",
@@ -573,6 +636,7 @@ interface CalculatorPreset {
 
 const calculatorSubtitles: Record<CalculatorId, string> = {
   "loan-emi-calculator": "Plan loan payments with amortization detail and repayment impact.",
+  "auto-loan-calculator": "Estimate realistic car-financing cost with tax, fees, trade-in, and APR.",
   "mortgage-calculator": "Estimate all-in home payments with taxes, insurance, and HOA included.",
   "debt-to-income-calculator": "Model lender-style front-end/back-end DTI and affordability headroom in one view.",
   "compound-interest-calculator": "Model long-term growth and compounding outcomes year by year.",
@@ -603,6 +667,44 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
   "loan-emi-calculator": [
     { label: "Home Loan", values: { principal: "250000", annualRate: "7.5", months: "360" } },
     { label: "Car Loan", values: { principal: "28000", annualRate: "6.8", months: "60" } },
+  ],
+  "auto-loan-calculator": [
+    {
+      label: "New sedan",
+      values: {
+        vehiclePrice: "36000",
+        downPayment: "4000",
+        tradeInValue: "2500",
+        salesTaxRate: "7",
+        dealerFees: "995",
+        annualRate: "6.1",
+        months: "60",
+      },
+    },
+    {
+      label: "Used SUV",
+      values: {
+        vehiclePrice: "28000",
+        downPayment: "2500",
+        tradeInValue: "1500",
+        salesTaxRate: "7.5",
+        dealerFees: "850",
+        annualRate: "7.8",
+        months: "72",
+      },
+    },
+    {
+      label: "Short-term payoff",
+      values: {
+        vehiclePrice: "42000",
+        downPayment: "8000",
+        tradeInValue: "3000",
+        salesTaxRate: "8",
+        dealerFees: "1200",
+        annualRate: "5.5",
+        months: "48",
+      },
+    },
   ],
   "mortgage-calculator": [
     {
@@ -823,6 +925,7 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
 
 const CALCULATORS_WITH_DISPLAY_CURRENCY = new Set<CalculatorId>([
   "loan-emi-calculator",
+  "auto-loan-calculator",
   "mortgage-calculator",
   "debt-to-income-calculator",
   "compound-interest-calculator",
@@ -2121,6 +2224,7 @@ const FINANCE_PROFILE_PRESETS: FinanceProfilePreset[] = [
 
 const FINANCE_CALCULATORS = new Set<CalculatorId>([
   "loan-emi-calculator",
+  "auto-loan-calculator",
   "mortgage-calculator",
   "debt-to-income-calculator",
   "compound-interest-calculator",
@@ -2158,6 +2262,18 @@ const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink
       description: "Reallocate cash flow to reduce high-interest debt first.",
     },
   ],
+  "auto-loan-calculator": [
+    {
+      id: "debt-to-income-calculator",
+      label: "Check affordability ratio",
+      description: "Push your estimated car payment into DTI before committing to financing.",
+    },
+    {
+      id: "credit-card-payoff-calculator",
+      label: "Protect monthly cash flow",
+      description: "Model high-interest debt payoff so auto financing stays manageable.",
+    },
+  ],
   "mortgage-calculator": [
     {
       id: "debt-to-income-calculator",
@@ -2180,6 +2296,11 @@ const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink
       id: "loan-emi-calculator",
       label: "Estimate new-loan EMI",
       description: "Simulate additional debt before taking a loan offer.",
+    },
+    {
+      id: "auto-loan-calculator",
+      label: "Estimate car loan payment",
+      description: "Convert your debt headroom into a realistic auto-loan scenario.",
     },
     {
       id: "credit-card-payoff-calculator",
@@ -2270,6 +2391,22 @@ function buildFunnelPrefillValues(
     const months = Math.max(1, safeNumberValue(values.months));
     const emi = estimateMonthlyPayment(principal, annualRate, months);
     return { monthlyPersonalLoanPayments: emi.toFixed(2) };
+  }
+
+  if (sourceId === "auto-loan-calculator" && targetId === "debt-to-income-calculator") {
+    const vehiclePrice = Math.max(0, safeNumberValue(values.vehiclePrice));
+    const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+    const tradeInValue = Math.max(0, safeNumberValue(values.tradeInValue));
+    const salesTaxRate = Math.max(0, safeNumberValue(values.salesTaxRate));
+    const dealerFees = Math.max(0, safeNumberValue(values.dealerFees));
+    const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+    const months = Math.max(1, safeNumberValue(values.months));
+    const taxableAmount = Math.max(0, vehiclePrice - tradeInValue);
+    const salesTaxAmount = taxableAmount * (salesTaxRate / 100);
+    const outTheDoor = vehiclePrice + salesTaxAmount + dealerFees;
+    const financed = Math.max(0, outTheDoor - downPayment - tradeInValue);
+    const monthlyCarPayment = estimateMonthlyPayment(financed, annualRate, months);
+    return { monthlyCarPayment: monthlyCarPayment.toFixed(2) };
   }
 
   if (sourceId === "credit-card-payoff-calculator" && targetId === "debt-to-income-calculator") {
@@ -2379,6 +2516,27 @@ function buildSmartActionPlan(
     const extraPrincipal = Math.max(25, principal * 0.0025);
     plans.push(`Add ${formatMoney(extraPrincipal)} monthly toward principal to compress term and total interest.`);
     plans.push(`Before refinancing, compare your current tenor (${months} months) against a shorter term at similar EMI.`);
+    return plans;
+  }
+
+  if (id === "auto-loan-calculator") {
+    const vehiclePrice = Math.max(0, safeNumberValue(values.vehiclePrice));
+    const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+    const tradeInValue = Math.max(0, safeNumberValue(values.tradeInValue));
+    const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+    const months = Math.max(1, Math.round(safeNumberValue(values.months)));
+    const targetUpfront = vehiclePrice * 0.2;
+    const upfrontGap = Math.max(0, targetUpfront - (downPayment + tradeInValue));
+    plans.push(
+      upfrontGap > 0
+        ? `Increase down payment/trade-in by about ${formatMoney(upfrontGap)} to approach 20% upfront and lower financed risk.`
+        : "Your upfront cash position is strong; prioritize shorter terms or lower APR next.",
+    );
+    plans.push(
+      `Compare ${months}-month financing against a shorter term and target APR under ${formatNumericValue(
+        Math.max(0, annualRate - 1),
+      )}% before signing.`,
+    );
     return plans;
   }
 
@@ -3023,6 +3181,19 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     if (id === "loan-emi-calculator") {
       return getLoanAmortizationSchedule(values);
     }
+    if (id === "auto-loan-calculator") {
+      const vehiclePrice = Math.max(0, safeNumberValue(values.vehiclePrice));
+      const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+      const tradeInValue = Math.max(0, safeNumberValue(values.tradeInValue));
+      const salesTaxRate = Math.max(0, safeNumberValue(values.salesTaxRate));
+      const dealerFees = Math.max(0, safeNumberValue(values.dealerFees));
+      const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+      const months = Math.max(1, Math.round(safeNumberValue(values.months)));
+      const taxableAmount = Math.max(0, vehiclePrice - tradeInValue);
+      const salesTaxAmount = taxableAmount * (salesTaxRate / 100);
+      const principal = Math.max(0, vehiclePrice + salesTaxAmount + dealerFees - downPayment - tradeInValue);
+      return getLoanAmortizationSchedule({ principal, annualRate, months });
+    }
     if (id === "mortgage-calculator") {
       const homePrice = Math.max(0, safeNumberValue(values.homePrice));
       const downPayment = Math.max(0, safeNumberValue(values.downPayment));
@@ -3573,7 +3744,7 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
         </div>
       ) : null}
 
-      {(id === "loan-emi-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
+      {(id === "loan-emi-calculator" || id === "auto-loan-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
         <div className="mini-panel">
           <div className="panel-head">
             <h3>Amortization schedule</h3>

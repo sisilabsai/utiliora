@@ -192,6 +192,79 @@ function loanMetrics(rawValues: Record<string, unknown>): LoanMetrics {
   };
 }
 
+interface AutoLoanMetrics {
+  vehiclePrice: number;
+  downPayment: number;
+  tradeInValue: number;
+  salesTaxRate: number;
+  dealerFees: number;
+  annualRate: number;
+  months: number;
+  taxableAmount: number;
+  salesTaxAmount: number;
+  outTheDoorPrice: number;
+  upfrontCash: number;
+  financedAmount: number;
+  monthlyRate: number;
+  monthlyPayment: number;
+  totalPayment: number;
+  totalInterest: number;
+  totalCost: number;
+  loanToValue: number;
+}
+
+function autoLoanMetrics(rawValues: Record<string, unknown>): AutoLoanMetrics {
+  const vehiclePrice = Math.max(0, toNumber(rawValues.vehiclePrice));
+  const downPayment = Math.max(0, toNumber(rawValues.downPayment));
+  const tradeInValue = Math.max(0, toNumber(rawValues.tradeInValue));
+  const salesTaxRate = Math.max(0, toNumber(rawValues.salesTaxRate));
+  const dealerFees = Math.max(0, toNumber(rawValues.dealerFees));
+  const annualRate = Math.max(0, toNumber(rawValues.annualRate));
+  const months = Math.max(1, Math.round(toNumber(rawValues.months, 60)));
+  const monthlyRate = annualRate / 12 / 100;
+
+  const taxableAmount = Math.max(0, vehiclePrice - tradeInValue);
+  const salesTaxAmount = taxableAmount * (salesTaxRate / 100);
+  const outTheDoorPrice = vehiclePrice + salesTaxAmount + dealerFees;
+  const upfrontCash = downPayment + tradeInValue;
+  const financedAmount = Math.max(0, outTheDoorPrice - upfrontCash);
+
+  let monthlyPayment = financedAmount / months;
+  if (financedAmount > 0 && monthlyRate > 0) {
+    const multiplier = Math.pow(1 + monthlyRate, months);
+    monthlyPayment = (financedAmount * monthlyRate * multiplier) / (multiplier - 1);
+  }
+  if (financedAmount === 0) {
+    monthlyPayment = 0;
+  }
+
+  const totalPayment = monthlyPayment * months;
+  const totalInterest = Math.max(0, totalPayment - financedAmount);
+  const totalCost = upfrontCash + totalPayment;
+  const loanToValue = vehiclePrice > 0 ? (financedAmount / vehiclePrice) * 100 : 0;
+
+  return {
+    vehiclePrice,
+    downPayment,
+    tradeInValue,
+    salesTaxRate,
+    dealerFees,
+    annualRate,
+    months,
+    taxableAmount,
+    salesTaxAmount,
+    outTheDoorPrice,
+    upfrontCash,
+    financedAmount,
+    monthlyRate,
+    monthlyPayment,
+    totalPayment,
+    totalInterest,
+    totalCost,
+    loanToValue,
+  };
+}
+
 interface CompoundMetrics {
   principal: number;
   annualRate: number;
@@ -1206,6 +1279,14 @@ export function getCalculatorInsights(
         `Every 1% rate increase can significantly raise lifetime cost on long tenures.`,
       ];
     }
+    case "auto-loan-calculator": {
+      const metrics = autoLoanMetrics(rawValues);
+      const interestShare = metrics.totalPayment === 0 ? 0 : (metrics.totalInterest / metrics.totalPayment) * 100;
+      return [
+        `Out-the-door price: ${formatMoney(metrics.outTheDoorPrice)} with financed amount ${formatMoney(metrics.financedAmount)}.`,
+        `Interest share of loan payments: ${formatPercent(interestShare)}. Loan-to-value: ${formatPercent(metrics.loanToValue)}.`,
+      ];
+    }
     case "mortgage-calculator": {
       const metrics = mortgageMetrics(rawValues);
       return [
@@ -1424,6 +1505,18 @@ export function runCalculator(
         { label: "Total Payment", value: formatMoney(metrics.totalPayment) },
         { label: "Total Interest", value: formatMoney(metrics.totalInterest) },
         { label: "Interest Share", value: formatPercent(interestShare) },
+      ];
+    }
+    case "auto-loan-calculator": {
+      const metrics = autoLoanMetrics(rawValues);
+      return [
+        { label: "Out-the-door Price", value: formatMoney(metrics.outTheDoorPrice) },
+        { label: "Financed Amount", value: formatMoney(metrics.financedAmount) },
+        { label: "Monthly Auto Payment", value: formatMoney(metrics.monthlyPayment) },
+        { label: "Total of Loan Payments", value: formatMoney(metrics.totalPayment) },
+        { label: "Total Interest", value: formatMoney(metrics.totalInterest) },
+        { label: "Total Vehicle Cost", value: formatMoney(metrics.totalCost) },
+        { label: "Loan-to-Value", value: formatPercent(metrics.loanToValue) },
       ];
     }
     case "mortgage-calculator": {

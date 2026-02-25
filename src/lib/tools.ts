@@ -32,6 +32,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Loan EMI Calculator"),
   },
   {
+    slug: "auto-loan-calculator",
+    category: "calculators",
+    title: "Auto Loan Calculator",
+    summary: "Estimate monthly car payments with tax, trade-in, fees, and total financing cost.",
+    description:
+      "Calculate realistic auto-loan payments by combining vehicle price, down payment, trade-in credit, taxes, dealer fees, APR, and term.",
+    keywords: ["auto loan calculator", "car payment calculator", "vehicle financing calculator"],
+    engine: { kind: "calculator", id: "auto-loan-calculator" },
+    faq: baseFaq("Auto Loan Calculator"),
+  },
+  {
     slug: "mortgage-calculator",
     category: "calculators",
     title: "Mortgage Calculator",
