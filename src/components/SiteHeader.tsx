@@ -63,8 +63,6 @@ export function SiteHeader() {
   const pathname = usePathname();
   const [recentDockEntry, setRecentDockEntry] = useState<RecentDockEntry | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
-  const [tappingItem, setTappingItem] = useState("");
-  const tapTimeoutRef = useRef<number | null>(null);
   const mobileQuickNavRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -120,30 +118,6 @@ export function SiteHeader() {
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [quickOpen]);
-
-  useEffect(() => {
-    return () => {
-      if (tapTimeoutRef.current !== null) {
-        window.clearTimeout(tapTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const triggerTapFeedback = useCallback((key: string) => {
-    setTappingItem(key);
-    if (tapTimeoutRef.current !== null) {
-      window.clearTimeout(tapTimeoutRef.current);
-    }
-    tapTimeoutRef.current = window.setTimeout(() => setTappingItem(""), 220);
-
-    if ("vibrate" in navigator) {
-      try {
-        navigator.vibrate(8);
-      } catch {
-        // Ignore vibration support issues.
-      }
-    }
-  }, []);
 
   const isActive = useCallback(
     (href: string) => {
@@ -203,9 +177,8 @@ export function SiteHeader() {
       <nav ref={mobileQuickNavRef} aria-label="Mobile quick access" className="mobile-quick-nav">
         <Link
           href="/"
-          className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""} ${tappingItem === "home" ? "is-tapping" : ""}`}
+          className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/") ? "page" : undefined}
-          onPointerDown={() => triggerTapFeedback("home")}
           onClick={closeQuickPanel}
         >
           <Home size={17} />
@@ -214,9 +187,8 @@ export function SiteHeader() {
 
         <Link
           href="/tools"
-          className={`mobile-quick-link ${isActive("/tools") ? "mobile-quick-link-active" : ""} ${tappingItem === "tools" ? "is-tapping" : ""}`}
+          className={`mobile-quick-link ${isActive("/tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/tools") ? "page" : undefined}
-          onPointerDown={() => triggerTapFeedback("tools")}
           onClick={closeQuickPanel}
         >
           <Grid2x2 size={17} />
@@ -225,9 +197,8 @@ export function SiteHeader() {
 
         <Link
           href={recentHref}
-          className={`mobile-quick-link mobile-quick-link-recent ${recentActive ? "mobile-quick-link-active" : ""} ${tappingItem === "recent" ? "is-tapping" : ""}`}
+          className={`mobile-quick-link mobile-quick-link-recent ${recentActive ? "mobile-quick-link-active" : ""}`}
           aria-current={recentActive ? "page" : undefined}
-          onPointerDown={() => triggerTapFeedback("recent")}
           onClick={closeQuickPanel}
         >
           <History size={17} />
@@ -237,10 +208,9 @@ export function SiteHeader() {
         <div className="mobile-quick-drawer">
           <button
             type="button"
-            className={`mobile-quick-link mobile-quick-link-primary ${quickActive ? "mobile-quick-link-active" : ""} ${tappingItem === "quick" ? "is-tapping" : ""}`}
+            className={`mobile-quick-link mobile-quick-link-primary ${quickActive ? "mobile-quick-link-active" : ""}`}
             aria-expanded={quickOpen}
             aria-controls={quickPanelId}
-            onPointerDown={() => triggerTapFeedback("quick")}
             onClick={toggleQuickPanel}
           >
             <Sparkles size={18} />
@@ -266,7 +236,6 @@ export function SiteHeader() {
                           ? "mobile-quick-category-link mobile-quick-category-link-active"
                           : "mobile-quick-category-link"
                       }
-                      onPointerDown={() => triggerTapFeedback(`quick-${category.slug}`)}
                       onClick={closeQuickPanel}
                     >
                       <CategoryIcon category={category.slug} size={14} />
@@ -277,7 +246,6 @@ export function SiteHeader() {
                 <Link
                   className="mobile-quick-all-link"
                   href="/tools"
-                  onPointerDown={() => triggerTapFeedback("quick-all")}
                   onClick={closeQuickPanel}
                 >
                   Browse all tools
@@ -289,9 +257,8 @@ export function SiteHeader() {
 
         <Link
           href="/developer-tools"
-          className={`mobile-quick-link ${isActive("/developer-tools") ? "mobile-quick-link-active" : ""} ${tappingItem === "dev" ? "is-tapping" : ""}`}
+          className={`mobile-quick-link ${isActive("/developer-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/developer-tools") ? "page" : undefined}
-          onPointerDown={() => triggerTapFeedback("dev")}
           onClick={closeQuickPanel}
         >
           <Code2 size={17} />
@@ -300,9 +267,8 @@ export function SiteHeader() {
 
         <Link
           href="/productivity-tools"
-          className={`mobile-quick-link ${isActive("/productivity-tools") ? "mobile-quick-link-active" : ""} ${tappingItem === "focus" ? "is-tapping" : ""}`}
+          className={`mobile-quick-link ${isActive("/productivity-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/productivity-tools") ? "page" : undefined}
-          onPointerDown={() => triggerTapFeedback("focus")}
           onClick={closeQuickPanel}
         >
           <SquareKanban size={17} />
