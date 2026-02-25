@@ -1,5 +1,19 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  async redirects() {
+    return [
+      {
+        source: "/prroductivity-tools",
+        destination: "/productivity-tools",
+        permanent: true,
+      },
+      {
+        source: "/prroductivity-tools/:path*",
+        destination: "/productivity-tools/:path*",
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {

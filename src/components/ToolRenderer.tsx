@@ -1508,6 +1508,324 @@ function decodeBase64Url(value: string): string | null {
   }
 }
 
+interface ToolSessionEntry {
+  id: string;
+  label: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface UseToolSessionOptions {
+  toolKey: string;
+  defaultSessionLabel: string;
+  newSessionPrefix: string;
+  defaultSessionId?: string;
+}
+
+interface UseToolSessionResult {
+  isReady: boolean;
+  sessionId: string;
+  sessionLabel: string;
+  sessions: ToolSessionEntry[];
+  storageKey: (baseKey: string) => string;
+  selectSession: (nextSessionId: string) => void;
+  createSession: () => void;
+  renameSession: (nextLabel: string) => void;
+}
+
+interface ToolSessionControlsProps {
+  sessionId: string;
+  sessionLabel: string;
+  sessions: ToolSessionEntry[];
+  description?: string;
+  onSelectSession: (nextSessionId: string) => void;
+  onCreateSession: () => void;
+  onRenameSession: (nextLabel: string) => void;
+}
+
+const PRODUCTIVITY_SESSION_QUERY_KEY = "session";
+const TOOL_SESSION_MAX_ENTRIES = 30;
+const TOOL_SESSION_DEFAULT_ID = "default";
+const TOOL_SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-_]{1,47}$/i;
+
+function sanitizeToolSessionId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "-");
+  if (!normalized) return null;
+  return TOOL_SESSION_ID_PATTERN.test(normalized) ? normalized : null;
+}
+
+function sanitizeToolSessionLabel(value: string, fallback: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim().slice(0, 48);
+  return normalized || fallback;
+}
+
+function sortToolSessions(entries: ToolSessionEntry[]): ToolSessionEntry[] {
+  return [...entries].sort((left, right) => right.updatedAt - left.updatedAt || left.label.localeCompare(right.label));
+}
+
+function readToolSessionEntries(storageKey: string): ToolSessionEntry[] {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown[];
+    if (!Array.isArray(parsed)) return [];
+    const normalized = parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const candidate = entry as Partial<ToolSessionEntry>;
+        const id = sanitizeToolSessionId(candidate.id);
+        if (!id) return null;
+        const createdAt = typeof candidate.createdAt === "number" ? candidate.createdAt : Date.now();
+        const updatedAt = typeof candidate.updatedAt === "number" ? candidate.updatedAt : createdAt;
+        return {
+          id,
+          label: sanitizeToolSessionLabel(candidate.label ?? "", `Session ${id}`),
+          createdAt,
+          updatedAt,
+        } satisfies ToolSessionEntry;
+      })
+      .filter((entry): entry is ToolSessionEntry => Boolean(entry));
+    return sortToolSessions(normalized).slice(0, TOOL_SESSION_MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function writeToolSessionEntries(storageKey: string, entries: ToolSessionEntry[]): void {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(sortToolSessions(entries).slice(0, TOOL_SESSION_MAX_ENTRIES)));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function setToolSessionQueryParam(sessionId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get(PRODUCTIVITY_SESSION_QUERY_KEY) === sessionId) return;
+    url.searchParams.set(PRODUCTIVITY_SESSION_QUERY_KEY, sessionId);
+    const query = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${query ? `?${query}` : ""}${url.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+  } catch {
+    // Ignore URL rewriting failures.
+  }
+}
+
+function createToolSessionId(prefix: string): string {
+  const normalizedPrefix = sanitizeToolSessionId(prefix) ?? "session";
+  return `${normalizedPrefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function useToolSession({
+  toolKey,
+  defaultSessionLabel,
+  newSessionPrefix,
+  defaultSessionId = TOOL_SESSION_DEFAULT_ID,
+}: UseToolSessionOptions): UseToolSessionResult {
+  const normalizedDefaultSessionId = sanitizeToolSessionId(defaultSessionId) ?? TOOL_SESSION_DEFAULT_ID;
+  const directoryStorageKey = useMemo(() => `utiliora-${toolKey}-sessions-v1`, [toolKey]);
+  const lastSessionStorageKey = useMemo(() => `utiliora-${toolKey}-last-session-v1`, [toolKey]);
+  const [sessionId, setSessionId] = useState(normalizedDefaultSessionId);
+  const [sessions, setSessions] = useState<ToolSessionEntry[]>([]);
+  const [isReady, setIsReady] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const now = Date.now();
+    let fromUrl: string | null = null;
+    let fromStorage: string | null = null;
+    try {
+      fromUrl = sanitizeToolSessionId(new URLSearchParams(window.location.search).get(PRODUCTIVITY_SESSION_QUERY_KEY));
+    } catch {
+      fromUrl = null;
+    }
+    try {
+      fromStorage = sanitizeToolSessionId(localStorage.getItem(lastSessionStorageKey));
+    } catch {
+      fromStorage = null;
+    }
+    const resolvedSessionId = fromUrl ?? fromStorage ?? normalizedDefaultSessionId;
+    const existing = readToolSessionEntries(directoryStorageKey);
+    const existingEntry = existing.find((entry) => entry.id === resolvedSessionId);
+    const activeEntry: ToolSessionEntry = existingEntry
+      ? { ...existingEntry, updatedAt: now }
+      : {
+          id: resolvedSessionId,
+          label:
+            resolvedSessionId === normalizedDefaultSessionId
+              ? defaultSessionLabel
+              : `${defaultSessionLabel} ${existing.length + 1}`,
+          createdAt: now,
+          updatedAt: now,
+        };
+    const nextSessions = sortToolSessions([activeEntry, ...existing.filter((entry) => entry.id !== resolvedSessionId)]).slice(
+      0,
+      TOOL_SESSION_MAX_ENTRIES,
+    );
+    setSessions(nextSessions);
+    setSessionId(activeEntry.id);
+    setToolSessionQueryParam(activeEntry.id);
+    try {
+      localStorage.setItem(lastSessionStorageKey, activeEntry.id);
+    } catch {
+      // Ignore storage failures.
+    }
+    setIsReady(true);
+  }, [defaultSessionLabel, directoryStorageKey, lastSessionStorageKey, normalizedDefaultSessionId]);
+
+  useEffect(() => {
+    if (!isReady) return;
+    writeToolSessionEntries(directoryStorageKey, sessions);
+  }, [directoryStorageKey, isReady, sessions]);
+
+  useEffect(() => {
+    if (!isReady) return;
+    const now = Date.now();
+    setToolSessionQueryParam(sessionId);
+    try {
+      localStorage.setItem(lastSessionStorageKey, sessionId);
+    } catch {
+      // Ignore storage failures.
+    }
+    setSessions((current) => {
+      const existing = current.find((entry) => entry.id === sessionId);
+      if (existing) {
+        return sortToolSessions(
+          current.map((entry) => (entry.id === sessionId ? { ...entry, updatedAt: now } : entry)),
+        ).slice(0, TOOL_SESSION_MAX_ENTRIES);
+      }
+      const nextEntry: ToolSessionEntry = {
+        id: sessionId,
+        label:
+          sessionId === normalizedDefaultSessionId
+            ? defaultSessionLabel
+            : `${defaultSessionLabel} ${current.length + 1}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return sortToolSessions([nextEntry, ...current]).slice(0, TOOL_SESSION_MAX_ENTRIES);
+    });
+  }, [defaultSessionLabel, isReady, lastSessionStorageKey, normalizedDefaultSessionId, sessionId]);
+
+  const activeSession = useMemo(
+    () => sessions.find((entry) => entry.id === sessionId) ?? null,
+    [sessionId, sessions],
+  );
+  const sessionLabel = activeSession?.label ?? defaultSessionLabel;
+
+  const storageKey = useCallback(
+    (baseKey: string) => `${baseKey}:${sessionId}`,
+    [sessionId],
+  );
+
+  const selectSession = useCallback((nextSessionId: string) => {
+    const sanitized = sanitizeToolSessionId(nextSessionId);
+    if (!sanitized) return;
+    setSessionId(sanitized);
+  }, []);
+
+  const createSession = useCallback(() => {
+    const nextId = createToolSessionId(newSessionPrefix);
+    const now = Date.now();
+    setSessions((current) =>
+      sortToolSessions([
+        {
+          id: nextId,
+          label: `${defaultSessionLabel} ${current.length + 1}`,
+          createdAt: now,
+          updatedAt: now,
+        },
+        ...current,
+      ]).slice(0, TOOL_SESSION_MAX_ENTRIES),
+    );
+    setSessionId(nextId);
+  }, [defaultSessionLabel, newSessionPrefix]);
+
+  const renameSession = useCallback(
+    (nextLabel: string) => {
+      const normalizedLabel = sanitizeToolSessionLabel(nextLabel, defaultSessionLabel);
+      setSessions((current) =>
+        current.map((entry) =>
+          entry.id === sessionId ? { ...entry, label: normalizedLabel, updatedAt: Date.now() } : entry,
+        ),
+      );
+    },
+    [defaultSessionLabel, sessionId],
+  );
+
+  return {
+    isReady,
+    sessionId,
+    sessionLabel,
+    sessions,
+    storageKey,
+    selectSession,
+    createSession,
+    renameSession,
+  };
+}
+
+function ToolSessionControls({
+  sessionId,
+  sessionLabel,
+  sessions,
+  description,
+  onSelectSession,
+  onCreateSession,
+  onRenameSession,
+}: ToolSessionControlsProps) {
+  const [labelDraft, setLabelDraft] = useState(sessionLabel);
+
+  useEffect(() => {
+    setLabelDraft(sessionLabel);
+  }, [sessionLabel]);
+
+  return (
+    <div className="mini-panel session-panel">
+      <div className="panel-head">
+        <h3>Workspace session</h3>
+        <button className="action-button secondary" type="button" onClick={onCreateSession}>
+          <Plus size={15} />
+          New session
+        </button>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Session</span>
+          <select value={sessionId} onChange={(event) => onSelectSession(event.target.value)}>
+            {sessions.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Session name</span>
+          <input
+            type="text"
+            value={labelDraft}
+            onChange={(event) => setLabelDraft(event.target.value)}
+            onBlur={() => onRenameSession(labelDraft)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              onRenameSession(labelDraft);
+              (event.currentTarget as HTMLInputElement).blur();
+            }}
+          />
+        </label>
+      </div>
+      {description ? <p className="supporting-text">{description}</p> : null}
+    </div>
+  );
+}
+
 function formatCurrencyWithCode(value: number, currency: string): string {
   try {
     return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(value);
@@ -16898,14 +17216,32 @@ function PomodoroTool() {
     completedBreaks: number;
     breakMinutes: number;
   };
+  type PomodoroRuntimeState = {
+    mode?: PomodoroMode;
+    secondsLeft?: number;
+    running?: boolean;
+    completedFocusInCycle?: number;
+    currentTask?: string;
+    needsAttention?: boolean;
+    snapshotAt?: number;
+  };
 
-  const settingsKey = "utiliora-pomodoro-settings-v3";
-  const legacySettingsKey = "utiliora-pomodoro-settings-v2";
-  const statsKey = "utiliora-pomodoro-stats-v2";
+  const toolSession = useToolSession({
+    toolKey: "pomodoro",
+    defaultSessionLabel: "Focus session",
+    newSessionPrefix: "focus",
+  });
+  const settingsKey = toolSession.storageKey("utiliora-pomodoro-settings-v4");
+  const statsKey = toolSession.storageKey("utiliora-pomodoro-stats-v3");
+  const runtimeKey = toolSession.storageKey("utiliora-pomodoro-runtime-v1");
+  const legacySettingsKey = "utiliora-pomodoro-settings-v3";
+  const legacyStatsKey = "utiliora-pomodoro-stats-v2";
   const todayKey = new Date().toISOString().slice(0, 10);
   const popupRef = useRef<Window | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
+  const skipPausedResetRef = useRef(true);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
     "unsupported",
   );
@@ -17083,8 +17419,51 @@ function PomodoroTool() {
   );
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+
+    const clampInteger = (value: unknown, min: number, max: number, fallback: number): number => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return fallback;
+      return Math.max(min, Math.min(max, Math.round(numeric)));
+    };
+
+    let nextFocusMinutes = 25;
+    let nextShortBreakMinutes = 5;
+    let nextLongBreakMinutes = 15;
+    let nextSessionsBeforeLongBreak = 4;
+    let nextAutoStartBreaks = false;
+    let nextAutoStartFocus = false;
+    let nextEnableSystemNotifications = false;
+    let nextEnableSoundAlerts = true;
+    let nextEnableWarnings = true;
+    let nextWarningSeconds = 60;
+    let nextKeepScreenAwake = false;
+    let nextMode: PomodoroMode = "focus";
+    let nextSecondsLeft = nextFocusMinutes * 60;
+    let nextRunning = false;
+    let nextCompletedFocusInCycle = 0;
+    let nextCurrentTask = "";
+    let nextNeedsAttention = false;
+    let nextStatus = "Ready to focus.";
+    let nextStats: PomodoroStats = {
+      dateKey: todayKey,
+      completedFocusSessions: 0,
+      focusMinutes: 0,
+      completedBreaks: 0,
+      breakMinutes: 0,
+    };
+
+    const durationForLoadedMode = (targetMode: PomodoroMode): number => {
+      if (targetMode === "focus") return nextFocusMinutes;
+      if (targetMode === "short-break") return nextShortBreakMinutes;
+      return nextLongBreakMinutes;
+    };
+
     try {
-      const rawSettings = localStorage.getItem(settingsKey) ?? localStorage.getItem(legacySettingsKey);
+      const rawSettings =
+        localStorage.getItem(settingsKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacySettingsKey) : null);
       if (rawSettings) {
         const parsed = JSON.parse(rawSettings) as {
           focusMinutes?: number;
@@ -17099,48 +17478,104 @@ function PomodoroTool() {
           warningSeconds?: number;
           keepScreenAwake?: boolean;
         };
-        setFocusMinutes(Math.max(10, Math.min(90, Math.round(parsed.focusMinutes ?? 25))));
-        setShortBreakMinutes(Math.max(3, Math.min(30, Math.round(parsed.shortBreakMinutes ?? 5))));
-        setLongBreakMinutes(Math.max(10, Math.min(45, Math.round(parsed.longBreakMinutes ?? 15))));
-        setSessionsBeforeLongBreak(Math.max(2, Math.min(8, Math.round(parsed.sessionsBeforeLongBreak ?? 4))));
-        setAutoStartBreaks(Boolean(parsed.autoStartBreaks));
-        setAutoStartFocus(Boolean(parsed.autoStartFocus));
-        setEnableSystemNotifications(Boolean(parsed.enableSystemNotifications));
-        setEnableSoundAlerts(parsed.enableSoundAlerts ?? true);
-        setEnableWarnings(parsed.enableWarnings ?? true);
-        setWarningSeconds(Math.max(10, Math.min(300, Math.round(parsed.warningSeconds ?? 60))));
-        setKeepScreenAwake(Boolean(parsed.keepScreenAwake));
+        nextFocusMinutes = clampInteger(parsed.focusMinutes, 10, 90, nextFocusMinutes);
+        nextShortBreakMinutes = clampInteger(parsed.shortBreakMinutes, 3, 30, nextShortBreakMinutes);
+        nextLongBreakMinutes = clampInteger(parsed.longBreakMinutes, 10, 45, nextLongBreakMinutes);
+        nextSessionsBeforeLongBreak = clampInteger(parsed.sessionsBeforeLongBreak, 2, 8, nextSessionsBeforeLongBreak);
+        nextAutoStartBreaks = Boolean(parsed.autoStartBreaks);
+        nextAutoStartFocus = Boolean(parsed.autoStartFocus);
+        nextEnableSystemNotifications = Boolean(parsed.enableSystemNotifications);
+        nextEnableSoundAlerts = parsed.enableSoundAlerts ?? nextEnableSoundAlerts;
+        nextEnableWarnings = parsed.enableWarnings ?? nextEnableWarnings;
+        nextWarningSeconds = clampInteger(parsed.warningSeconds, 10, 300, nextWarningSeconds);
+        nextKeepScreenAwake = Boolean(parsed.keepScreenAwake);
       }
-      const rawStats = localStorage.getItem(statsKey);
+
+      const rawStats =
+        localStorage.getItem(statsKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyStatsKey) : null);
       if (rawStats) {
         const parsedStats = JSON.parse(rawStats) as Partial<PomodoroStats>;
         if (parsedStats.dateKey === todayKey) {
-          setStats({
+          nextStats = {
             dateKey: todayKey,
             completedFocusSessions: Math.max(0, Math.round(parsedStats.completedFocusSessions ?? 0)),
             focusMinutes: Math.max(0, Math.round(parsedStats.focusMinutes ?? 0)),
             completedBreaks: Math.max(0, Math.round(parsedStats.completedBreaks ?? 0)),
             breakMinutes: Math.max(0, Math.round(parsedStats.breakMinutes ?? 0)),
-          });
-        } else {
-          setStats({
-            dateKey: todayKey,
-            completedFocusSessions: 0,
-            focusMinutes: 0,
-            completedBreaks: 0,
-            breakMinutes: 0,
-          });
+          };
         }
+      }
+
+      const rawRuntime = localStorage.getItem(runtimeKey);
+      if (rawRuntime) {
+        const parsedRuntime = JSON.parse(rawRuntime) as PomodoroRuntimeState;
+        if (parsedRuntime.mode === "focus" || parsedRuntime.mode === "short-break" || parsedRuntime.mode === "long-break") {
+          nextMode = parsedRuntime.mode;
+        }
+        const phaseMaxSeconds = Math.max(1, durationForLoadedMode(nextMode) * 60);
+        const rawSeconds = clampInteger(parsedRuntime.secondsLeft, 0, phaseMaxSeconds, phaseMaxSeconds);
+        let recoveredSeconds = rawSeconds;
+        if (parsedRuntime.running && typeof parsedRuntime.snapshotAt === "number") {
+          const elapsedSeconds = Math.max(0, Math.floor((Date.now() - parsedRuntime.snapshotAt) / 1000));
+          recoveredSeconds = Math.max(0, rawSeconds - elapsedSeconds);
+          if (elapsedSeconds > 0) {
+            nextStatus =
+              recoveredSeconds > 0
+                ? "Recovered your running timer session."
+                : "Recovered timer reached the end while you were away.";
+          }
+        }
+        nextSecondsLeft = recoveredSeconds;
+        nextRunning = Boolean(parsedRuntime.running) && recoveredSeconds > 0;
+        nextCompletedFocusInCycle = Math.max(0, clampInteger(parsedRuntime.completedFocusInCycle, 0, 500, 0));
+        nextCurrentTask = typeof parsedRuntime.currentTask === "string" ? parsedRuntime.currentTask.slice(0, 200) : "";
+        nextNeedsAttention = Boolean(parsedRuntime.needsAttention) || (Boolean(parsedRuntime.running) && recoveredSeconds === 0);
+      } else {
+        nextSecondsLeft = durationForLoadedMode(nextMode) * 60;
       }
     } catch {
       // Ignore malformed local data.
     }
+
+    setFocusMinutes(nextFocusMinutes);
+    setShortBreakMinutes(nextShortBreakMinutes);
+    setLongBreakMinutes(nextLongBreakMinutes);
+    setSessionsBeforeLongBreak(nextSessionsBeforeLongBreak);
+    setAutoStartBreaks(nextAutoStartBreaks);
+    setAutoStartFocus(nextAutoStartFocus);
+    setEnableSystemNotifications(nextEnableSystemNotifications);
+    setEnableSoundAlerts(nextEnableSoundAlerts);
+    setEnableWarnings(nextEnableWarnings);
+    setWarningSeconds(nextWarningSeconds);
+    setKeepScreenAwake(nextKeepScreenAwake);
+    setMode(nextMode);
+    setSecondsLeft(nextSecondsLeft);
+    setRunning(nextRunning);
+    setCompletedFocusInCycle(nextCompletedFocusInCycle);
+    setCurrentTask(nextCurrentTask);
+    setNeedsAttention(nextNeedsAttention);
+    setStatus(nextStatus);
+    setStats(nextStats);
+    skipPausedResetRef.current = true;
+
     if ("Notification" in window) {
       setNotificationPermission(Notification.permission);
     }
-  }, [legacySettingsKey, statsKey, settingsKey, todayKey]);
+    setIsSessionHydrated(true);
+  }, [
+    legacySettingsKey,
+    legacyStatsKey,
+    runtimeKey,
+    settingsKey,
+    statsKey,
+    todayKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+  ]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(
         settingsKey,
@@ -17165,29 +17600,66 @@ function PomodoroTool() {
     autoStartBreaks,
     autoStartFocus,
     focusMinutes,
+    isSessionHydrated,
+    keepScreenAwake,
     longBreakMinutes,
     sessionsBeforeLongBreak,
     settingsKey,
     shortBreakMinutes,
+    toolSession.isReady,
     enableSystemNotifications,
     enableSoundAlerts,
     enableWarnings,
     warningSeconds,
-    keepScreenAwake,
   ]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(statsKey, JSON.stringify(stats));
     } catch {
       // Ignore storage failures.
     }
-  }, [stats, statsKey]);
+  }, [isSessionHydrated, stats, statsKey, toolSession.isReady]);
 
   useEffect(() => {
-    if (running) return;
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        runtimeKey,
+        JSON.stringify({
+          mode,
+          secondsLeft: Math.max(0, Math.round(secondsLeft)),
+          running,
+          completedFocusInCycle,
+          currentTask: currentTask.slice(0, 200),
+          needsAttention,
+          snapshotAt: Date.now(),
+        } satisfies PomodoroRuntimeState),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    completedFocusInCycle,
+    currentTask,
+    isSessionHydrated,
+    mode,
+    needsAttention,
+    running,
+    runtimeKey,
+    secondsLeft,
+    toolSession.isReady,
+  ]);
+
+  useEffect(() => {
+    if (!isSessionHydrated || running) return;
+    if (skipPausedResetRef.current) {
+      skipPausedResetRef.current = false;
+      return;
+    }
     setSecondsLeft(durationForMode(mode) * 60);
-  }, [durationForMode, mode, running]);
+  }, [durationForMode, isSessionHydrated, mode, running]);
 
   useEffect(() => {
     if (!running) return;
@@ -17402,6 +17874,21 @@ function PomodoroTool() {
         title="Pomodoro timer"
         subtitle="Advanced focus timer with alerts, warning cues, wake lock, mini window mode, and keyboard shortcuts."
       />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each session is saved locally and pinned to this /productivity-tools URL."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched focus session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setStatus("Created a new focus session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
+      />
       <div className="preset-row">
         <span className="supporting-text">Presets:</span>
         <button
@@ -17613,6 +18100,7 @@ function PomodoroTool() {
       </div>
       <ResultList
         rows={[
+          { label: "Session", value: toolSession.sessionLabel },
           { label: "Current phase", value: modeLabel },
           { label: "Task", value: currentTask.trim() || "No task set" },
           { label: "Progress", value: `${progressPercent.toFixed(0)}%` },
@@ -17721,6 +18209,7 @@ function PomodoroTool() {
 }
 
 type TodoPriority = "high" | "medium" | "low";
+type TodoPriorityFilter = TodoPriority | "all";
 type TodoFilter = "all" | "active" | "completed" | "overdue" | "today";
 const TODO_PRIORITY_WEIGHT: Record<TodoPriority, number> = { high: 3, medium: 2, low: 1 };
 
@@ -17730,21 +18219,93 @@ interface TodoItem {
   done: boolean;
   priority: TodoPriority;
   dueDate: string;
+  project: string;
+  tags: string[];
+  notes: string;
   createdAt: number;
   completedAt?: number;
 }
 
+interface TodoEditDraft {
+  text: string;
+  priority: TodoPriority;
+  dueDate: string;
+  project: string;
+  tagsInput: string;
+  notes: string;
+}
+
+function parseTodoTags(value: string): string[] {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 8);
+}
+
+function sanitizeTodoProject(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 40);
+}
+
+function sanitizeTodoItem(candidate: unknown): TodoItem | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const item = candidate as Partial<TodoItem>;
+  if (typeof item.text !== "string") return null;
+  const text = item.text.trim();
+  if (!text) return null;
+  const priority: TodoPriority =
+    item.priority === "high" || item.priority === "medium" || item.priority === "low"
+      ? item.priority
+      : "medium";
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : crypto.randomUUID(),
+    text: text.slice(0, 300),
+    done: Boolean(item.done),
+    priority,
+    dueDate: typeof item.dueDate === "string" ? item.dueDate : "",
+    project: sanitizeTodoProject(typeof item.project === "string" ? item.project : ""),
+    tags: Array.isArray(item.tags)
+      ? item.tags
+          .filter((tag): tag is string => typeof tag === "string")
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+          .slice(0, 8)
+      : [],
+    notes: typeof item.notes === "string" ? item.notes.trim().slice(0, 1200) : "",
+    createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+    completedAt: typeof item.completedAt === "number" ? item.completedAt : undefined,
+  };
+}
+
 function TodoListTool() {
-  const storageKey = "utiliora-todos-v2";
+  const toolSession = useToolSession({
+    toolKey: "todo",
+    defaultSessionLabel: "Task board",
+    newSessionPrefix: "tasks",
+  });
+  const storageKey = toolSession.storageKey("utiliora-todos-v3");
+  const uiStateKey = toolSession.storageKey("utiliora-todos-ui-v1");
+  const legacyStorageKey = "utiliora-todos-v2";
   const importRef = useRef<HTMLInputElement | null>(null);
   const todayKey = new Date().toISOString().slice(0, 10);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [value, setValue] = useState("");
   const [priority, setPriority] = useState<TodoPriority>("medium");
   const [dueDate, setDueDate] = useState("");
+  const [project, setProject] = useState("");
+  const [tagInput, setTagInput] = useState("");
+  const [noteInput, setNoteInput] = useState("");
   const [items, setItems] = useState<TodoItem[]>([]);
   const [filter, setFilter] = useState<TodoFilter>("all");
+  const [priorityFilter, setPriorityFilter] = useState<TodoPriorityFilter>("all");
+  const [projectFilter, setProjectFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<TodoEditDraft>({
+    text: "",
+    priority: "medium",
+    dueDate: "",
+    project: "",
+    tagsInput: "",
+    notes: "",
+  });
 
   const isOverdue = useCallback((item: TodoItem) => {
     if (!item.dueDate || item.done) return false;
@@ -17756,24 +18317,138 @@ function TodoListTool() {
   }, []);
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+    setEditingId(null);
+    setEditDraft({ text: "", priority: "medium", dueDate: "", project: "", tagsInput: "", notes: "" });
+    setValue("");
+    setPriority("medium");
+    setDueDate("");
+    setProject("");
+    setTagInput("");
+    setNoteInput("");
+    setFilter("all");
+    setPriorityFilter("all");
+    setProjectFilter("all");
+    setSearch("");
+    setStatus("");
+
+    let nextItems: TodoItem[] = [];
     try {
-      const stored = localStorage.getItem(storageKey);
+      const stored =
+        localStorage.getItem(storageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID ? localStorage.getItem(legacyStorageKey) : null);
       if (stored) {
-        const parsed = JSON.parse(stored) as TodoItem[];
-        if (Array.isArray(parsed)) setItems(parsed);
+        const parsed = JSON.parse(stored) as unknown[];
+        if (Array.isArray(parsed)) {
+          nextItems = parsed
+            .map((entry) => sanitizeTodoItem(entry))
+            .filter((entry): entry is TodoItem => Boolean(entry));
+        }
+      }
+      const rawUi = localStorage.getItem(uiStateKey);
+      if (rawUi) {
+        const parsedUi = JSON.parse(rawUi) as {
+          value?: string;
+          priority?: TodoPriority;
+          dueDate?: string;
+          project?: string;
+          tagInput?: string;
+          noteInput?: string;
+          filter?: TodoFilter;
+          priorityFilter?: TodoPriorityFilter;
+          projectFilter?: string;
+          search?: string;
+        };
+        setValue(typeof parsedUi.value === "string" ? parsedUi.value : "");
+        setPriority(
+          parsedUi.priority === "high" || parsedUi.priority === "medium" || parsedUi.priority === "low"
+            ? parsedUi.priority
+            : "medium",
+        );
+        setDueDate(typeof parsedUi.dueDate === "string" ? parsedUi.dueDate : "");
+        setProject(typeof parsedUi.project === "string" ? parsedUi.project : "");
+        setTagInput(typeof parsedUi.tagInput === "string" ? parsedUi.tagInput : "");
+        setNoteInput(typeof parsedUi.noteInput === "string" ? parsedUi.noteInput : "");
+        setFilter(
+          parsedUi.filter === "active" ||
+            parsedUi.filter === "completed" ||
+            parsedUi.filter === "overdue" ||
+            parsedUi.filter === "today"
+            ? parsedUi.filter
+            : "all",
+        );
+        setPriorityFilter(
+          parsedUi.priorityFilter === "high" ||
+            parsedUi.priorityFilter === "medium" ||
+            parsedUi.priorityFilter === "low"
+            ? parsedUi.priorityFilter
+            : "all",
+        );
+        setProjectFilter(typeof parsedUi.projectFilter === "string" && parsedUi.projectFilter ? parsedUi.projectFilter : "all");
+        setSearch(typeof parsedUi.search === "string" ? parsedUi.search : "");
       }
     } catch {
       // Ignore malformed stored tasks.
     }
-  }, [storageKey]);
+    setItems(nextItems);
+    setIsSessionHydrated(true);
+  }, [legacyStorageKey, storageKey, toolSession.isReady, toolSession.sessionId, uiStateKey]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(items));
     } catch {
       // Ignore storage failures.
     }
-  }, [items, storageKey]);
+  }, [isSessionHydrated, items, storageKey, toolSession.isReady]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        uiStateKey,
+        JSON.stringify({
+          value,
+          priority,
+          dueDate,
+          project,
+          tagInput,
+          noteInput,
+          filter,
+          priorityFilter,
+          projectFilter,
+          search,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    dueDate,
+    filter,
+    isSessionHydrated,
+    noteInput,
+    priority,
+    priorityFilter,
+    project,
+    projectFilter,
+    search,
+    tagInput,
+    toolSession.isReady,
+    uiStateKey,
+    value,
+  ]);
+
+  const projectOptions = useMemo(() => {
+    const projectSet = new Set<string>(["Inbox"]);
+    items.forEach((item) => {
+      if (!item.project) return;
+      projectSet.add(item.project);
+    });
+    return [...projectSet].sort((left, right) => left.localeCompare(right));
+  }, [items]);
 
   const filteredItems = useMemo(() => {
     const searchTerm = search.trim().toLowerCase();
@@ -17783,8 +18458,12 @@ function TodoListTool() {
         if (filter === "completed" && !item.done) return false;
         if (filter === "overdue" && !isOverdue(item)) return false;
         if (filter === "today" && item.dueDate !== todayKey) return false;
+        if (priorityFilter !== "all" && item.priority !== priorityFilter) return false;
+        const projectName = item.project || "Inbox";
+        if (projectFilter !== "all" && projectName !== projectFilter) return false;
         if (!searchTerm) return true;
-        return item.text.toLowerCase().includes(searchTerm);
+        const haystack = `${item.text} ${item.project} ${item.tags.join(" ")} ${item.notes}`.toLowerCase();
+        return haystack.includes(searchTerm);
       })
       .sort((left, right) => {
         if (left.done !== right.done) return left.done ? 1 : -1;
@@ -17796,16 +18475,28 @@ function TodoListTool() {
         if (right.dueDate) return 1;
         return right.createdAt - left.createdAt;
       });
-  }, [filter, isOverdue, items, search, todayKey]);
+  }, [filter, isOverdue, items, priorityFilter, projectFilter, search, todayKey]);
 
   const stats = useMemo(() => {
     const completed = items.filter((item) => item.done).length;
     const active = items.length - completed;
     const overdue = items.filter((item) => isOverdue(item)).length;
     const dueToday = items.filter((item) => item.dueDate === todayKey && !item.done).length;
+    const highPriorityActive = items.filter((item) => item.priority === "high" && !item.done).length;
+    const tagged = items.filter((item) => item.tags.length > 0).length;
     const completionRate = items.length ? (completed / items.length) * 100 : 0;
-    return { completed, active, overdue, total: items.length, dueToday, completionRate };
-  }, [isOverdue, items, todayKey]);
+    return {
+      completed,
+      active,
+      overdue,
+      total: items.length,
+      dueToday,
+      completionRate,
+      highPriorityActive,
+      tagged,
+      projects: Math.max(0, projectOptions.length - 1),
+    };
+  }, [isOverdue, items, projectOptions.length, todayKey]);
 
   const addTask = () => {
     const text = value.trim();
@@ -17813,20 +18504,77 @@ function TodoListTool() {
       setStatus("Enter a task before adding.");
       return;
     }
+    const normalizedProject = sanitizeTodoProject(project);
+    const normalizedTags = parseTodoTags(tagInput);
     const nextItem: TodoItem = {
       id: crypto.randomUUID(),
       text,
       done: false,
       priority,
       dueDate,
+      project: normalizedProject,
+      tags: normalizedTags,
+      notes: noteInput.trim().slice(0, 1200),
       createdAt: Date.now(),
     };
     setItems((current) => [nextItem, ...current]);
     setValue("");
     setDueDate("");
     setPriority("medium");
+    setProject("");
+    setTagInput("");
+    setNoteInput("");
     setStatus("Task added.");
-    trackEvent("todo_add", { priority: nextItem.priority, hasDueDate: Boolean(nextItem.dueDate) });
+    trackEvent("todo_add", {
+      priority: nextItem.priority,
+      hasDueDate: Boolean(nextItem.dueDate),
+      hasProject: Boolean(nextItem.project),
+      hasTags: nextItem.tags.length > 0,
+    });
+  };
+
+  const beginEditing = (item: TodoItem) => {
+    setEditingId(item.id);
+    setEditDraft({
+      text: item.text,
+      priority: item.priority,
+      dueDate: item.dueDate,
+      project: item.project,
+      tagsInput: item.tags.join(", "),
+      notes: item.notes,
+    });
+    setStatus("Editing task.");
+  };
+
+  const saveEditing = () => {
+    if (!editingId) return;
+    const trimmedText = editDraft.text.trim();
+    if (!trimmedText) {
+      setStatus("Task text cannot be empty.");
+      return;
+    }
+    setItems((current) =>
+      current.map((item) =>
+        item.id === editingId
+          ? {
+              ...item,
+              text: trimmedText.slice(0, 300),
+              priority: editDraft.priority,
+              dueDate: editDraft.dueDate,
+              project: sanitizeTodoProject(editDraft.project),
+              tags: parseTodoTags(editDraft.tagsInput),
+              notes: editDraft.notes.trim().slice(0, 1200),
+            }
+          : item,
+      ),
+    );
+    setEditingId(null);
+    setStatus("Task updated.");
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setStatus("Edit cancelled.");
   };
 
   return (
@@ -17834,7 +18582,22 @@ function TodoListTool() {
       <ToolHeading
         icon={Tags}
         title="Simple to-do list"
-        subtitle="Manage daily work with priority, due dates, filters, and reliable local persistence."
+        subtitle="Workspace-ready task manager with projects, tags, notes, filters, and durable local persistence."
+      />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each task board session is saved locally and linked to this /productivity-tools URL."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched task board session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setStatus("Created a new task board session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
       />
       <div className="field-grid">
         <label className="field">
@@ -17864,7 +18627,34 @@ function TodoListTool() {
           <span>Due date</span>
           <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
         </label>
+        <label className="field">
+          <span>Project</span>
+          <input
+            type="text"
+            value={project}
+            placeholder="Inbox, Marketing, Sprint 4..."
+            onChange={(event) => setProject(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>Tags (comma separated)</span>
+          <input
+            type="text"
+            value={tagInput}
+            placeholder="client, urgent"
+            onChange={(event) => setTagInput(event.target.value)}
+          />
+        </label>
       </div>
+      <label className="field">
+        <span>Task notes (optional)</span>
+        <textarea
+          rows={2}
+          value={noteInput}
+          placeholder="Context, acceptance criteria, links..."
+          onChange={(event) => setNoteInput(event.target.value)}
+        />
+      </label>
       <div className="button-row">
         <button className="action-button" type="button" onClick={addTask}>
           Add task
@@ -17898,11 +18688,14 @@ function TodoListTool() {
           onClick={() =>
             downloadCsv(
               "todo-list.csv",
-              ["Task", "Priority", "Due Date", "Done", "Created At"],
+              ["Task", "Priority", "Due Date", "Project", "Tags", "Notes", "Done", "Created At"],
               items.map((item) => [
                 item.text,
                 item.priority,
                 item.dueDate,
+                item.project,
+                item.tags.join(" | "),
+                item.notes.replace(/\r?\n/g, " "),
                 item.done ? "yes" : "no",
                 new Date(item.createdAt).toISOString(),
               ]),
@@ -17917,7 +18710,20 @@ function TodoListTool() {
           className="action-button secondary"
           type="button"
           onClick={() =>
-            downloadTextFile("todo-backup.json", JSON.stringify(items, null, 2), "application/json;charset=utf-8;")
+            downloadTextFile(
+              "todo-backup.json",
+              JSON.stringify(
+                {
+                  version: 3,
+                  sessionId: toolSession.sessionId,
+                  exportedAt: new Date().toISOString(),
+                  items,
+                },
+                null,
+                2,
+              ),
+              "application/json;charset=utf-8;",
+            )
           }
           disabled={items.length === 0}
         >
@@ -17941,23 +18747,15 @@ function TodoListTool() {
             const file = event.target.files?.[0];
             if (!file) return;
             try {
-              const parsed = JSON.parse(await file.text()) as Partial<TodoItem>[];
-              if (!Array.isArray(parsed)) throw new Error("Invalid");
-              const sanitized = parsed
-                .filter((item) => item && typeof item === "object")
-                .map((item) => ({
-                  id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
-                  text: typeof item.text === "string" ? item.text : "",
-                  done: Boolean(item.done),
-                  priority:
-                    item.priority === "high" || item.priority === "medium" || item.priority === "low"
-                      ? item.priority
-                      : "medium",
-                  dueDate: typeof item.dueDate === "string" ? item.dueDate : "",
-                  createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
-                  completedAt: typeof item.completedAt === "number" ? item.completedAt : undefined,
-                }))
-                .filter((item) => item.text.trim());
+              const payload = JSON.parse(await file.text()) as unknown;
+              const source = Array.isArray(payload)
+                ? payload
+                : Array.isArray((payload as { items?: unknown[] }).items)
+                  ? ((payload as { items: unknown[] }).items ?? [])
+                  : [];
+              const sanitized = source
+                .map((entry) => sanitizeTodoItem(entry))
+                .filter((entry): entry is TodoItem => Boolean(entry));
               if (!sanitized.length) throw new Error("Empty");
               setItems((current) => [...sanitized, ...current]);
               setStatus(`Imported ${sanitized.length} task${sanitized.length === 1 ? "" : "s"}.`);
@@ -17981,6 +18779,26 @@ function TodoListTool() {
           </select>
         </label>
         <label className="field">
+          <span>Priority</span>
+          <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as TodoPriorityFilter)}>
+            <option value="all">All priorities</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Project</span>
+          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
+            <option value="all">All projects</option>
+            {projectOptions.map((entry) => (
+              <option key={entry} value={entry}>
+                {entry}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
           <span>Search</span>
           <input
             type="text"
@@ -17993,55 +18811,148 @@ function TodoListTool() {
       {status ? <p className="supporting-text">{status}</p> : null}
       <ResultList
         rows={[
+          { label: "Session", value: toolSession.sessionLabel },
           { label: "Total tasks", value: formatNumericValue(stats.total) },
           { label: "Active tasks", value: formatNumericValue(stats.active) },
           { label: "Completed tasks", value: formatNumericValue(stats.completed) },
           { label: "Overdue tasks", value: formatNumericValue(stats.overdue) },
           { label: "Due today", value: formatNumericValue(stats.dueToday) },
+          { label: "High priority open", value: formatNumericValue(stats.highPriorityActive) },
+          { label: "Tagged tasks", value: formatNumericValue(stats.tagged) },
+          { label: "Projects", value: formatNumericValue(stats.projects) },
           { label: "Completion rate", value: `${stats.completionRate.toFixed(1)}%` },
         ]}
       />
       <ul className="todo-list">
         {filteredItems.map((item) => (
           <li key={item.id}>
-            <label>
-              <input
-                type="checkbox"
-                checked={item.done}
-                onChange={(event) =>
-                  setItems((current) =>
-                    current.map((candidate) =>
-                      candidate.id === item.id
-                        ? {
-                            ...candidate,
-                            done: event.target.checked,
-                            completedAt: event.target.checked ? Date.now() : undefined,
-                          }
-                        : candidate,
-                    ),
-                  )
-                }
-              />
-              <span className={item.done ? "done" : ""}>{item.text}</span>
-            </label>
-            <div className="todo-meta">
-              <span className={`status-badge ${item.priority === "high" ? "bad" : item.priority === "medium" ? "warn" : "info"}`}>
-                {item.priority}
-              </span>
-              {item.dueDate ? (
-                <span className={`status-badge ${isOverdue(item) ? "bad" : "ok"}`}>
-                  due {item.dueDate}
-                </span>
-              ) : null}
-              <button
-                className="icon-button"
-                type="button"
-                aria-label={`Delete task ${item.text}`}
-                onClick={() => setItems((current) => current.filter((candidate) => candidate.id !== item.id))}
-              >
-                Delete
-              </button>
-            </div>
+            {editingId === item.id ? (
+              <div className="todo-main">
+                <div className="todo-edit-grid">
+                  <label className="field">
+                    <span>Task</span>
+                    <input
+                      type="text"
+                      value={editDraft.text}
+                      onChange={(event) => setEditDraft((current) => ({ ...current, text: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Priority</span>
+                    <select
+                      value={editDraft.priority}
+                      onChange={(event) =>
+                        setEditDraft((current) => ({ ...current, priority: event.target.value as TodoPriority }))
+                      }
+                    >
+                      <option value="high">High</option>
+                      <option value="medium">Medium</option>
+                      <option value="low">Low</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Due date</span>
+                    <input
+                      type="date"
+                      value={editDraft.dueDate}
+                      onChange={(event) => setEditDraft((current) => ({ ...current, dueDate: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Project</span>
+                    <input
+                      type="text"
+                      value={editDraft.project}
+                      onChange={(event) => setEditDraft((current) => ({ ...current, project: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Tags</span>
+                    <input
+                      type="text"
+                      value={editDraft.tagsInput}
+                      onChange={(event) => setEditDraft((current) => ({ ...current, tagsInput: event.target.value }))}
+                    />
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Notes</span>
+                  <textarea
+                    rows={2}
+                    value={editDraft.notes}
+                    onChange={(event) => setEditDraft((current) => ({ ...current, notes: event.target.value }))}
+                  />
+                </label>
+                <div className="button-row">
+                  <button className="action-button secondary" type="button" onClick={saveEditing}>
+                    Save
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={cancelEditing}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="todo-main">
+                  <label className="todo-check">
+                    <input
+                      type="checkbox"
+                      checked={item.done}
+                      onChange={(event) =>
+                        setItems((current) =>
+                          current.map((candidate) =>
+                            candidate.id === item.id
+                              ? {
+                                  ...candidate,
+                                  done: event.target.checked,
+                                  completedAt: event.target.checked ? Date.now() : undefined,
+                                }
+                              : candidate,
+                          ),
+                        )
+                      }
+                    />
+                    <span className={item.done ? "done" : ""}>{item.text}</span>
+                  </label>
+                  {item.notes ? <p className="todo-details">{item.notes}</p> : null}
+                  <div className="todo-tags">
+                    <span className="chip">{item.project || "Inbox"}</span>
+                    {item.tags.map((tag) => (
+                      <span key={`${item.id}-${tag}`} className="chip">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="todo-meta">
+                  <span className={`status-badge ${item.priority === "high" ? "bad" : item.priority === "medium" ? "warn" : "info"}`}>
+                    {item.priority}
+                  </span>
+                  {item.dueDate ? (
+                    <span className={`status-badge ${isOverdue(item) ? "bad" : "ok"}`}>
+                      due {item.dueDate}
+                    </span>
+                  ) : null}
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Edit task ${item.text}`}
+                    onClick={() => beginEditing(item)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Delete task ${item.text}`}
+                    onClick={() => setItems((current) => current.filter((candidate) => candidate.id !== item.id))}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </>
+            )}
           </li>
         ))}
       </ul>
@@ -18217,11 +19128,20 @@ function applyMarkdownFormatting(
 }
 
 function NotesPadTool() {
-  const storageKey = "utiliora-notes-v3";
-  const legacyStorageKey = "utiliora-notes-v2";
+  const toolSession = useToolSession({
+    toolKey: "notes",
+    defaultSessionLabel: "Notebook",
+    newSessionPrefix: "notes",
+  });
+  const storageKey = toolSession.storageKey("utiliora-notes-v4");
+  const uiStateKey = toolSession.storageKey("utiliora-notes-ui-v1");
+  const legacyStorageKey = "utiliora-notes-v3";
+  const legacyStorageKeyV2 = "utiliora-notes-v2";
   const importRef = useRef<HTMLInputElement | null>(null);
+  const workspaceImportRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const defaultNote = useMemo(() => createNote("Untitled note"), []);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [notes, setNotes] = useState<NoteItem[]>([defaultNote]);
   const [activeId, setActiveId] = useState<string>(defaultNote.id);
   const [search, setSearch] = useState("");
@@ -18232,9 +19152,24 @@ function NotesPadTool() {
   const [status, setStatus] = useState("");
 
   useEffect(() => {
+    if (!toolSession.isReady) return;
+    setIsSessionHydrated(false);
+
+    let nextNotes: NoteItem[] = [defaultNote];
+    let nextActiveId = defaultNote.id;
+    let nextSearch = "";
+    let nextTagFilter = "all";
+    let nextShowPinnedOnly = false;
+    let nextPreviewMode = false;
+    let nextFocusMode = false;
+    let nextStatus = "";
+
     try {
-      const stored = localStorage.getItem(storageKey);
-      const source = stored ?? localStorage.getItem(legacyStorageKey);
+      const source =
+        localStorage.getItem(storageKey) ??
+        (toolSession.sessionId === TOOL_SESSION_DEFAULT_ID
+          ? localStorage.getItem(legacyStorageKey) ?? localStorage.getItem(legacyStorageKeyV2)
+          : null);
       if (source) {
         const parsed = JSON.parse(source) as unknown[];
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -18242,9 +19177,29 @@ function NotesPadTool() {
             .map((item) => sanitizeStoredNote(item))
             .filter((item): item is NoteItem => Boolean(item));
           if (normalized.length) {
-            setNotes(normalized);
-            setActiveId(normalized[0].id);
+            nextNotes = normalized;
+            nextActiveId = normalized[0].id;
           }
+        }
+      }
+
+      const rawUi = localStorage.getItem(uiStateKey);
+      if (rawUi) {
+        const parsedUi = JSON.parse(rawUi) as {
+          activeId?: string;
+          search?: string;
+          tagFilter?: string;
+          showPinnedOnly?: boolean;
+          previewMode?: boolean;
+          focusMode?: boolean;
+        };
+        nextSearch = typeof parsedUi.search === "string" ? parsedUi.search : "";
+        nextTagFilter = typeof parsedUi.tagFilter === "string" ? parsedUi.tagFilter : "all";
+        nextShowPinnedOnly = Boolean(parsedUi.showPinnedOnly);
+        nextPreviewMode = Boolean(parsedUi.previewMode);
+        nextFocusMode = Boolean(parsedUi.focusMode);
+        if (typeof parsedUi.activeId === "string" && parsedUi.activeId) {
+          nextActiveId = parsedUi.activeId;
         }
       }
 
@@ -18258,30 +19213,82 @@ function NotesPadTool() {
             parsedShare.title?.trim() || "Shared note",
             typeof parsedShare.content === "string" ? parsedShare.content : "",
           );
-          imported.tags = Array.isArray(parsedShare.tags)
-            ? parsedShare.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 10)
-            : [];
-          setNotes((current) => [imported, ...current]);
-          setActiveId(imported.id);
-          setStatus("Imported shared note from URL.");
+            imported.tags = Array.isArray(parsedShare.tags)
+              ? parsedShare.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 10)
+              : [];
+          nextNotes = [imported, ...nextNotes];
+          nextActiveId = imported.id;
+          nextStatus = "Imported shared note from URL.";
           params.delete("noteShare");
           const cleanQuery = params.toString();
-          const cleanUrl = `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}`;
+          const cleanUrl = `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}${window.location.hash}`;
           window.history.replaceState({}, "", cleanUrl);
         }
       }
     } catch {
       // Ignore malformed notes or share links.
     }
-  }, [defaultNote.id, legacyStorageKey, storageKey]);
+
+    if (!nextNotes.some((note) => note.id === nextActiveId)) {
+      nextActiveId = nextNotes[0]?.id ?? defaultNote.id;
+    }
+
+    setNotes(nextNotes);
+    setActiveId(nextActiveId);
+    setSearch(nextSearch);
+    setTagFilter(nextTagFilter);
+    setShowPinnedOnly(nextShowPinnedOnly);
+    setPreviewMode(nextPreviewMode);
+    setFocusMode(nextFocusMode);
+    setStatus(nextStatus);
+    setIsSessionHydrated(true);
+  }, [
+    defaultNote,
+    legacyStorageKey,
+    legacyStorageKeyV2,
+    storageKey,
+    toolSession.isReady,
+    toolSession.sessionId,
+    uiStateKey,
+  ]);
 
   useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(notes));
     } catch {
       // Ignore storage failures.
     }
-  }, [notes, storageKey]);
+  }, [isSessionHydrated, notes, storageKey, toolSession.isReady]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !isSessionHydrated) return;
+    try {
+      localStorage.setItem(
+        uiStateKey,
+        JSON.stringify({
+          activeId,
+          search,
+          tagFilter,
+          showPinnedOnly,
+          previewMode,
+          focusMode,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    activeId,
+    focusMode,
+    isSessionHydrated,
+    previewMode,
+    search,
+    showPinnedOnly,
+    tagFilter,
+    toolSession.isReady,
+    uiStateKey,
+  ]);
 
   useEffect(() => {
     if (notes.some((note) => note.id === activeId)) return;
@@ -18346,6 +19353,24 @@ function NotesPadTool() {
     setStatus("Exported note as Markdown.");
   }, [activeNote]);
 
+  const exportWorkspace = useCallback(() => {
+    downloadTextFile(
+      `notes-workspace-${toolSession.sessionId}.json`,
+      JSON.stringify(
+        {
+          version: 4,
+          sessionId: toolSession.sessionId,
+          exportedAt: new Date().toISOString(),
+          notes,
+        },
+        null,
+        2,
+      ),
+      "application/json;charset=utf-8;",
+    );
+    setStatus("Exported notebook workspace JSON.");
+  }, [notes, toolSession.sessionId]);
+
   const applyFormatting = useCallback((action: MarkdownFormatAction) => {
     if (!activeNote || !editorRef.current) return;
     const textarea = editorRef.current;
@@ -18402,6 +19427,21 @@ function NotesPadTool() {
         icon={Type}
         title="Notes pad"
         subtitle="Write in markdown with shortcuts, smart templates, shareable links, and instant previews."
+      />
+      <ToolSessionControls
+        sessionId={toolSession.sessionId}
+        sessionLabel={toolSession.sessionLabel}
+        sessions={toolSession.sessions}
+        description="Each notebook session is saved locally and linked to this /productivity-tools URL."
+        onSelectSession={(nextSessionId) => {
+          toolSession.selectSession(nextSessionId);
+          setStatus("Switched notebook session.");
+        }}
+        onCreateSession={() => {
+          toolSession.createSession();
+          setStatus("Created a new notebook session.");
+        }}
+        onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
       />
       <div className="button-row">
         <button
@@ -18646,6 +19686,18 @@ function NotesPadTool() {
           <Plus size={15} />
           Import text
         </button>
+        <button className="action-button secondary" type="button" onClick={exportWorkspace}>
+          <Download size={15} />
+          Export workspace JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => workspaceImportRef.current?.click()}
+        >
+          <Plus size={15} />
+          Import workspace JSON
+        </button>
         <button
           className="action-button secondary"
           type="button"
@@ -18694,9 +19746,39 @@ function NotesPadTool() {
             }
           }}
         />
+        <input
+          ref={workspaceImportRef}
+          type="file"
+          hidden
+          accept=".json,application/json"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              const payload = JSON.parse(await file.text()) as unknown;
+              const source = Array.isArray(payload)
+                ? payload
+                : Array.isArray((payload as { notes?: unknown[] }).notes)
+                  ? ((payload as { notes: unknown[] }).notes ?? [])
+                  : [];
+              const normalized = source
+                .map((entry) => sanitizeStoredNote(entry))
+                .filter((entry): entry is NoteItem => Boolean(entry));
+              if (!normalized.length) throw new Error("Empty");
+              setNotes(normalized);
+              setActiveId(normalized[0].id);
+              setStatus(`Imported notebook workspace with ${normalized.length} note${normalized.length === 1 ? "" : "s"}.`);
+            } catch {
+              setStatus("Could not import notebook JSON.");
+            } finally {
+              event.target.value = "";
+            }
+          }}
+        />
       </div>
       <ResultList
         rows={[
+          { label: "Session", value: toolSession.sessionLabel },
           { label: "Total notes", value: formatNumericValue(notes.length) },
           { label: "Pinned notes", value: formatNumericValue(notes.filter((note) => note.pinned).length) },
           { label: "Words in active note", value: formatNumericValue(activeWordCount) },
@@ -18706,7 +19788,8 @@ function NotesPadTool() {
         ]}
       />
       <p className="supporting-text">
-        Notes stay in your browser only unless you export or share them. Shortcuts: Ctrl/Cmd+B, I, K, S and Ctrl/Cmd+Shift+N.
+        Notes are kept locally in this browser session workspace unless you export or share them. Shortcuts: Ctrl/Cmd+B,
+        I, K, S and Ctrl/Cmd+Shift+N.
       </p>
     </section>
   );

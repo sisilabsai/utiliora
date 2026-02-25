@@ -132,6 +132,11 @@ export default function RootLayout({
     <html lang="en" data-theme="light">
       <head>
         <script dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
+        <script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8247984832507820"
+          crossOrigin="anonymous"
+        />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <a className="skip-link" href="#content">

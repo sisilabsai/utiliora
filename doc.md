@@ -135,7 +135,7 @@ ________________________________________
 •	Pomodoro Timer
 •	Simple To-do List (local storage)
 •	Notes Pad
-•	Resume Builder (basic)
+•	Resume Builder (modern with templates)
 •	Invoice Generator (PDF export)
 ________________________________________
 5️⃣ Platform Features
