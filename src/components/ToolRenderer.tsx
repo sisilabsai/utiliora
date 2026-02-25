@@ -10875,6 +10875,7 @@ interface PdfJsLoadingTask {
 }
 
 interface PdfJsModule {
+  version?: string;
   getDocument(params: {
     data: Uint8Array | ArrayBuffer;
     disableWorker?: boolean;
@@ -10900,6 +10901,42 @@ const PAGE_SELECTION_PRESETS: Array<{ value: PageSelectionPreset; label: string;
   { value: "first-5", label: "First 5 pages", hint: "Quick preview for long PDFs" },
   { value: "first-10", label: "First 10 pages", hint: "Balanced speed + coverage" },
 ];
+
+let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
+let pdfJsWorkerConfigured = false;
+
+function ensurePromiseWithResolversPolyfill(): void {
+  const promiseCtor = Promise as PromiseConstructor & {
+    withResolvers?: <T>() => {
+      promise: Promise<T>;
+      resolve: (value: T | PromiseLike<T>) => void;
+      reject: (reason?: unknown) => void;
+    };
+  };
+  if (typeof promiseCtor.withResolvers === "function") {
+    return;
+  }
+
+  promiseCtor.withResolvers = function withResolvers<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+}
+
+function configurePdfJsWorker(pdfjs: PdfJsModule): void {
+  if (pdfJsWorkerConfigured || !pdfjs.GlobalWorkerOptions) {
+    return;
+  }
+
+  const version = typeof pdfjs.version === "string" && pdfjs.version ? pdfjs.version : "5.4.624";
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`;
+  pdfJsWorkerConfigured = true;
+}
 
 function estimateBytesFromDataUrl(dataUrl: string): number {
   const base64Payload = dataUrl.split(",")[1] ?? "";
@@ -11052,7 +11089,15 @@ function buildPageRangeFromPreset(preset: PageSelectionPreset): string {
 }
 
 async function loadPdfJsModule(): Promise<PdfJsModule> {
-  return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule;
+  if (!pdfJsModulePromise) {
+    pdfJsModulePromise = (async () => {
+      ensurePromiseWithResolversPolyfill();
+      const pdfJsModule = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule;
+      configurePdfJsWorker(pdfJsModule);
+      return pdfJsModule;
+    })();
+  }
+  return pdfJsModulePromise;
 }
 
 async function readPdfFileBytes(file: File): Promise<Uint8Array> {
@@ -11083,9 +11128,10 @@ async function openPdfDocumentWithFallback(
   pdfjs: PdfJsModule,
   bytes: Uint8Array,
 ): Promise<{ loadingTask: PdfJsLoadingTask; pdfDocument: PdfJsDocument }> {
-  const attempts: Array<{ disableWorker?: boolean; stopAtErrors?: boolean }> = [
-    { disableWorker: true, stopAtErrors: false },
+  const attempts: Array<Record<string, unknown>> = [
+    { stopAtErrors: false, disableStream: true, disableAutoFetch: true },
     { stopAtErrors: false },
+    { stopAtErrors: true },
   ];
   let lastError: unknown = null;
 
@@ -11608,21 +11654,15 @@ function PdfMergeTool() {
     let pdfDocument: PdfJsDocument | null = null;
     try {
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await file.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       return pdfDocument.numPages;
     } catch {
       return null;
     } finally {
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, []);
 
@@ -11727,11 +11767,10 @@ function PdfMergeTool() {
         let pdfDocument: PdfJsDocument | null = null;
         try {
           setStatus(`Reading ${item.file.name} (${fileIndex + 1}/${items.length})...`);
-          loadingTask = pdfjs.getDocument({
-            data: await item.file.arrayBuffer(),
-            disableWorker: true,
-          });
-          pdfDocument = await loadingTask.promise;
+          const bytes = await readPdfFileBytes(item.file);
+          const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+          loadingTask = opened.loadingTask;
+          pdfDocument = opened.pdfDocument;
           const pages = pdfDocument.numPages;
 
           for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
@@ -11777,12 +11816,7 @@ function PdfMergeTool() {
             setProgress(Math.round(progressRatio * 100));
           }
         } finally {
-          if (pdfDocument?.destroy) {
-            await pdfDocument.destroy();
-          }
-          if (loadingTask?.destroy) {
-            loadingTask.destroy();
-          }
+          await closePdfDocumentResources(loadingTask, pdfDocument);
         }
 
         if (reachedLimit) {
@@ -13238,27 +13272,24 @@ function PdfToJpgTool() {
   );
 
   const inspectPdfMeta = useCallback(async (nextFile: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
     try {
       setStatus("Inspecting PDF pages...");
       const pdfjs = await loadPdfJsModule();
-      const loadingTask = pdfjs.getDocument({
-        data: await nextFile.arrayBuffer(),
-        disableWorker: true,
-      });
-      const pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(nextFile);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       const count = pdfDocument.numPages;
       setPageCount(count);
       setStatus(`PDF loaded with ${count} pages.`);
       setRenderedRangeSummary("None");
-      if (pdfDocument.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask.destroy) {
-        loadingTask.destroy();
-      }
     } catch {
       setPageCount(0);
       setStatus("Unable to read PDF file.");
+    } finally {
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, []);
 
@@ -13315,11 +13346,10 @@ function PdfToJpgTool() {
     let pdfDocument: PdfJsDocument | null = null;
     try {
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await file.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       const nextPages: PdfJpgPagePreview[] = [];
       const scale = Math.max(0.5, Math.min(4, scalePercent / 100));
 
@@ -13367,12 +13397,7 @@ function PdfToJpgTool() {
       setStatus("PDF to JPG conversion failed. Try a smaller range.");
     } finally {
       setProcessing(false);
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, [file, maxPages, pageCount, pageRangeInput, quality, scalePercent]);
 
