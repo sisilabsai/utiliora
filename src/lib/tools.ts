@@ -823,6 +823,17 @@ const developerTools: ToolDefinition[] = [
     faq: baseFaq("Time Zone Converter"),
   },
   {
+    slug: "internet-speed-test",
+    category: "developer-tools",
+    title: "Internet Speed Test",
+    summary: "Measure download speed, latency, and consistency directly in your browser.",
+    description:
+      "Run a multi-sample network test with configurable payload size and iterations to estimate throughput, ping latency, and stability score.",
+    keywords: ["internet speed test", "network speed test", "download speed test", "ping test"],
+    engine: { kind: "developer-tool", id: "internet-speed-test" },
+    faq: baseFaq("Internet Speed Test"),
+  },
+  {
     slug: "markdown-to-html",
     category: "developer-tools",
     title: "Markdown to HTML",

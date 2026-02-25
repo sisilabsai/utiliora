@@ -7797,6 +7797,336 @@ function DnsPropagationCheckerTool() {
   );
 }
 
+interface InternetSpeedSample {
+  id: string;
+  iteration: number;
+  bytes: number;
+  durationMs: number;
+  latencyMs: number;
+  mbps: number;
+}
+
+interface InternetSpeedHistoryEntry {
+  id: string;
+  checkedAt: number;
+  avgMbps: number;
+  bestMbps: number;
+  avgLatencyMs: number;
+  sampleCount: number;
+  bytesPerSample: number;
+}
+
+function InternetSpeedTestTool() {
+  const historyStorageKey = "utiliora-internet-speed-history-v1";
+  const abortRef = useRef<AbortController | null>(null);
+  const [bytesPerSample, setBytesPerSample] = useState(1_000_000);
+  const [iterations, setIterations] = useState(4);
+  const [samples, setSamples] = useState<InternetSpeedSample[]>([]);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Run a test to measure download speed and latency.");
+  const [lastRunAt, setLastRunAt] = useState<number | null>(null);
+  const [history, setHistory] = useState<InternetSpeedHistoryEntry[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(historyStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as InternetSpeedHistoryEntry[];
+      if (Array.isArray(parsed)) {
+        setHistory(parsed.slice(0, 15));
+      }
+    } catch {
+      // Ignore malformed history.
+    }
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyStorageKey, JSON.stringify(history.slice(0, 15)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [history, historyStorageKey]);
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    },
+    [],
+  );
+
+  const averageMbps = useMemo(() => {
+    if (!samples.length) return 0;
+    return samples.reduce((sum, sample) => sum + sample.mbps, 0) / samples.length;
+  }, [samples]);
+
+  const bestMbps = useMemo(() => {
+    if (!samples.length) return 0;
+    return Math.max(...samples.map((sample) => sample.mbps));
+  }, [samples]);
+
+  const worstMbps = useMemo(() => {
+    if (!samples.length) return 0;
+    return Math.min(...samples.map((sample) => sample.mbps));
+  }, [samples]);
+
+  const averageLatencyMs = useMemo(() => {
+    if (!samples.length) return 0;
+    return samples.reduce((sum, sample) => sum + sample.latencyMs, 0) / samples.length;
+  }, [samples]);
+
+  const jitterMs = useMemo(() => {
+    if (samples.length < 2) return 0;
+    const variance =
+      samples.reduce((sum, sample) => sum + Math.pow(sample.latencyMs - averageLatencyMs, 2), 0) / samples.length;
+    return Math.sqrt(variance);
+  }, [averageLatencyMs, samples]);
+
+  const consistencyScore = useMemo(() => {
+    if (samples.length < 2 || averageMbps <= 0) return samples.length ? 100 : 0;
+    const variance =
+      samples.reduce((sum, sample) => sum + Math.pow(sample.mbps - averageMbps, 2), 0) / samples.length;
+    const stdDev = Math.sqrt(variance);
+    return Math.max(0, Math.min(100, 100 - (stdDev / averageMbps) * 100));
+  }, [averageMbps, samples]);
+
+  const runSpeedTest = useCallback(async () => {
+    const safeBytes = Math.max(128_000, Math.min(5_000_000, Math.round(bytesPerSample)));
+    const safeIterations = Math.max(1, Math.min(10, Math.round(iterations)));
+
+    setRunning(true);
+    setProgress(2);
+    setStatus("Starting speed test...");
+    setSamples([]);
+    const nextSamples: InternetSpeedSample[] = [];
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const startedAt = Date.now();
+
+    try {
+      for (let index = 0; index < safeIterations; index += 1) {
+        setStatus(`Measuring latency (${index + 1}/${safeIterations})...`);
+        const pingStart = performance.now();
+        const pingResponse = await fetch(`/api/speed-test?bytes=16000&t=${Date.now()}-${index}-ping`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!pingResponse.ok) {
+          throw new Error("Latency probe failed.");
+        }
+        await pingResponse.arrayBuffer();
+        const latencyMs = performance.now() - pingStart;
+
+        setStatus(`Downloading sample ${index + 1}/${safeIterations}...`);
+        const downloadStart = performance.now();
+        const response = await fetch(`/api/speed-test?bytes=${safeBytes}&t=${Date.now()}-${index}-dl`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error("Download request failed.");
+        }
+        const buffer = await response.arrayBuffer();
+        const durationMs = Math.max(1, performance.now() - downloadStart);
+        const mbps = (buffer.byteLength * 8) / (durationMs / 1000) / 1_000_000;
+
+        nextSamples.push({
+          id: `${Date.now()}-${index}`,
+          iteration: index + 1,
+          bytes: buffer.byteLength,
+          durationMs,
+          latencyMs,
+          mbps,
+        });
+        setSamples([...nextSamples]);
+        setProgress(Math.round(((index + 1) / safeIterations) * 100));
+      }
+
+      setLastRunAt(Date.now());
+      const avg = nextSamples.reduce((sum, sample) => sum + sample.mbps, 0) / Math.max(1, nextSamples.length);
+      const best = Math.max(...nextSamples.map((sample) => sample.mbps));
+      const avgLatency =
+        nextSamples.reduce((sum, sample) => sum + sample.latencyMs, 0) / Math.max(1, nextSamples.length);
+      setHistory((current) => [
+        {
+          id: crypto.randomUUID(),
+          checkedAt: Date.now(),
+          avgMbps: avg,
+          bestMbps: best,
+          avgLatencyMs: avgLatency,
+          sampleCount: nextSamples.length,
+          bytesPerSample: safeBytes,
+        },
+        ...current,
+      ].slice(0, 15));
+
+      const elapsedMs = Date.now() - startedAt;
+      setStatus(
+        `Speed test complete: ${avg.toFixed(2)} Mbps average over ${safeIterations} sample(s) in ${(elapsedMs / 1000).toFixed(1)}s.`,
+      );
+      trackEvent("tool_internet_speed_test", {
+        success: true,
+        samples: safeIterations,
+        bytesPerSample: safeBytes,
+        avgMbps: Number(avg.toFixed(2)),
+      });
+    } catch (error) {
+      const aborted =
+        typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        (error as { name?: string }).name === "AbortError";
+      setStatus(aborted ? "Speed test stopped." : "Speed test failed. Try again.");
+      trackEvent("tool_internet_speed_test", { success: false });
+      if (!nextSamples.length) {
+        setProgress(0);
+      }
+    } finally {
+      setRunning(false);
+      abortRef.current = null;
+    }
+  }, [bytesPerSample, iterations]);
+
+  const stopSpeedTest = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  const exportCsv = useCallback(() => {
+    if (!samples.length) return;
+    const rows = samples.map((sample) => [
+      String(sample.iteration),
+      formatBytes(sample.bytes),
+      sample.durationMs.toFixed(1),
+      sample.latencyMs.toFixed(1),
+      sample.mbps.toFixed(2),
+    ]);
+    downloadCsv("internet-speed-test.csv", ["Sample", "Payload", "Download ms", "Latency ms", "Mbps"], rows);
+  }, [samples]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={MonitorUp}
+        title="Internet speed test"
+        subtitle="Measure download throughput, latency, jitter, and consistency using repeated in-browser samples."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Payload per sample (bytes)</span>
+          <input
+            type="number"
+            min={128000}
+            max={5000000}
+            step={64000}
+            value={bytesPerSample}
+            onChange={(event) => setBytesPerSample(Number(event.target.value))}
+          />
+          <small className="supporting-text">
+            Recommended: 500,000 to 2,000,000 bytes per sample.
+          </small>
+        </label>
+        <label className="field">
+          <span>Samples per test</span>
+          <input type="number" min={1} max={10} value={iterations} onChange={(event) => setIterations(Number(event.target.value))} />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void runSpeedTest()} disabled={running}>
+          {running ? "Running..." : "Run speed test"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={stopSpeedTest} disabled={!running}>
+          Stop
+        </button>
+        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!samples.length}>
+          <Download size={15} />
+          Export CSV
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Average speed", value: samples.length ? `${averageMbps.toFixed(2)} Mbps` : "-" },
+          { label: "Best speed", value: samples.length ? `${bestMbps.toFixed(2)} Mbps` : "-" },
+          { label: "Worst speed", value: samples.length ? `${worstMbps.toFixed(2)} Mbps` : "-" },
+          { label: "Average latency", value: samples.length ? `${averageLatencyMs.toFixed(1)} ms` : "-" },
+          { label: "Jitter", value: samples.length ? `${jitterMs.toFixed(1)} ms` : "-" },
+          { label: "Consistency", value: samples.length ? `${consistencyScore.toFixed(1)} / 100` : "-" },
+          { label: "Last run", value: lastRunAt ? new Date(lastRunAt).toLocaleString("en-US") : "-" },
+        ]}
+      />
+
+      {samples.length ? (
+        <div className="mini-panel">
+          <h3>Sample breakdown</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Payload</th>
+                  <th>Download (ms)</th>
+                  <th>Latency (ms)</th>
+                  <th>Speed (Mbps)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {samples.map((sample) => (
+                  <tr key={sample.id}>
+                    <td>{sample.iteration}</td>
+                    <td>{formatBytes(sample.bytes)}</td>
+                    <td>{sample.durationMs.toFixed(1)}</td>
+                    <td>{sample.latencyMs.toFixed(1)}</td>
+                    <td>{sample.mbps.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent speed tests</h3>
+          <button className="action-button secondary" type="button" onClick={() => setHistory([])} disabled={!history.length}>
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No speed test history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.avgMbps.toFixed(2)} Mbps average</strong>
+                  <span className="supporting-text">
+                    Best {entry.bestMbps.toFixed(2)} Mbps | Latency {entry.avgLatencyMs.toFixed(1)} ms |{" "}
+                    {entry.sampleCount} sample(s) at {formatBytes(entry.bytesPerSample)} |{" "}
+                    {new Date(entry.checkedAt).toLocaleString("en-US")}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DeveloperTool({ id }: { id: DeveloperToolId }) {
   switch (id) {
     case "uuid-generator":
@@ -7807,6 +8137,8 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
       return <TimestampConverterTool />;
     case "time-zone-converter":
       return <TimeZoneConverterTool />;
+    case "internet-speed-test":
+      return <InternetSpeedTestTool />;
     case "markdown-to-html":
       return <MarkdownToHtmlTool />;
     case "user-agent-checker":

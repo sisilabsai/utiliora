@@ -95,6 +95,7 @@ export type DeveloperToolId =
   | "url-encoder-decoder"
   | "timestamp-converter"
   | "time-zone-converter"
+  | "internet-speed-test"
   | "markdown-to-html"
   | "user-agent-checker"
   | "ip-address-checker"
