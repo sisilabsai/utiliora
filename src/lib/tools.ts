@@ -710,6 +710,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("Image to PDF Converter"),
   },
   {
+    slug: "pdf-merge",
+    category: "image-tools",
+    title: "PDF Merge",
+    summary: "Merge multiple PDF files into one downloadable PDF in your browser.",
+    description:
+      "Combine PDF documents in your preferred order with page-count validation and client-side export.",
+    keywords: ["pdf merge", "merge pdf files", "combine pdf", "pdf merger"],
+    engine: { kind: "image-tool", id: "pdf-merge" },
+    faq: baseFaq("PDF Merge"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",

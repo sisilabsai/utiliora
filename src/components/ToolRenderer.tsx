@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import NextImage from "next/image";
+import type { jsPDF as JsPdfType } from "jspdf";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JsBarcode from "jsbarcode";
 import {
@@ -783,6 +784,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "image-cropper": "image-cropper",
   "barcode-generator": "barcode-generator",
   "image-to-pdf": "image-to-pdf-converter",
+  "pdf-merge": "pdf-merge",
   "pdf-to-jpg": "pdf-to-jpg-converter",
 };
 
@@ -797,6 +799,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "image-cropper": "Image Cropper",
   "barcode-generator": "Barcode Generator",
   "image-to-pdf": "Image -> PDF",
+  "pdf-merge": "PDF Merge",
   "pdf-to-jpg": "PDF -> JPG",
 };
 
@@ -10242,6 +10245,393 @@ function ImageToPdfTool({ incomingFile }: { incomingFile?: ImageWorkflowIncoming
   );
 }
 
+interface PdfMergeItem {
+  id: string;
+  file: File;
+  pageCount: number | null;
+  sizeBytes: number;
+}
+
+function PdfMergeTool() {
+  const [items, setItems] = useState<PdfMergeItem[]>([]);
+  const [outputName, setOutputName] = useState("merged-document");
+  const [renderScalePercent, setRenderScalePercent] = useState(140);
+  const [jpegQuality, setJpegQuality] = useState(0.86);
+  const [fitDpi, setFitDpi] = useState(150);
+  const [maxPages, setMaxPages] = useState(160);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload two or more PDFs to merge.");
+  const [lastOutputSize, setLastOutputSize] = useState<number | null>(null);
+  const [lastOutputPages, setLastOutputPages] = useState(0);
+
+  const inspectPdfPageCount = useCallback(async (file: File): Promise<number | null> => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      const pdfjs = await loadPdfJsModule();
+      loadingTask = pdfjs.getDocument({
+        data: await file.arrayBuffer(),
+        disableWorker: true,
+      });
+      pdfDocument = await loadingTask.promise;
+      return pdfDocument.numPages;
+    } catch {
+      return null;
+    } finally {
+      if (pdfDocument?.destroy) {
+        await pdfDocument.destroy();
+      }
+      if (loadingTask?.destroy) {
+        loadingTask.destroy();
+      }
+    }
+  }, []);
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (!files.length) return;
+      const pdfFiles = files.filter(
+        (file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"),
+      );
+      if (!pdfFiles.length) {
+        setStatus("Please select valid PDF files.");
+        return;
+      }
+
+      setStatus(`Reading ${pdfFiles.length} PDF file${pdfFiles.length > 1 ? "s" : ""}...`);
+      const nextItems: PdfMergeItem[] = [];
+      for (let index = 0; index < pdfFiles.length; index += 1) {
+        const file = pdfFiles[index];
+        const pageCount = await inspectPdfPageCount(file);
+        nextItems.push({
+          id: `${Date.now()}-${index}-${file.name}`,
+          file,
+          pageCount,
+          sizeBytes: file.size,
+        });
+      }
+
+      setItems((current) => [...current, ...nextItems].slice(0, 40));
+      setStatus(`Loaded ${nextItems.length} PDF file${nextItems.length > 1 ? "s" : ""}.`);
+      trackEvent("tool_pdf_merge_upload", { count: nextItems.length });
+    },
+    [inspectPdfPageCount],
+  );
+
+  const handleFileInput = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+      await addFiles(Array.from(fileList));
+    },
+    [addFiles],
+  );
+
+  const moveItem = useCallback((index: number, direction: -1 | 1) => {
+    setItems((current) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const clone = [...current];
+      const [moved] = clone.splice(index, 1);
+      clone.splice(nextIndex, 0, moved);
+      return clone;
+    });
+  }, []);
+
+  const removeItem = useCallback((id: string) => {
+    setItems((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  const clearAll = useCallback(() => {
+    setItems([]);
+    setProgress(0);
+    setLastOutputPages(0);
+    setLastOutputSize(null);
+    setStatus("Cleared PDF queue.");
+  }, []);
+
+  const totalInputBytes = useMemo(
+    () => items.reduce((sum, item) => sum + item.sizeBytes, 0),
+    [items],
+  );
+  const estimatedSourcePages = useMemo(
+    () => items.reduce((sum, item) => sum + Math.max(0, item.pageCount ?? 0), 0),
+    [items],
+  );
+
+  const mergePdfs = useCallback(async () => {
+    if (!items.length) {
+      setStatus("Add at least one PDF file.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(4);
+    setStatus("Preparing PDF merge...");
+    const startedAt = Date.now();
+
+    let totalProcessedPages = 0;
+    let output: JsPdfType | null = null;
+
+    try {
+      const pdfjs = await loadPdfJsModule();
+      const { jsPDF } = await import("jspdf");
+      const safeScale = Math.max(80, Math.min(260, renderScalePercent)) / 100;
+      const safeQuality = Math.max(0.5, Math.min(1, jpegQuality));
+      const safeMaxPages = Math.max(1, Math.min(500, Math.round(maxPages)));
+      const estimatedWorkPages = Math.max(1, Math.min(safeMaxPages, estimatedSourcePages || safeMaxPages));
+
+      let reachedLimit = false;
+
+      for (let fileIndex = 0; fileIndex < items.length; fileIndex += 1) {
+        const item = items[fileIndex];
+        let loadingTask: PdfJsLoadingTask | null = null;
+        let pdfDocument: PdfJsDocument | null = null;
+        try {
+          setStatus(`Reading ${item.file.name} (${fileIndex + 1}/${items.length})...`);
+          loadingTask = pdfjs.getDocument({
+            data: await item.file.arrayBuffer(),
+            disableWorker: true,
+          });
+          pdfDocument = await loadingTask.promise;
+          const pages = pdfDocument.numPages;
+
+          for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+            if (totalProcessedPages >= safeMaxPages) {
+              reachedLimit = true;
+              break;
+            }
+
+            setStatus(
+              `Merging ${item.file.name} page ${pageNumber}/${pages} (${totalProcessedPages + 1}/${safeMaxPages})...`,
+            );
+            const page = await pdfDocument.getPage(pageNumber);
+            const viewport = page.getViewport({ scale: safeScale });
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.floor(viewport.width));
+            canvas.height = Math.max(1, Math.floor(viewport.height));
+            const context = canvas.getContext("2d");
+            if (!context) {
+              throw new Error("Canvas context unavailable.");
+            }
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const pageSizeMm = resolvePdfPageSizeMm("fit-image", canvas.width, canvas.height, fitDpi);
+            const landscape = canvas.width > canvas.height;
+            const pageFormat: [number, number] = landscape ? [pageSizeMm[1], pageSizeMm[0]] : pageSizeMm;
+            if (!output) {
+              output = new jsPDF({
+                unit: "mm",
+                format: pageFormat,
+                compress: true,
+              });
+            } else {
+              output.addPage(pageFormat);
+            }
+
+            const pageWidth = output.internal.pageSize.getWidth();
+            const pageHeight = output.internal.pageSize.getHeight();
+            const imageData = canvas.toDataURL("image/jpeg", safeQuality);
+            output.addImage(imageData, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+
+            totalProcessedPages += 1;
+            const progressRatio = Math.min(0.98, totalProcessedPages / estimatedWorkPages);
+            setProgress(Math.round(progressRatio * 100));
+          }
+        } finally {
+          if (pdfDocument?.destroy) {
+            await pdfDocument.destroy();
+          }
+          if (loadingTask?.destroy) {
+            loadingTask.destroy();
+          }
+        }
+
+        if (reachedLimit) {
+          break;
+        }
+      }
+
+      if (!output || totalProcessedPages === 0) {
+        setStatus("Could not merge PDFs. Please verify your files.");
+        return;
+      }
+
+      setStatus("Finalizing merged PDF...");
+      setProgress(99);
+      const blob = output.output("blob");
+      const filenameBase = stripFileExtension(outputName.trim()) || "merged-document";
+      const filename = `${filenameBase}.pdf`;
+      const outputUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = outputUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(outputUrl);
+
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      setLastOutputPages(totalProcessedPages);
+      setLastOutputSize(blob.size);
+      setProgress(100);
+      setStatus(`Merged ${totalProcessedPages} page(s) in ${elapsed}s. Downloaded ${filename}.`);
+      trackEvent("tool_pdf_merge_generate", {
+        files: items.length,
+        pages: totalProcessedPages,
+        scalePercent: renderScalePercent,
+      });
+    } catch {
+      setStatus("PDF merge failed. Try fewer/smaller files or lower render scale.");
+    } finally {
+      setProcessing(false);
+    }
+  }, [estimatedSourcePages, fitDpi, items, jpegQuality, maxPages, outputName, renderScalePercent]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF merge"
+        subtitle="Combine multiple PDFs in order, then download a single merged file."
+      />
+
+      <label className="field">
+        <span>Upload PDF files</span>
+        <input type="file" accept="application/pdf" multiple onChange={(event) => void handleFileInput(event.target.files)} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={outputName} onChange={(event) => setOutputName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Render scale ({renderScalePercent}%)</span>
+          <input
+            type="range"
+            min={80}
+            max={260}
+            step={10}
+            value={renderScalePercent}
+            onChange={(event) => setRenderScalePercent(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>JPEG quality ({jpegQuality.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.5}
+            max={1}
+            step={0.02}
+            value={jpegQuality}
+            onChange={(event) => setJpegQuality(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>Fit DPI ({fitDpi})</span>
+          <input type="range" min={90} max={240} step={5} value={fitDpi} onChange={(event) => setFitDpi(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Max output pages</span>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            value={maxPages}
+            onChange={(event) => setMaxPages(Number(event.target.value))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void mergePdfs()} disabled={!items.length || processing}>
+          {processing ? "Merging..." : "Merge PDFs"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={clearAll} disabled={!items.length || processing}>
+          <Trash2 size={15} />
+          Clear queue
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "PDF files loaded", value: formatNumericValue(items.length) },
+          { label: "Estimated source pages", value: formatNumericValue(estimatedSourcePages) },
+          { label: "Source size total", value: formatBytes(totalInputBytes) },
+          { label: "Last output pages", value: lastOutputPages ? formatNumericValue(lastOutputPages) : "-" },
+          { label: "Last output size", value: lastOutputSize ? formatBytes(lastOutputSize) : "-" },
+        ]}
+      />
+
+      {items.length ? (
+        <div className="mini-panel">
+          <h3>Merge order</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>File</th>
+                  <th>Pages</th>
+                  <th>Size</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, index) => (
+                  <tr key={item.id}>
+                    <td>{index + 1}</td>
+                    <td>{item.file.name}</td>
+                    <td>{item.pageCount === null ? "Unknown" : formatNumericValue(item.pageCount)}</td>
+                    <td>{formatBytes(item.sizeBytes)}</td>
+                    <td>
+                      <div className="button-row">
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => moveItem(index, -1)}
+                          disabled={index === 0 || processing}
+                        >
+                          Up
+                        </button>
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => moveItem(index, 1)}
+                          disabled={index === items.length - 1 || processing}
+                        >
+                          Down
+                        </button>
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => removeItem(item.id)}
+                          disabled={processing}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function PdfToJpgTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -10640,6 +11030,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <BarcodeGeneratorTool />;
     case "image-to-pdf":
       return <ImageToPdfTool incomingFile={incomingFile} />;
+    case "pdf-merge":
+      return <PdfMergeTool />;
     case "pdf-to-jpg":
       return <PdfToJpgTool />;
     default:

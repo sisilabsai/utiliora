@@ -116,6 +116,7 @@ export type ImageToolId =
   | "image-cropper"
   | "barcode-generator"
   | "image-to-pdf"
+  | "pdf-merge"
   | "pdf-to-jpg";
 
 export type ProductivityToolId =
