@@ -8420,6 +8420,150 @@ interface InternetSpeedHistoryEntry {
   bytesPerSample: number;
 }
 
+interface SpeedChartPoint {
+  x: number;
+  y: number;
+  value: number;
+  label: string;
+}
+
+interface SpeedChartModel {
+  width: number;
+  height: number;
+  padding: number;
+  min: number;
+  max: number;
+  points: SpeedChartPoint[];
+  linePath: string;
+  areaPath: string;
+}
+
+function buildSpeedChartModel(
+  values: number[],
+  labels: string[],
+  width = 360,
+  height = 180,
+  padding = 22,
+): SpeedChartModel | null {
+  if (!values.length) return null;
+  const minRaw = Math.min(...values);
+  const maxRaw = Math.max(...values);
+  const spread = Math.max(0, maxRaw - minRaw);
+  const paddedSpread = spread === 0 ? Math.max(1, maxRaw * 0.2, 1) : spread * 1.12;
+  const min = Math.max(0, spread === 0 ? minRaw - paddedSpread / 2 : minRaw - spread * 0.06);
+  const max = min + paddedSpread;
+  const innerWidth = Math.max(20, width - padding * 2);
+  const innerHeight = Math.max(20, height - padding * 2);
+
+  const points: SpeedChartPoint[] = values.map((value, index) => {
+    const x =
+      values.length === 1
+        ? width / 2
+        : padding + (index / Math.max(1, values.length - 1)) * innerWidth;
+    const normalized = (value - min) / Math.max(1e-6, max - min);
+    const y = padding + (1 - normalized) * innerHeight;
+    return {
+      x,
+      y,
+      value,
+      label: labels[index] ?? `S${index + 1}`,
+    };
+  });
+
+  const linePath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+
+  const areaPath =
+    points.length > 0
+      ? `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${(height - padding).toFixed(2)} L ${points[0].x.toFixed(2)} ${(height - padding).toFixed(2)} Z`
+      : "";
+
+  return {
+    width,
+    height,
+    padding,
+    min,
+    max,
+    points,
+    linePath,
+    areaPath,
+  };
+}
+
+function SpeedMetricChart({
+  title,
+  values,
+  labels,
+  unit,
+  lineColor,
+  areaColor,
+}: {
+  title: string;
+  values: number[];
+  labels: string[];
+  unit: string;
+  lineColor: string;
+  areaColor: string;
+}) {
+  const chart = useMemo(() => buildSpeedChartModel(values, labels), [labels, values]);
+  if (!chart) return null;
+
+  const latestValue = values[values.length - 1] ?? 0;
+  const startValue = values[0] ?? 0;
+  const delta = latestValue - startValue;
+  const deltaSign = delta > 0 ? "+" : "";
+  const deltaLabel = `${deltaSign}${delta.toFixed(2)} ${unit}`;
+
+  return (
+    <article className="mini-panel" style={{ margin: 0 }}>
+      <div className="panel-head">
+        <h3>{title}</h3>
+        <span className="supporting-text">
+          Min {chart.min.toFixed(2)} {unit} | Max {chart.max.toFixed(2)} {unit}
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${chart.width} ${chart.height}`}
+        width="100%"
+        height="180"
+        role="img"
+        aria-label={`${title} chart`}
+      >
+        <rect x={0} y={0} width={chart.width} height={chart.height} fill="transparent" rx={10} />
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const y = chart.padding + ratio * (chart.height - chart.padding * 2);
+          return (
+            <line
+              key={`grid-${ratio}`}
+              x1={chart.padding}
+              y1={y}
+              x2={chart.width - chart.padding}
+              y2={y}
+              stroke="rgba(148, 163, 184, 0.35)"
+              strokeWidth={1}
+              strokeDasharray="4 6"
+            />
+          );
+        })}
+        <path d={chart.areaPath} fill={areaColor} stroke="none" />
+        <path d={chart.linePath} fill="none" stroke={lineColor} strokeWidth={2.8} strokeLinecap="round" />
+        {chart.points.map((point) => (
+          <g key={`${point.label}-${point.x}`}>
+            <circle cx={point.x} cy={point.y} r={3.8} fill={lineColor} />
+            <title>
+              {point.label}: {point.value.toFixed(2)} {unit}
+            </title>
+          </g>
+        ))}
+      </svg>
+      <p className="supporting-text">
+        Latest: {latestValue.toFixed(2)} {unit} | Trend from first sample: {deltaLabel}
+      </p>
+    </article>
+  );
+}
+
 function InternetSpeedTestTool() {
   const historyStorageKey = "utiliora-internet-speed-history-v1";
   const abortRef = useRef<AbortController | null>(null);
@@ -8495,6 +8639,28 @@ function InternetSpeedTestTool() {
     const stdDev = Math.sqrt(variance);
     return Math.max(0, Math.min(100, 100 - (stdDev / averageMbps) * 100));
   }, [averageMbps, samples]);
+
+  const sampleLabels = useMemo(
+    () => samples.map((sample) => `S${sample.iteration}`),
+    [samples],
+  );
+
+  const networkProfile = useMemo(() => {
+    if (!samples.length) {
+      return { label: "No test data yet", tone: "info" as const };
+    }
+
+    if (averageMbps >= 120 && averageLatencyMs <= 20 && jitterMs <= 8) {
+      return { label: "Excellent network profile", tone: "ok" as const };
+    }
+    if (averageMbps >= 50 && averageLatencyMs <= 40 && jitterMs <= 16) {
+      return { label: "Strong network profile", tone: "info" as const };
+    }
+    if (averageMbps >= 15 && averageLatencyMs <= 80) {
+      return { label: "Moderate network profile", tone: "warn" as const };
+    }
+    return { label: "Weak network profile", tone: "bad" as const };
+  }, [averageLatencyMs, averageMbps, jitterMs, samples.length]);
 
   const runSpeedTest = useCallback(async () => {
     const safeBytes = Math.max(128_000, Math.min(5_000_000, Math.round(bytesPerSample)));
@@ -8670,6 +8836,36 @@ function InternetSpeedTestTool() {
           { label: "Last run", value: lastRunAt ? new Date(lastRunAt).toLocaleString("en-US") : "-" },
         ]}
       />
+
+      {samples.length ? (
+        <>
+          <p className={`status-badge ${networkProfile.tone}`}>{networkProfile.label}</p>
+          <div
+            style={{
+              display: "grid",
+              gap: "0.9rem",
+              gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+            }}
+          >
+            <SpeedMetricChart
+              title="Download speed trend"
+              values={samples.map((sample) => sample.mbps)}
+              labels={sampleLabels}
+              unit="Mbps"
+              lineColor="#4aa3ff"
+              areaColor="rgba(74, 163, 255, 0.18)"
+            />
+            <SpeedMetricChart
+              title="Latency trend"
+              values={samples.map((sample) => sample.latencyMs)}
+              labels={sampleLabels}
+              unit="ms"
+              lineColor="#f59e0b"
+              areaColor="rgba(245, 158, 11, 0.18)"
+            />
+          </div>
+        </>
+      ) : null}
 
       {samples.length ? (
         <div className="mini-panel">
@@ -10675,13 +10871,15 @@ interface PdfJsDocument {
 
 interface PdfJsLoadingTask {
   promise: Promise<PdfJsDocument>;
-  destroy?: () => void;
+  destroy?: () => Promise<void> | void;
 }
 
 interface PdfJsModule {
   getDocument(params: {
-    data: ArrayBuffer;
+    data: Uint8Array | ArrayBuffer;
     disableWorker?: boolean;
+    stopAtErrors?: boolean;
+    [key: string]: unknown;
   }): PdfJsLoadingTask;
   GlobalWorkerOptions?: {
     workerSrc: string;
@@ -10854,11 +11052,64 @@ function buildPageRangeFromPreset(preset: PageSelectionPreset): string {
 }
 
 async function loadPdfJsModule(): Promise<PdfJsModule> {
-  const pdfJsModule = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule;
-  if (pdfJsModule.GlobalWorkerOptions) {
-    pdfJsModule.GlobalWorkerOptions.workerSrc = "";
+  return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule;
+}
+
+async function readPdfFileBytes(file: File): Promise<Uint8Array> {
+  return new Uint8Array(await file.arrayBuffer());
+}
+
+async function closePdfDocumentResources(
+  loadingTask: PdfJsLoadingTask | null,
+  pdfDocument: PdfJsDocument | null,
+): Promise<void> {
+  if (pdfDocument?.destroy) {
+    try {
+      await pdfDocument.destroy();
+    } catch {
+      // Ignore PDF resource cleanup failures.
+    }
   }
-  return pdfJsModule;
+  if (loadingTask?.destroy) {
+    try {
+      await loadingTask.destroy();
+    } catch {
+      // Ignore PDF loading task cleanup failures.
+    }
+  }
+}
+
+async function openPdfDocumentWithFallback(
+  pdfjs: PdfJsModule,
+  bytes: Uint8Array,
+): Promise<{ loadingTask: PdfJsLoadingTask; pdfDocument: PdfJsDocument }> {
+  const attempts: Array<{ disableWorker?: boolean; stopAtErrors?: boolean }> = [
+    { disableWorker: true, stopAtErrors: false },
+    { stopAtErrors: false },
+  ];
+  let lastError: unknown = null;
+
+  for (const options of attempts) {
+    const loadingTask = pdfjs.getDocument({
+      data: bytes.slice(),
+      ...options,
+    });
+    try {
+      const pdfDocument = await loadingTask.promise;
+      return { loadingTask, pdfDocument };
+    } catch (error) {
+      lastError = error;
+      if (loadingTask.destroy) {
+        try {
+          await loadingTask.destroy();
+        } catch {
+          // Ignore failed fallback cleanup.
+        }
+      }
+    }
+  }
+
+  throw lastError ?? new Error("Unable to open PDF document.");
 }
 
 async function loadJsZipModule() {
@@ -11751,23 +12002,17 @@ function PdfSplitTool() {
     try {
       setStatus("Reading PDF metadata...");
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await nextFile.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(nextFile);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       setPageCount(pdfDocument.numPages);
       setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
     } catch {
       setPageCount(0);
       setStatus("Could not read PDF metadata.");
     } finally {
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, []);
 
@@ -11849,11 +12094,10 @@ function PdfSplitTool() {
     try {
       const pdfjs = await loadPdfJsModule();
       const { jsPDF } = await import("jspdf");
-      loadingTask = pdfjs.getDocument({
-        data: await file.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
 
       for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
         const pages = groups[groupIndex];
@@ -11940,12 +12184,7 @@ function PdfSplitTool() {
       setStatus("PDF split failed. Try lower scale or fewer pages.");
     } finally {
       setProcessing(false);
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, [
     chunkSize,
@@ -12121,23 +12360,17 @@ function PdfCompressorTool() {
     try {
       setStatus("Reading PDF metadata...");
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await nextFile.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(nextFile);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       setPageCount(pdfDocument.numPages);
       setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
     } catch {
       setPageCount(0);
       setStatus("Could not read PDF metadata.");
     } finally {
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, []);
 
@@ -12223,11 +12456,10 @@ function PdfCompressorTool() {
     try {
       const pdfjs = await loadPdfJsModule();
       const { jsPDF } = await import("jspdf");
-      loadingTask = pdfjs.getDocument({
-        data: await file.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
 
       for (let pageNumber = 1; pageNumber <= pagesToProcess; pageNumber += 1) {
         setStatus(`Compressing page ${pageNumber}/${pagesToProcess}...`);
@@ -12306,12 +12538,7 @@ function PdfCompressorTool() {
       setStatus("PDF compression failed. Try fewer pages or lower scale.");
     } finally {
       setProcessing(false);
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, [
     file,
@@ -12431,23 +12658,17 @@ function PdfToWordTool() {
     try {
       setStatus("Reading PDF metadata...");
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await nextFile.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(nextFile);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
       setPageCount(pdfDocument.numPages);
       setStatus(`PDF loaded with ${pdfDocument.numPages} page(s).`);
     } catch {
       setPageCount(0);
       setStatus("Could not read PDF metadata.");
     } finally {
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, []);
 
@@ -12520,11 +12741,10 @@ function PdfToWordTool() {
     let pdfDocument: PdfJsDocument | null = null;
     try {
       const pdfjs = await loadPdfJsModule();
-      loadingTask = pdfjs.getDocument({
-        data: await file.arrayBuffer(),
-        disableWorker: true,
-      });
-      pdfDocument = await loadingTask.promise;
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
 
       const sections: Array<{ pageNumber: number; lines: string[] }> = [];
       for (let index = 0; index < boundedSelection.length; index += 1) {
@@ -12626,12 +12846,7 @@ function PdfToWordTool() {
       setStatus("PDF to Word conversion failed. Try fewer pages.");
     } finally {
       setProcessing(false);
-      if (pdfDocument?.destroy) {
-        await pdfDocument.destroy();
-      }
-      if (loadingTask?.destroy) {
-        loadingTask.destroy();
-      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
     }
   }, [file, includePageHeadings, maxPages, pageCount, pageRangeInput, pdfName, preserveLineBreaks]);
 
