@@ -13746,7 +13746,7 @@ interface BackgroundRemovalRunEntry {
 
 const BACKGROUND_REMOVER_STORAGE_KEY = "utiliora-background-remover-state-v1";
 const BACKGROUND_REMOVER_HISTORY_LIMIT = 24;
-const BACKGROUND_REMOVER_CDN_URL = "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/dist/index.mjs";
+const BACKGROUND_REMOVER_CDN_URL = "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm";
 
 type BackgroundRemovalFn = (
   image: Blob | File,
