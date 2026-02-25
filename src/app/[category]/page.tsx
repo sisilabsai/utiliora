@@ -37,7 +37,7 @@ export function generateMetadata({ params }: CategoryPageProps): Metadata {
     openGraph: {
       title: `${category.title} | Utiliora`,
       description: category.description,
-      url: `https://utiliora.com/${category.slug}`,
+      url: `https://utiliora.cloud/${category.slug}`,
       type: "website",
     },
     twitter: {
@@ -58,11 +58,11 @@ export default function CategoryPage({ params }: CategoryPageProps) {
     "@type": "CollectionPage",
     name: `${category.title} | Utiliora`,
     description: category.description,
-    url: `https://utiliora.com/${category.slug}`,
+    url: `https://utiliora.cloud/${category.slug}`,
     isPartOf: {
       "@type": "WebSite",
       name: "Utiliora",
-      url: "https://utiliora.com",
+      url: "https://utiliora.cloud",
     },
     mainEntity: {
       "@type": "ItemList",
@@ -70,7 +70,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         "@type": "ListItem",
         position: index + 1,
         name: tool.title,
-        url: `https://utiliora.com/${tool.category}/${tool.slug}`,
+        url: `https://utiliora.cloud/${tool.category}/${tool.slug}`,
       })),
     },
   };
@@ -82,13 +82,13 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         "@type": "ListItem",
         position: 1,
         name: "Home",
-        item: "https://utiliora.com/",
+        item: "https://utiliora.cloud/",
       },
       {
         "@type": "ListItem",
         position: 2,
         name: category.title,
-        item: `https://utiliora.com/${category.slug}`,
+        item: `https://utiliora.cloud/${category.slug}`,
       },
     ],
   };

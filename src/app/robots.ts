@@ -6,7 +6,7 @@ export default function robots(): MetadataRoute.Robots {
       userAgent: "*",
       allow: "/",
     },
-    sitemap: "https://utiliora.com/sitemap.xml",
-    host: "https://utiliora.com",
+    sitemap: "https://utiliora.cloud/sitemap.xml",
+    host: "https://utiliora.cloud",
   };
 }

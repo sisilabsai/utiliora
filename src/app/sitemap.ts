@@ -3,7 +3,7 @@ import { orderedCategorySlugs } from "@/lib/categories";
 import { getAllTools } from "@/lib/tools";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://utiliora.com";
+  const baseUrl = "https://utiliora.cloud";
   const now = new Date();
   const tools = getAllTools();
 

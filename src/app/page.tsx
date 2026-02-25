@@ -24,7 +24,7 @@ export const metadata: Metadata = {
     title: "Utiliora | Online Utility Tools",
     description:
       "Use fast free online tools for calculators, converters, SEO, images, developer workflows, and productivity.",
-    url: "https://utiliora.com/",
+    url: "https://utiliora.cloud/",
     type: "website",
     siteName: "Utiliora",
   },
@@ -44,7 +44,7 @@ export default function Home() {
     "@context": "https://schema.org",
     "@type": "WebSite",
     name: "Utiliora",
-    url: "https://utiliora.com",
+    url: "https://utiliora.cloud",
     description:
       "Global utility platform with calculators, converters, SEO tools, image tools, developer tools, and productivity tools.",
   };
@@ -52,7 +52,7 @@ export default function Home() {
     "@context": "https://schema.org",
     "@type": "Organization",
     name: "Utiliora",
-    url: "https://utiliora.com",
+    url: "https://utiliora.cloud",
   };
 
   return (

@@ -34,7 +34,7 @@ export function generateMetadata({ params }: ToolPageProps): Metadata {
     openGraph: {
       title: tool.title,
       description: tool.description,
-      url: `https://utiliora.com/${tool.category}/${tool.slug}`,
+      url: `https://utiliora.cloud/${tool.category}/${tool.slug}`,
       type: "article",
     },
     twitter: {
@@ -57,7 +57,7 @@ function buildJsonLd(
   toolSlug: string,
   faq: Array<{ question: string; answer: string }>,
 ) {
-  const url = `https://utiliora.com/${categorySlug}/${toolSlug}`;
+  const url = `https://utiliora.cloud/${categorySlug}/${toolSlug}`;
   const softwareApplication = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -81,13 +81,13 @@ function buildJsonLd(
         "@type": "ListItem",
         position: 1,
         name: "Home",
-        item: "https://utiliora.com/",
+        item: "https://utiliora.cloud/",
       },
       {
         "@type": "ListItem",
         position: 2,
         name: categoryTitle,
-        item: `https://utiliora.com/${categorySlug}`,
+        item: `https://utiliora.cloud/${categorySlug}`,
       },
       {
         "@type": "ListItem",

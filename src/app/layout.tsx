@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { AccessibilityFab } from "@/components/AccessibilityFab";
+import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 
@@ -51,8 +52,9 @@ const accessibilityBootScript = `
 `;
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://utiliora.com"),
+  metadataBase: new URL("https://utiliora.cloud"),
   applicationName: "Utiliora",
+  manifest: "/manifest.webmanifest",
   title: {
     default: "Utiliora | Simple Tools. Instant Results.",
     template: "%s | Utiliora",
@@ -70,6 +72,20 @@ export const metadata: Metadata = {
   alternates: {
     canonical: "/",
   },
+  icons: {
+    icon: [
+      { url: "/icons/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/icons/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icons/favicon-48x48.png", sizes: "48x48", type: "image/png" },
+    ],
+    shortcut: [{ url: "/icons/favicon-32x32.png", sizes: "32x32", type: "image/png" }],
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Utiliora",
+    statusBarStyle: "default",
+  },
   robots: {
     index: true,
     follow: true,
@@ -85,14 +101,26 @@ export const metadata: Metadata = {
     type: "website",
     title: "Utiliora",
     description: "Simple tools. Instant results.",
-    url: "https://utiliora.com",
+    url: "https://utiliora.cloud",
     siteName: "Utiliora",
+    images: [
+      {
+        url: "/icons/icon-512.png",
+        width: 512,
+        height: 512,
+        alt: "Utiliora logo",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Utiliora",
     description: "Simple tools. Instant results.",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#174f86",
 };
 
 export default function RootLayout({
@@ -113,6 +141,7 @@ export default function RootLayout({
         <main id="content" className="site-main">
           {children}
         </main>
+        <PwaInstallPrompt />
         <AccessibilityFab />
         <SiteFooter />
       </body>

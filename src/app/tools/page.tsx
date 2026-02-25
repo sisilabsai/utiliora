@@ -21,7 +21,7 @@ export const metadata: Metadata = {
     title: "All Tools | Utiliora",
     description:
       "Browse the full Utiliora tool library across calculators, converters, SEO, image, and developer tools.",
-    url: "https://utiliora.com/tools",
+    url: "https://utiliora.cloud/tools",
     type: "website",
   },
   twitter: {
@@ -40,14 +40,14 @@ export default function AllToolsPage() {
     name: "All Utiliora Tools",
     description:
       "Directory of calculators, converters, SEO tools, image tools, developer tools, and productivity tools.",
-    url: "https://utiliora.com/tools",
+    url: "https://utiliora.cloud/tools",
     mainEntity: {
       "@type": "ItemList",
       itemListElement: tools.map((tool, index) => ({
         "@type": "ListItem",
         position: index + 1,
         name: tool.title,
-        url: `https://utiliora.com/${tool.category}/${tool.slug}`,
+        url: `https://utiliora.cloud/${tool.category}/${tool.slug}`,
       })),
     },
   };

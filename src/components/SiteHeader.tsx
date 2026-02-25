@@ -1,5 +1,6 @@
 "use client";
 
+import NextImage from "next/image";
 import { usePathname } from "next/navigation";
 import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -132,7 +133,7 @@ export function SiteHeader() {
         <div className="site-container header-inner">
           <a className="brand" href="/">
             <span className="brand-mark" aria-hidden>
-              U
+              <NextImage src="/branding/utiliora-mark-96.png" alt="" width={32} height={32} priority />
             </span>
             <span className="brand-text">
               <strong>Utiliora</strong>
