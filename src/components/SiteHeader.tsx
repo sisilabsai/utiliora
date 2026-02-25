@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getCategories } from "@/lib/categories";
 import { CategoryIcon } from "@/components/CategoryIcon";
 
@@ -63,7 +63,6 @@ export function SiteHeader() {
   const pathname = usePathname();
   const [recentDockEntry, setRecentDockEntry] = useState<RecentDockEntry | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
-  const mobileQuickNavRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     try {
@@ -106,19 +105,6 @@ export function SiteHeader() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [quickOpen]);
 
-  useEffect(() => {
-    if (!quickOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (mobileQuickNavRef.current?.contains(target)) return;
-      setQuickOpen(false);
-    };
-
-    window.addEventListener("pointerdown", handlePointerDown);
-    return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [quickOpen]);
-
   const isActive = useCallback(
     (href: string) => {
       if (href === "/") return pathname === "/";
@@ -136,10 +122,6 @@ export function SiteHeader() {
   const recentLabel = recentDockEntry?.label ?? "Recent";
   const recentActive = recentDockEntry ? isActive(recentDockEntry.href) : false;
   const quickPanelId = "mobile-quick-panel";
-
-  const closeQuickPanel = useCallback(() => {
-    setQuickOpen(false);
-  }, []);
 
   const toggleQuickPanel = useCallback(() => {
     setQuickOpen((current) => !current);
@@ -174,12 +156,11 @@ export function SiteHeader() {
         </div>
       </header>
 
-      <nav ref={mobileQuickNavRef} aria-label="Mobile quick access" className="mobile-quick-nav">
+      <nav aria-label="Mobile quick access" className="mobile-quick-nav">
         <Link
           href="/"
           className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/") ? "page" : undefined}
-          onClick={closeQuickPanel}
         >
           <Home size={17} />
           <span>Home</span>
@@ -189,7 +170,6 @@ export function SiteHeader() {
           href="/tools"
           className={`mobile-quick-link ${isActive("/tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/tools") ? "page" : undefined}
-          onClick={closeQuickPanel}
         >
           <Grid2x2 size={17} />
           <span>Tools</span>
@@ -199,7 +179,6 @@ export function SiteHeader() {
           href={recentHref}
           className={`mobile-quick-link mobile-quick-link-recent ${recentActive ? "mobile-quick-link-active" : ""}`}
           aria-current={recentActive ? "page" : undefined}
-          onClick={closeQuickPanel}
         >
           <History size={17} />
           <span>{recentLabel}</span>
@@ -236,7 +215,6 @@ export function SiteHeader() {
                           ? "mobile-quick-category-link mobile-quick-category-link-active"
                           : "mobile-quick-category-link"
                       }
-                      onClick={closeQuickPanel}
                     >
                       <CategoryIcon category={category.slug} size={14} />
                       <span>{category.title}</span>
@@ -246,7 +224,6 @@ export function SiteHeader() {
                 <Link
                   className="mobile-quick-all-link"
                   href="/tools"
-                  onClick={closeQuickPanel}
                 >
                   Browse all tools
                 </Link>
@@ -259,7 +236,6 @@ export function SiteHeader() {
           href="/developer-tools"
           className={`mobile-quick-link ${isActive("/developer-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/developer-tools") ? "page" : undefined}
-          onClick={closeQuickPanel}
         >
           <Code2 size={17} />
           <span>Dev</span>
@@ -269,7 +245,6 @@ export function SiteHeader() {
           href="/productivity-tools"
           className={`mobile-quick-link ${isActive("/productivity-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/productivity-tools") ? "page" : undefined}
-          onClick={closeQuickPanel}
         >
           <SquareKanban size={17} />
           <span>Focus</span>
