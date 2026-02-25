@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 export function SiteFooter() {
   return (
     <footer className="site-footer">
@@ -8,9 +6,9 @@ export function SiteFooter() {
           Built for global users who need practical utility tools without logins or friction.
         </p>
         <div className="footer-links">
-          <Link href="/tools">Browse all tools</Link>
-          <Link href="/calculators">Calculators</Link>
-          <Link href="/converters">Converters</Link>
+          <a href="/tools">Browse all tools</a>
+          <a href="/calculators">Calculators</a>
+          <a href="/converters">Converters</a>
           <a href="mailto:team@utiliora.com">team@utiliora.com</a>
         </div>
       </div>

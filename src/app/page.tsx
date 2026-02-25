@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { ToolCard } from "@/components/ToolCard";
 import { ToolSearch } from "@/components/ToolSearch";
 import { CategoryIcon } from "@/components/CategoryIcon";
@@ -66,9 +65,9 @@ export default function Home() {
           workflows without login friction.
         </p>
         <div className="hero-cta">
-          <Link className="action-link" href="/tools">
+          <a className="action-link" href="/tools">
             Explore all tools
-          </Link>
+          </a>
           <span>{allTools.length}+ tools live and growing weekly.</span>
         </div>
       </section>
@@ -82,7 +81,7 @@ export default function Home() {
             <article key={category.slug} className="category-card">
               <h2>
                 <CategoryIcon category={category.slug} size={16} />
-                <Link href={`/${category.slug}`}>{category.title}</Link>
+                <a href={`/${category.slug}`}>{category.title}</a>
               </h2>
               <p>{category.description}</p>
               <small>{count} tools available</small>
@@ -94,7 +93,7 @@ export default function Home() {
       <section>
         <div className="section-head">
           <h2>Popular right now</h2>
-          <Link href="/tools">View full directory</Link>
+          <a href="/tools">View full directory</a>
         </div>
         <div className="tool-grid">
           {featuredTools.map((tool) => (

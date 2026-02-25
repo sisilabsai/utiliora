@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { ToolDefinition } from "@/lib/types";
 
 interface RelatedToolsProps {
@@ -14,10 +13,10 @@ export function RelatedTools({ tools }: RelatedToolsProps) {
       <ul>
         {tools.map((tool) => (
           <li key={`${tool.category}-${tool.slug}`}>
-            <Link className="related-tool-link" href={`/${tool.category}/${tool.slug}`}>
+            <a className="related-tool-link" href={`/${tool.category}/${tool.slug}`}>
               <strong>{tool.title}</strong>
               <p>{tool.summary}</p>
-            </Link>
+            </a>
           </li>
         ))}
       </ul>

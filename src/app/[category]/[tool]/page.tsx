@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AdSlot } from "@/components/AdSlot";
 import { AffiliateCard } from "@/components/AffiliateCard";
@@ -127,9 +126,9 @@ export default function ToolPage({ params }: ToolPageProps) {
   return (
     <div className="site-container page-stack">
       <nav className="breadcrumbs" aria-label="Breadcrumb">
-        <Link href="/">Home</Link>
+        <a href="/">Home</a>
         <span>/</span>
-        <Link href={`/${tool.category}`}>{category?.title ?? tool.category}</Link>
+        <a href={`/${tool.category}`}>{category?.title ?? tool.category}</a>
         <span>/</span>
         <span aria-current="page">{tool.title}</span>
       </nav>

@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
 import type { ToolDefinition } from "@/lib/types";
 
 interface ToolSearchProps {
@@ -41,10 +40,10 @@ export function ToolSearch({ tools }: ToolSearchProps) {
       <ul className="search-results" role="list">
         {results.map((tool) => (
           <li key={`${tool.category}-${tool.slug}`}>
-            <Link href={`/${tool.category}/${tool.slug}`}>
+            <a href={`/${tool.category}/${tool.slug}`}>
               <span>{tool.title}</span>
               <small>{tool.summary}</small>
-            </Link>
+            </a>
           </li>
         ))}
       </ul>

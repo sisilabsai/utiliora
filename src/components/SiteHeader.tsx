@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -131,7 +130,7 @@ export function SiteHeader() {
     <>
       <header className="site-header">
         <div className="site-container header-inner">
-          <Link className="brand" href="/">
+          <a className="brand" href="/">
             <span className="brand-mark" aria-hidden>
               U
             </span>
@@ -139,50 +138,50 @@ export function SiteHeader() {
               <strong>Utiliora</strong>
               <small>Simple tools. Instant results.</small>
             </span>
-          </Link>
+          </a>
 
           <nav aria-label="Primary navigation" className="main-nav">
-            <Link href="/tools">
+            <a href="/tools">
               <Grid2x2 size={14} />
               <span>All Tools</span>
-            </Link>
+            </a>
             {categories.map((category) => (
-              <Link key={category.slug} href={`/${category.slug}`}>
+              <a key={category.slug} href={`/${category.slug}`}>
                 <CategoryIcon category={category.slug} size={14} />
                 <span>{category.title}</span>
-              </Link>
+              </a>
             ))}
           </nav>
         </div>
       </header>
 
       <nav aria-label="Mobile quick access" className="mobile-quick-nav">
-        <Link
+        <a
           href="/"
           className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/") ? "page" : undefined}
         >
           <Home size={17} />
           <span>Home</span>
-        </Link>
+        </a>
 
-        <Link
+        <a
           href="/tools"
           className={`mobile-quick-link ${isActive("/tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/tools") ? "page" : undefined}
         >
           <Grid2x2 size={17} />
           <span>Tools</span>
-        </Link>
+        </a>
 
-        <Link
+        <a
           href={recentHref}
           className={`mobile-quick-link mobile-quick-link-recent ${recentActive ? "mobile-quick-link-active" : ""}`}
           aria-current={recentActive ? "page" : undefined}
         >
           <History size={17} />
           <span>{recentLabel}</span>
-        </Link>
+        </a>
 
         <div className="mobile-quick-drawer">
           <button
@@ -204,7 +203,7 @@ export function SiteHeader() {
                 </div>
                 <div className="mobile-quick-grid">
                   {categories.map((category) => (
-                    <Link
+                    <a
                       key={`quick-${category.slug}`}
                       href={`/${category.slug}`}
                       aria-current={
@@ -218,37 +217,37 @@ export function SiteHeader() {
                     >
                       <CategoryIcon category={category.slug} size={14} />
                       <span>{category.title}</span>
-                    </Link>
+                    </a>
                   ))}
                 </div>
-                <Link
+                <a
                   className="mobile-quick-all-link"
                   href="/tools"
                 >
                   Browse all tools
-                </Link>
+                </a>
               </div>
             </div>
           ) : null}
         </div>
 
-        <Link
+        <a
           href="/developer-tools"
           className={`mobile-quick-link ${isActive("/developer-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/developer-tools") ? "page" : undefined}
         >
           <Code2 size={17} />
           <span>Dev</span>
-        </Link>
+        </a>
 
-        <Link
+        <a
           href="/productivity-tools"
           className={`mobile-quick-link ${isActive("/productivity-tools") ? "mobile-quick-link-active" : ""}`}
           aria-current={isActive("/productivity-tools") ? "page" : undefined}
         >
           <SquareKanban size={17} />
           <span>Focus</span>
-        </Link>
+        </a>
       </nav>
     </>
   );
