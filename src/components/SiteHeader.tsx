@@ -65,6 +65,7 @@ export function SiteHeader() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [tappingItem, setTappingItem] = useState("");
   const tapTimeoutRef = useRef<number | null>(null);
+  const mobileQuickNavRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     try {
@@ -105,6 +106,19 @@ export function SiteHeader() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [quickOpen]);
+
+  useEffect(() => {
+    if (!quickOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (mobileQuickNavRef.current?.contains(target)) return;
+      setQuickOpen(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [quickOpen]);
 
   useEffect(() => {
@@ -186,11 +200,7 @@ export function SiteHeader() {
         </div>
       </header>
 
-      {quickOpen ? (
-        <button type="button" className="mobile-quick-backdrop" aria-label="Close quick access" onClick={closeQuickPanel} />
-      ) : null}
-
-      <nav aria-label="Mobile quick access" className="mobile-quick-nav">
+      <nav ref={mobileQuickNavRef} aria-label="Mobile quick access" className="mobile-quick-nav">
         <Link
           href="/"
           className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""} ${tappingItem === "home" ? "is-tapping" : ""}`}

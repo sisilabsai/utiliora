@@ -14,8 +14,10 @@ export function RelatedTools({ tools }: RelatedToolsProps) {
       <ul>
         {tools.map((tool) => (
           <li key={`${tool.category}-${tool.slug}`}>
-            <Link href={`/${tool.category}/${tool.slug}`}>{tool.title}</Link>
-            <p>{tool.summary}</p>
+            <Link className="related-tool-link" href={`/${tool.category}/${tool.slug}`}>
+              <strong>{tool.title}</strong>
+              <p>{tool.summary}</p>
+            </Link>
           </li>
         ))}
       </ul>
