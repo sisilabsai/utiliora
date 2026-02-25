@@ -43,6 +43,17 @@ const calculators: ToolDefinition[] = [
     faq: baseFaq("Mortgage Calculator"),
   },
   {
+    slug: "debt-to-income-calculator",
+    category: "calculators",
+    title: "Debt-to-Income (DTI) Calculator",
+    summary: "Calculate front-end and back-end DTI ratios with lender-style affordability thresholds.",
+    description:
+      "Estimate debt-to-income ratio using housing and monthly debt obligations, then compare against common underwriting limits.",
+    keywords: ["debt-to-income calculator", "dti calculator", "mortgage dti", "loan affordability calculator"],
+    engine: { kind: "calculator", id: "debt-to-income-calculator" },
+    faq: baseFaq("Debt-to-Income (DTI) Calculator"),
+  },
+  {
     slug: "compound-interest-calculator",
     category: "calculators",
     title: "Compound Interest Calculator",

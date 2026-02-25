@@ -37,6 +37,7 @@ import {
   getBreakEvenScenarios,
   getCalculatorInsights,
   getCompoundGrowthTimeline,
+  getDtiAffordabilityScenarios,
   getLoanAmortizationSchedule,
   getSavingsGoalTimeline,
   runCalculator,
@@ -157,6 +158,116 @@ const calculatorFields: Record<CalculatorId, CalculatorField[]> = {
     },
     { name: "monthlyHoa", label: "Monthly HOA (USD)", defaultValue: "0", min: 0, step: 10, type: "number" },
   ],
+  "debt-to-income-calculator": [
+    {
+      name: "grossMonthlyIncome",
+      label: "Gross monthly income (USD)",
+      defaultValue: "8500",
+      min: 0,
+      step: 50,
+      type: "number",
+      helper: "Income before tax, from salary/wages.",
+    },
+    {
+      name: "coBorrowerMonthlyIncome",
+      label: "Co-borrower monthly income (USD)",
+      defaultValue: "0",
+      min: 0,
+      step: 50,
+      type: "number",
+    },
+    {
+      name: "otherMonthlyIncome",
+      label: "Other recurring income (USD)",
+      defaultValue: "0",
+      min: 0,
+      step: 50,
+      type: "number",
+      helper: "Only include reliable income you can document.",
+    },
+    {
+      name: "monthlyHousingPayment",
+      label: "Housing payment - rent/mortgage P&I (USD)",
+      defaultValue: "2200",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "monthlyPropertyTax",
+      label: "Monthly property tax (USD)",
+      defaultValue: "350",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "monthlyInsuranceHoa",
+      label: "Monthly insurance + HOA (USD)",
+      defaultValue: "210",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    { name: "monthlyCarPayment", label: "Monthly car loans (USD)", defaultValue: "450", min: 0, step: 10, type: "number" },
+    {
+      name: "monthlyStudentLoanPayment",
+      label: "Monthly student loans (USD)",
+      defaultValue: "280",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "monthlyCreditCardPayments",
+      label: "Monthly credit card minimums (USD)",
+      defaultValue: "150",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "monthlyPersonalLoanPayments",
+      label: "Monthly personal loans (USD)",
+      defaultValue: "0",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    {
+      name: "monthlyChildSupportAlimony",
+      label: "Child support / alimony (USD)",
+      defaultValue: "0",
+      min: 0,
+      step: 10,
+      type: "number",
+    },
+    { name: "monthlyOtherDebts", label: "Other monthly debt (USD)", defaultValue: "0", min: 0, step: 10, type: "number" },
+    {
+      name: "targetFrontEndDti",
+      label: "Target front-end ratio (%)",
+      defaultValue: "31",
+      type: "select",
+      options: [
+        { label: "25 (Conservative)", value: "25" },
+        { label: "28 (Standard)", value: "28" },
+        { label: "31 (Flexible)", value: "31" },
+        { label: "33 (Aggressive)", value: "33" },
+      ],
+    },
+    {
+      name: "targetBackEndDti",
+      label: "Target back-end ratio (%)",
+      defaultValue: "43",
+      type: "select",
+      options: [
+        { label: "35 (Conservative)", value: "35" },
+        { label: "36 (Standard)", value: "36" },
+        { label: "43 (Flexible)", value: "43" },
+        { label: "50 (Aggressive)", value: "50" },
+      ],
+    },
+  ] satisfies CalculatorField[],
   "compound-interest-calculator": [
     { name: "principal", label: "Initial principal (USD)", defaultValue: "10000", min: 0, step: 10, type: "number" },
     { name: "annualRate", label: "Annual return rate (%)", defaultValue: "7", min: 0, step: 0.1, type: "number" },
@@ -444,6 +555,7 @@ interface CalculatorPreset {
 const calculatorSubtitles: Record<CalculatorId, string> = {
   "loan-emi-calculator": "Plan loan payments with amortization detail and repayment impact.",
   "mortgage-calculator": "Estimate all-in home payments with taxes, insurance, and HOA included.",
+  "debt-to-income-calculator": "Model lender-style front-end/back-end DTI and affordability headroom in one view.",
   "compound-interest-calculator": "Model long-term growth and compounding outcomes year by year.",
   "simple-interest-calculator": "Quickly estimate simple-interest returns for fixed-rate periods.",
   "inflation-calculator": "Project future price impact and loss of purchasing power over time.",
@@ -496,6 +608,65 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
         annualPropertyTaxRate: "1.3",
         annualHomeInsurance: "2100",
         monthlyHoa: "360",
+      },
+    },
+  ],
+  "debt-to-income-calculator": [
+    {
+      label: "Conservative household",
+      values: {
+        grossMonthlyIncome: "9000",
+        coBorrowerMonthlyIncome: "0",
+        otherMonthlyIncome: "500",
+        monthlyHousingPayment: "1900",
+        monthlyPropertyTax: "280",
+        monthlyInsuranceHoa: "180",
+        monthlyCarPayment: "320",
+        monthlyStudentLoanPayment: "140",
+        monthlyCreditCardPayments: "90",
+        monthlyPersonalLoanPayments: "0",
+        monthlyChildSupportAlimony: "0",
+        monthlyOtherDebts: "0",
+        targetFrontEndDti: "28",
+        targetBackEndDti: "36",
+      },
+    },
+    {
+      label: "Typical buyer profile",
+      values: {
+        grossMonthlyIncome: "8500",
+        coBorrowerMonthlyIncome: "1500",
+        otherMonthlyIncome: "0",
+        monthlyHousingPayment: "2500",
+        monthlyPropertyTax: "420",
+        monthlyInsuranceHoa: "260",
+        monthlyCarPayment: "520",
+        monthlyStudentLoanPayment: "240",
+        monthlyCreditCardPayments: "190",
+        monthlyPersonalLoanPayments: "120",
+        monthlyChildSupportAlimony: "0",
+        monthlyOtherDebts: "80",
+        targetFrontEndDti: "31",
+        targetBackEndDti: "43",
+      },
+    },
+    {
+      label: "High debt pressure",
+      values: {
+        grossMonthlyIncome: "7000",
+        coBorrowerMonthlyIncome: "0",
+        otherMonthlyIncome: "0",
+        monthlyHousingPayment: "2300",
+        monthlyPropertyTax: "320",
+        monthlyInsuranceHoa: "200",
+        monthlyCarPayment: "650",
+        monthlyStudentLoanPayment: "420",
+        monthlyCreditCardPayments: "380",
+        monthlyPersonalLoanPayments: "260",
+        monthlyChildSupportAlimony: "150",
+        monthlyOtherDebts: "120",
+        targetFrontEndDti: "28",
+        targetBackEndDti: "36",
       },
     },
   ],
@@ -634,6 +805,7 @@ const calculatorPresets: Record<CalculatorId, CalculatorPreset[]> = {
 const CALCULATORS_WITH_DISPLAY_CURRENCY = new Set<CalculatorId>([
   "loan-emi-calculator",
   "mortgage-calculator",
+  "debt-to-income-calculator",
   "compound-interest-calculator",
   "simple-interest-calculator",
   "inflation-calculator",
@@ -1426,13 +1598,505 @@ function resolveUrlFromBase(baseUrl: string, pathOrUrl: string): string | null {
   }
 }
 
+interface CalculatorScenarioSnapshot {
+  id: string;
+  label: string;
+  createdAt: number;
+  values: Record<string, string>;
+  currency: string;
+}
+
+type GoalDirection = "at-most" | "at-least";
+
+interface CalculatorGoalConfig {
+  metricLabel: string;
+  target: number;
+  direction: GoalDirection;
+  lastReachedAt: number | null;
+}
+
+interface CalculatorComparisonRow {
+  label: string;
+  values: string[];
+  deltas: Array<number | null>;
+}
+
+interface FinanceProfilePreset {
+  id: string;
+  label: string;
+  description: string;
+  values: Record<string, string>;
+}
+
+interface CalculatorFunnelLink {
+  id: CalculatorId;
+  label: string;
+  description: string;
+}
+
+const FINANCE_PROFILE_STORAGE_KEY = "utiliora-calculator-finance-profile-v1";
+
+const FINANCE_PROFILE_PRESETS: FinanceProfilePreset[] = [
+  {
+    id: "single",
+    label: "Single Professional",
+    description: "Balanced debt and savings assumptions for one income household.",
+    values: {
+      grossMonthlyIncome: "7000",
+      coBorrowerMonthlyIncome: "0",
+      otherMonthlyIncome: "0",
+      monthlyHousingPayment: "1800",
+      monthlyPropertyTax: "250",
+      monthlyInsuranceHoa: "150",
+      monthlyCarPayment: "280",
+      monthlyStudentLoanPayment: "180",
+      monthlyCreditCardPayments: "120",
+      monthlyPersonalLoanPayments: "0",
+      monthlyChildSupportAlimony: "0",
+      monthlyOtherDebts: "0",
+      annualSalary: "84000",
+      federalTaxRate: "18",
+      stateTaxRate: "5",
+      retirementPercent: "8",
+      monthlyBenefitsCost: "220",
+      targetMonthlyIncome: "5200",
+      monthlyExpenses: "1800",
+      billableHoursPerMonth: "80",
+      desiredProfitPercent: "20",
+      balance: "6500",
+      apr: "21.9",
+      monthlyPayment: "280",
+      targetAmount: "25000",
+      currentSavings: "4000",
+      years: "3",
+      annualReturn: "5",
+    },
+  },
+  {
+    id: "couple",
+    label: "Dual Income Couple",
+    description: "Two-income household with moderate recurring debt obligations.",
+    values: {
+      grossMonthlyIncome: "8500",
+      coBorrowerMonthlyIncome: "3200",
+      otherMonthlyIncome: "300",
+      monthlyHousingPayment: "2600",
+      monthlyPropertyTax: "420",
+      monthlyInsuranceHoa: "240",
+      monthlyCarPayment: "520",
+      monthlyStudentLoanPayment: "260",
+      monthlyCreditCardPayments: "190",
+      monthlyPersonalLoanPayments: "140",
+      monthlyChildSupportAlimony: "0",
+      monthlyOtherDebts: "100",
+      annualSalary: "142000",
+      federalTaxRate: "22",
+      stateTaxRate: "6",
+      retirementPercent: "10",
+      monthlyBenefitsCost: "420",
+      targetMonthlyIncome: "7800",
+      monthlyExpenses: "3200",
+      billableHoursPerMonth: "100",
+      desiredProfitPercent: "25",
+      balance: "9800",
+      apr: "19.5",
+      monthlyPayment: "420",
+      targetAmount: "60000",
+      currentSavings: "12000",
+      years: "5",
+      annualReturn: "5.5",
+    },
+  },
+  {
+    id: "family",
+    label: "Family Budget",
+    description: "Higher housing and childcare pressure with conservative debt targets.",
+    values: {
+      grossMonthlyIncome: "9200",
+      coBorrowerMonthlyIncome: "2800",
+      otherMonthlyIncome: "700",
+      monthlyHousingPayment: "3200",
+      monthlyPropertyTax: "520",
+      monthlyInsuranceHoa: "320",
+      monthlyCarPayment: "650",
+      monthlyStudentLoanPayment: "210",
+      monthlyCreditCardPayments: "260",
+      monthlyPersonalLoanPayments: "180",
+      monthlyChildSupportAlimony: "350",
+      monthlyOtherDebts: "170",
+      annualSalary: "165000",
+      federalTaxRate: "24",
+      stateTaxRate: "7",
+      retirementPercent: "9",
+      monthlyBenefitsCost: "560",
+      targetMonthlyIncome: "9600",
+      monthlyExpenses: "5200",
+      billableHoursPerMonth: "120",
+      desiredProfitPercent: "20",
+      balance: "14500",
+      apr: "20.5",
+      monthlyPayment: "560",
+      targetAmount: "90000",
+      currentSavings: "18000",
+      years: "6",
+      annualReturn: "5",
+    },
+  },
+  {
+    id: "business",
+    label: "Small Business Operator",
+    description: "Owner-operator profile with variable cash flow and stronger margin targets.",
+    values: {
+      grossMonthlyIncome: "11000",
+      coBorrowerMonthlyIncome: "0",
+      otherMonthlyIncome: "1800",
+      monthlyHousingPayment: "2800",
+      monthlyPropertyTax: "380",
+      monthlyInsuranceHoa: "220",
+      monthlyCarPayment: "540",
+      monthlyStudentLoanPayment: "0",
+      monthlyCreditCardPayments: "310",
+      monthlyPersonalLoanPayments: "450",
+      monthlyChildSupportAlimony: "0",
+      monthlyOtherDebts: "240",
+      annualSalary: "132000",
+      federalTaxRate: "24",
+      stateTaxRate: "5",
+      retirementPercent: "12",
+      monthlyBenefitsCost: "300",
+      targetMonthlyIncome: "12000",
+      monthlyExpenses: "4800",
+      billableHoursPerMonth: "90",
+      desiredProfitPercent: "30",
+      balance: "21000",
+      apr: "23.5",
+      monthlyPayment: "900",
+      targetAmount: "120000",
+      currentSavings: "25000",
+      years: "5",
+      annualReturn: "6",
+    },
+  },
+];
+
+const FINANCE_CALCULATORS = new Set<CalculatorId>([
+  "loan-emi-calculator",
+  "mortgage-calculator",
+  "debt-to-income-calculator",
+  "compound-interest-calculator",
+  "simple-interest-calculator",
+  "inflation-calculator",
+  "currency-converter-calculator",
+  "crypto-profit-calculator",
+  "credit-card-payoff-calculator",
+  "salary-after-tax-calculator",
+  "roi-calculator",
+  "profit-margin-calculator",
+  "markup-calculator",
+  "vat-calculator",
+  "savings-goal-calculator",
+  "break-even-calculator",
+  "startup-cost-estimator",
+  "freelance-rate-calculator",
+]);
+
+const CALCULATOR_FUNNEL_LINKS: Partial<Record<CalculatorId, CalculatorFunnelLink[]>> = {
+  "loan-emi-calculator": [
+    {
+      id: "debt-to-income-calculator",
+      label: "Check DTI impact",
+      description: "See whether this loan payment keeps your debt ratios lender-friendly.",
+    },
+    {
+      id: "mortgage-calculator",
+      label: "Move to mortgage plan",
+      description: "Model full home-payment structure with taxes, insurance, and HOA.",
+    },
+    {
+      id: "credit-card-payoff-calculator",
+      label: "Optimize debt stack",
+      description: "Reallocate cash flow to reduce high-interest debt first.",
+    },
+  ],
+  "mortgage-calculator": [
+    {
+      id: "debt-to-income-calculator",
+      label: "Qualify this payment",
+      description: "Push your mortgage assumptions into DTI to test eligibility.",
+    },
+    {
+      id: "savings-goal-calculator",
+      label: "Plan down payment",
+      description: "Create a timeline to build your down-payment target.",
+    },
+  ],
+  "debt-to-income-calculator": [
+    {
+      id: "mortgage-calculator",
+      label: "Convert to home budget",
+      description: "Use DTI results to build a workable housing payment scenario.",
+    },
+    {
+      id: "loan-emi-calculator",
+      label: "Estimate new-loan EMI",
+      description: "Simulate additional debt before taking a loan offer.",
+    },
+    {
+      id: "credit-card-payoff-calculator",
+      label: "Reduce DTI faster",
+      description: "Plan a card-payoff strategy to improve your back-end DTI.",
+    },
+  ],
+  "credit-card-payoff-calculator": [
+    {
+      id: "debt-to-income-calculator",
+      label: "Track DTI improvement",
+      description: "See how credit-card payment changes can improve qualification odds.",
+    },
+    {
+      id: "savings-goal-calculator",
+      label: "Rebuild reserves",
+      description: "Create an emergency-fund plan after debt cleanup.",
+    },
+  ],
+  "salary-after-tax-calculator": [
+    {
+      id: "savings-goal-calculator",
+      label: "Allocate take-home",
+      description: "Turn your net monthly pay into a concrete savings timeline.",
+    },
+    {
+      id: "debt-to-income-calculator",
+      label: "Measure affordability",
+      description: "Convert income assumptions into lender-style debt ratios.",
+    },
+  ],
+};
+
+function sanitizeScenarioLabel(value: string): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, 60);
+}
+
+function parseDisplayNumber(value: string): number | null {
+  const normalized = value.replace(/,/g, "");
+  const matches = normalized.match(/-?\d+(\.\d+)?/g);
+  if (!matches?.length) return null;
+  const parsed = Number(matches[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getRowNumericValue(rows: ResultRow[], label: string): number | null {
+  const row = rows.find((entry) => entry.label === label);
+  if (!row) return null;
+  return parseDisplayNumber(row.value);
+}
+
+function estimateMonthlyPayment(principal: number, annualRate: number, months: number): number {
+  const safePrincipal = Math.max(0, principal);
+  const safeMonths = Math.max(1, Math.round(months));
+  const monthlyRate = Math.max(0, annualRate) / 1200;
+  if (monthlyRate === 0) return safePrincipal / safeMonths;
+  const factor = Math.pow(1 + monthlyRate, safeMonths);
+  return (safePrincipal * monthlyRate * factor) / (factor - 1);
+}
+
+function buildFunnelPrefillValues(
+  sourceId: CalculatorId,
+  targetId: CalculatorId,
+  values: Record<string, string>,
+): Record<string, string> | null {
+  if (sourceId === "mortgage-calculator" && targetId === "debt-to-income-calculator") {
+    const homePrice = Math.max(0, safeNumberValue(values.homePrice));
+    const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+    const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+    const years = Math.max(1, safeNumberValue(values.years));
+    const annualPropertyTaxRate = Math.max(0, safeNumberValue(values.annualPropertyTaxRate));
+    const annualHomeInsurance = Math.max(0, safeNumberValue(values.annualHomeInsurance));
+    const monthlyHoa = Math.max(0, safeNumberValue(values.monthlyHoa));
+    const principal = Math.max(0, homePrice - downPayment);
+    const monthlyHousingPayment = estimateMonthlyPayment(principal, annualRate, years * 12);
+    const monthlyPropertyTax = (homePrice * (annualPropertyTaxRate / 100)) / 12;
+    const monthlyInsuranceHoa = annualHomeInsurance / 12 + monthlyHoa;
+    return {
+      monthlyHousingPayment: monthlyHousingPayment.toFixed(2),
+      monthlyPropertyTax: monthlyPropertyTax.toFixed(2),
+      monthlyInsuranceHoa: monthlyInsuranceHoa.toFixed(2),
+    };
+  }
+
+  if (sourceId === "loan-emi-calculator" && targetId === "debt-to-income-calculator") {
+    const principal = Math.max(0, safeNumberValue(values.principal));
+    const annualRate = Math.max(0, safeNumberValue(values.annualRate));
+    const months = Math.max(1, safeNumberValue(values.months));
+    const emi = estimateMonthlyPayment(principal, annualRate, months);
+    return { monthlyPersonalLoanPayments: emi.toFixed(2) };
+  }
+
+  if (sourceId === "credit-card-payoff-calculator" && targetId === "debt-to-income-calculator") {
+    return {
+      monthlyCreditCardPayments: Math.max(0, safeNumberValue(values.monthlyPayment)).toFixed(2),
+    };
+  }
+
+  if (sourceId === "debt-to-income-calculator" && targetId === "credit-card-payoff-calculator") {
+    return {
+      monthlyPayment: Math.max(25, safeNumberValue(values.monthlyCreditCardPayments)).toFixed(0),
+      apr: "21.9",
+    };
+  }
+
+  if (sourceId === "debt-to-income-calculator" && targetId === "mortgage-calculator") {
+    const monthlyHousing = Math.max(
+      0,
+      safeNumberValue(values.monthlyHousingPayment) +
+        safeNumberValue(values.monthlyPropertyTax) +
+        safeNumberValue(values.monthlyInsuranceHoa),
+    );
+    const suggestedHomePrice = monthlyHousing > 0 ? monthlyHousing * 200 : 350000;
+    return {
+      homePrice: Math.round(suggestedHomePrice).toString(),
+      downPayment: Math.round(suggestedHomePrice * 0.2).toString(),
+      annualRate: "6.5",
+      years: "30",
+      annualPropertyTaxRate: "1.2",
+      annualHomeInsurance: "1800",
+      monthlyHoa: "0",
+    };
+  }
+
+  if (sourceId === "salary-after-tax-calculator" && targetId === "savings-goal-calculator") {
+    const annualSalary = Math.max(0, safeNumberValue(values.annualSalary));
+    const federalTaxRate = Math.max(0, safeNumberValue(values.federalTaxRate));
+    const stateTaxRate = Math.max(0, safeNumberValue(values.stateTaxRate));
+    const retirementPercent = Math.max(0, safeNumberValue(values.retirementPercent));
+    const monthlyBenefitsCost = Math.max(0, safeNumberValue(values.monthlyBenefitsCost));
+    const grossMonthly = annualSalary / 12;
+    const monthlyTaxes = grossMonthly * ((federalTaxRate + stateTaxRate) / 100);
+    const monthlyRetirement = grossMonthly * (retirementPercent / 100);
+    const netMonthly = grossMonthly - monthlyTaxes - monthlyRetirement - monthlyBenefitsCost;
+    const targetMonthlySavings = Math.max(0, netMonthly * 0.2);
+    return {
+      targetAmount: Math.round(targetMonthlySavings * 36).toString(),
+      currentSavings: "0",
+      years: "3",
+      annualReturn: "5",
+    };
+  }
+
+  return null;
+}
+
+function buildSmartActionPlan(
+  id: CalculatorId,
+  values: Record<string, string>,
+  resultRows: ResultRow[],
+  currency: string,
+): string[] {
+  const formatMoney = (value: number) => formatCurrencyWithCode(value, currency);
+  const plans: string[] = [];
+
+  if (id === "debt-to-income-calculator") {
+    const backEnd = getRowNumericValue(resultRows, "Back-end DTI (Total)") ?? 0;
+    const targetBack = Math.max(0, safeNumberValue(values.targetBackEndDti));
+    const debtReductionNeeded = getRowNumericValue(resultRows, "Debt Reduction Needed");
+    const additionalCapacity = getRowNumericValue(resultRows, "Additional Debt Capacity");
+    if (backEnd > targetBack) {
+      plans.push(
+        debtReductionNeeded !== null
+          ? `Cut recurring debt by about ${formatMoney(debtReductionNeeded)} per month to reach your target back-end DTI.`
+          : "Reduce recurring debt payments and avoid taking new debt until back-end DTI drops below target.",
+      );
+      plans.push("Attack credit-card minimums first, then personal loans, to unlock DTI headroom quickly.");
+    } else {
+      plans.push(
+        additionalCapacity !== null
+          ? `You still have about ${formatMoney(additionalCapacity)} monthly debt capacity under your target ratio.`
+          : "Your current debt load is within target. Preserve this margin by limiting discretionary debt.",
+      );
+      plans.push("Keep total housing + debt fixed even if income rises, and direct the difference to reserves.");
+    }
+    return plans;
+  }
+
+  if (id === "credit-card-payoff-calculator") {
+    const balance = Math.max(0, safeNumberValue(values.balance));
+    const apr = Math.max(0, safeNumberValue(values.apr));
+    const monthlyPayment = Math.max(1, safeNumberValue(values.monthlyPayment));
+    const monthlyInterest = balance * (apr / 1200);
+    const paymentPlusTen = monthlyPayment * 1.1;
+    plans.push(
+      `Increase payment from ${formatMoney(monthlyPayment)} to ${formatMoney(paymentPlusTen)} to shorten payoff and reduce interest drag.`,
+    );
+    plans.push(
+      `Current first-month interest is about ${formatMoney(monthlyInterest)}; keep autopay above this level to keep principal shrinking.`,
+    );
+    return plans;
+  }
+
+  if (id === "loan-emi-calculator") {
+    const principal = Math.max(0, safeNumberValue(values.principal));
+    const months = Math.max(1, Math.round(safeNumberValue(values.months)));
+    const extraPrincipal = Math.max(25, principal * 0.0025);
+    plans.push(`Add ${formatMoney(extraPrincipal)} monthly toward principal to compress term and total interest.`);
+    plans.push(`Before refinancing, compare your current tenor (${months} months) against a shorter term at similar EMI.`);
+    return plans;
+  }
+
+  if (id === "mortgage-calculator") {
+    const homePrice = Math.max(0, safeNumberValue(values.homePrice));
+    const downPayment = Math.max(0, safeNumberValue(values.downPayment));
+    const targetDown = homePrice * 0.2;
+    const downGap = Math.max(0, targetDown - downPayment);
+    plans.push(
+      downGap > 0
+        ? `Increase down payment by about ${formatMoney(downGap)} to approach 20% and improve loan terms.`
+        : "Your down payment is near or above 20%; focus next on total housing payment and emergency reserves.",
+    );
+    plans.push("Pressure-test housing cost at +1% rate to ensure affordability before committing.");
+    return plans;
+  }
+
+  if (id === "savings-goal-calculator") {
+    const requiredMonthly = getRowNumericValue(resultRows, "Required Monthly Savings") ?? 0;
+    plans.push(
+      `Automate at least ${formatMoney(requiredMonthly)} monthly to stay on track; run a second scenario with +10% contribution.`,
+    );
+    plans.push("Review progress monthly and redirect windfalls to this goal instead of extending timeline.");
+    return plans;
+  }
+
+  if (id === "salary-after-tax-calculator") {
+    const monthlyTakeHome = getRowNumericValue(resultRows, "Net Monthly Take-home") ?? 0;
+    const monthlySavingsTarget = monthlyTakeHome * 0.2;
+    plans.push(`Allocate ${formatMoney(monthlySavingsTarget)} (20% of monthly take-home) to savings/investment buckets first.`);
+    plans.push("When pay increases, keep lifestyle fixed for one quarter and route the delta to debt and reserves.");
+    return plans;
+  }
+
+  if (id === "freelance-rate-calculator") {
+    const hourlyRate = getRowNumericValue(resultRows, "Target Hourly Rate") ?? 0;
+    plans.push(`Quote at least ${formatMoney(hourlyRate)} hourly and include a revision cap in contracts.`);
+    plans.push("Track non-billable hours weekly; if they exceed 30%, raise rates or narrow scope.");
+    return plans;
+  }
+
+  return [
+    "Save 2-3 scenarios and compare outcomes before making final decisions.",
+    "Translate your preferred outcome into a monthly target and track it as a goal in this workspace.",
+  ];
+}
+
 function CalculatorTool({ id }: { id: CalculatorId }) {
   const fields = calculatorFields[id];
   const supportsDisplayCurrency = CALCULATORS_WITH_DISPLAY_CURRENCY.has(id);
+  const isFinanceCalculator = FINANCE_CALCULATORS.has(id);
   const defaultValues = useMemo(() => Object.fromEntries(fields.map((field) => [field.name, field.defaultValue])), [fields]);
   const storageKey = `utiliora-calculator-values-${id}`;
   const autoModeKey = `utiliora-calculator-auto-${id}`;
   const currencyStorageKey = `utiliora-calculator-currency-${id}`;
+  const scenarioStorageKey = `utiliora-calculator-scenarios-${id}`;
+  const comparisonStorageKey = `utiliora-calculator-compare-${id}`;
+  const goalStorageKey = `utiliora-calculator-goal-${id}`;
   const isCurrencyConverter = id === "currency-converter-calculator";
   const [values, setValues] = useState<Record<string, string>>(defaultValues);
   const [selectedCurrency, setSelectedCurrency] = useState("USD");
@@ -1444,6 +2108,14 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
   const [showFullTable, setShowFullTable] = useState(false);
   const [rateStatus, setRateStatus] = useState("");
   const [rateMeta, setRateMeta] = useState<{ source: string; date: string } | null>(null);
+  const [scenarioName, setScenarioName] = useState("");
+  const [scenarios, setScenarios] = useState<CalculatorScenarioSnapshot[]>([]);
+  const [comparisonScenarioIds, setComparisonScenarioIds] = useState<string[]>([]);
+  const [goalConfig, setGoalConfig] = useState<CalculatorGoalConfig | null>(null);
+  const [goalMetricLabel, setGoalMetricLabel] = useState("");
+  const [goalTarget, setGoalTarget] = useState("");
+  const [goalDirection, setGoalDirection] = useState<GoalDirection>("at-most");
+  const [selectedFinanceProfileId, setSelectedFinanceProfileId] = useState(FINANCE_PROFILE_PRESETS[0]?.id ?? "single");
   const presets = calculatorPresets[id] ?? [];
   const formatCalculatorCurrency = useCallback(
     (amount: number) => formatCurrencyValue(amount, selectedCurrency),
@@ -1466,6 +2138,18 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     });
   }, [currencySelectOptions, fields, isCurrencyConverter]);
 
+  const activeFinanceProfile = useMemo(
+    () => FINANCE_PROFILE_PRESETS.find((profile) => profile.id === selectedFinanceProfileId) ?? FINANCE_PROFILE_PRESETS[0],
+    [selectedFinanceProfileId],
+  );
+
+  const smartActionPlan = useMemo(
+    () => buildSmartActionPlan(id, values, resultRows, selectedCurrency),
+    [id, resultRows, selectedCurrency, values],
+  );
+
+  const funnelLinks = CALCULATOR_FUNNEL_LINKS[id] ?? [];
+
   useEffect(() => {
     setValues(defaultValues);
     setSelectedCurrency("USD");
@@ -1473,6 +2157,13 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     setShowFullTable(false);
     setRateStatus("");
     setRateMeta(null);
+    setScenarioName("");
+    setScenarios([]);
+    setComparisonScenarioIds([]);
+    setGoalConfig(null);
+    setGoalMetricLabel("");
+    setGoalTarget("");
+    setGoalDirection("at-most");
   }, [defaultValues, id]);
 
   useEffect(() => {
@@ -1540,6 +2231,77 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
 
   useEffect(() => {
     try {
+      const savedProfileId = localStorage.getItem(FINANCE_PROFILE_STORAGE_KEY);
+      if (!savedProfileId) return;
+      if (FINANCE_PROFILE_PRESETS.some((entry) => entry.id === savedProfileId)) {
+        setSelectedFinanceProfileId(savedProfileId);
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FINANCE_PROFILE_STORAGE_KEY, selectedFinanceProfileId);
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [selectedFinanceProfileId]);
+
+  useEffect(() => {
+    try {
+      const savedScenarios = localStorage.getItem(scenarioStorageKey);
+      const parsedScenarios = savedScenarios ? (JSON.parse(savedScenarios) as CalculatorScenarioSnapshot[]) : [];
+      const normalizedScenarios = Array.isArray(parsedScenarios)
+        ? parsedScenarios
+            .filter((entry) => entry && typeof entry.id === "string" && typeof entry.label === "string")
+            .slice(0, 30)
+        : [];
+      setScenarios(normalizedScenarios);
+
+      const savedComparisonIds = localStorage.getItem(comparisonStorageKey);
+      const parsedComparisonIds = savedComparisonIds ? (JSON.parse(savedComparisonIds) as string[]) : [];
+      const allowedIds = new Set(normalizedScenarios.map((entry) => entry.id));
+      const normalizedComparisonIds = Array.isArray(parsedComparisonIds)
+        ? parsedComparisonIds.filter((entry) => typeof entry === "string" && allowedIds.has(entry)).slice(0, 2)
+        : [];
+      setComparisonScenarioIds(normalizedComparisonIds);
+
+      const savedGoal = localStorage.getItem(goalStorageKey);
+      if (!savedGoal) {
+        setGoalConfig(null);
+        return;
+      }
+      const parsedGoal = JSON.parse(savedGoal) as Partial<CalculatorGoalConfig>;
+      if (
+        typeof parsedGoal.metricLabel !== "string" ||
+        typeof parsedGoal.target !== "number" ||
+        !Number.isFinite(parsedGoal.target) ||
+        (parsedGoal.direction !== "at-most" && parsedGoal.direction !== "at-least")
+      ) {
+        setGoalConfig(null);
+        return;
+      }
+      const normalizedGoal: CalculatorGoalConfig = {
+        metricLabel: parsedGoal.metricLabel,
+        target: parsedGoal.target,
+        direction: parsedGoal.direction,
+        lastReachedAt: typeof parsedGoal.lastReachedAt === "number" ? parsedGoal.lastReachedAt : null,
+      };
+      setGoalConfig(normalizedGoal);
+      setGoalMetricLabel(normalizedGoal.metricLabel);
+      setGoalTarget(normalizedGoal.target.toString());
+      setGoalDirection(normalizedGoal.direction);
+    } catch {
+      setScenarios([]);
+      setComparisonScenarioIds([]);
+      setGoalConfig(null);
+    }
+  }, [comparisonStorageKey, goalStorageKey, scenarioStorageKey]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(storageKey, JSON.stringify(values));
       localStorage.setItem(autoModeKey, autoCalculate ? "true" : "false");
       localStorage.setItem(currencyStorageKey, selectedCurrency);
@@ -1547,6 +2309,40 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
       // Ignore storage failures.
     }
   }, [autoCalculate, autoModeKey, currencyStorageKey, selectedCurrency, storageKey, values]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(scenarioStorageKey, JSON.stringify(scenarios.slice(0, 30)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [scenarioStorageKey, scenarios]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(comparisonStorageKey, JSON.stringify(comparisonScenarioIds.slice(0, 2)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [comparisonScenarioIds, comparisonStorageKey]);
+
+  useEffect(() => {
+    try {
+      if (!goalConfig) {
+        localStorage.removeItem(goalStorageKey);
+        return;
+      }
+      localStorage.setItem(goalStorageKey, JSON.stringify(goalConfig));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [goalConfig, goalStorageKey]);
+
+  useEffect(() => {
+    if (goalMetricLabel && resultRows.some((row) => row.label === goalMetricLabel)) return;
+    if (!resultRows.length) return;
+    setGoalMetricLabel(resultRows[0].label);
+  }, [goalMetricLabel, resultRows]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1713,6 +2509,106 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     }
   }, [autoCalculate, calculate, id, isCurrencyConverter, values]);
 
+  const applyFinanceProfile = useCallback(() => {
+    const profile = FINANCE_PROFILE_PRESETS.find((entry) => entry.id === selectedFinanceProfileId);
+    if (!profile) {
+      setCopyStatus("Selected profile was not found.");
+      return;
+    }
+    const fieldNameSet = new Set(fields.map((field) => field.name));
+    const entries = Object.entries(profile.values).filter(([name]) => fieldNameSet.has(name));
+    if (!entries.length) {
+      setCopyStatus(`${profile.label} has no mapped fields for this calculator.`);
+      return;
+    }
+    const mappedValues = Object.fromEntries(entries);
+    const nextValues = { ...values, ...mappedValues };
+    setValues(nextValues);
+    setCopyStatus(`Applied ${profile.label} profile (${entries.length} mapped fields).`);
+    trackEvent("calculator_profile_apply", { tool: id, profile: profile.id, mappedFields: entries.length });
+    if (!autoCalculate) {
+      calculate("preset", nextValues);
+    }
+  }, [autoCalculate, calculate, fields, id, selectedFinanceProfileId, values]);
+
+  const saveScenarioToVault = useCallback(() => {
+    const label = sanitizeScenarioLabel(scenarioName) || `Scenario ${scenarios.length + 1}`;
+    const snapshot: CalculatorScenarioSnapshot = {
+      id: crypto.randomUUID(),
+      label,
+      createdAt: Date.now(),
+      values: { ...values },
+      currency: selectedCurrency,
+    };
+    setScenarios((current) => [snapshot, ...current].slice(0, 30));
+    setScenarioName("");
+    setCopyStatus(`Saved scenario "${label}".`);
+    trackEvent("calculator_scenario_save", { tool: id });
+  }, [id, scenarioName, scenarios.length, selectedCurrency, values]);
+
+  const applyScenarioFromVault = useCallback(
+    (scenario: CalculatorScenarioSnapshot) => {
+      const nextValues = { ...defaultValues, ...scenario.values };
+      const nextCurrency = sanitizeCalculatorCurrencyCode(scenario.currency || selectedCurrency);
+      setValues(nextValues);
+      setSelectedCurrency(nextCurrency);
+      setCopyStatus(`Loaded scenario "${scenario.label}".`);
+      trackEvent("calculator_scenario_apply", { tool: id });
+      if (!autoCalculate) {
+        setResultRows(runCalculator(id, nextValues, { currency: nextCurrency }));
+      }
+    },
+    [autoCalculate, defaultValues, id, selectedCurrency],
+  );
+
+  const removeScenarioFromVault = useCallback((scenarioId: string) => {
+    setScenarios((current) => current.filter((entry) => entry.id !== scenarioId));
+    setComparisonScenarioIds((current) => current.filter((entry) => entry !== scenarioId));
+    trackEvent("calculator_scenario_delete", { tool: id });
+  }, [id]);
+
+  const toggleScenarioComparison = useCallback(
+    (scenarioId: string) => {
+      if (comparisonScenarioIds.includes(scenarioId)) {
+        setComparisonScenarioIds((current) => current.filter((entry) => entry !== scenarioId));
+        return;
+      }
+      if (comparisonScenarioIds.length >= 2) {
+        setCopyStatus("Compare mode supports 2 saved scenarios plus your current inputs.");
+        return;
+      }
+      setComparisonScenarioIds((current) => [...current, scenarioId]);
+    },
+    [comparisonScenarioIds],
+  );
+
+  const openFunnelCalculator = useCallback(
+    (targetId: CalculatorId, withCarryOver: boolean) => {
+      let route = `/calculators/${targetId}`;
+      if (withCarryOver) {
+        const targetDefaults = Object.fromEntries(
+          (calculatorFields[targetId] ?? []).map((field) => [field.name, field.defaultValue]),
+        );
+        const overlappingValues = Object.fromEntries(
+          Object.entries(values).filter(([name]) => Object.prototype.hasOwnProperty.call(targetDefaults, name)),
+        );
+        const prefillValues = buildFunnelPrefillValues(id, targetId, values) ?? {};
+        const nextValues = { ...targetDefaults, ...overlappingValues, ...prefillValues };
+        const encodedState = encodeBase64Url(
+          JSON.stringify({
+            values: nextValues,
+            currency: selectedCurrency,
+            autoCalculate: true,
+          }),
+        );
+        route = `${route}?state=${encodeURIComponent(encodedState)}`;
+      }
+      trackEvent("calculator_funnel_open", { tool: id, target: targetId, carryOver: withCarryOver ? "yes" : "no" });
+      window.location.assign(route);
+    },
+    [id, selectedCurrency, values],
+  );
+
   const insights = useMemo(
     () => getCalculatorInsights(id, values, { currency: selectedCurrency }),
     [id, selectedCurrency, values],
@@ -1743,6 +2639,94 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
     () => (id === "break-even-calculator" ? getBreakEvenScenarios(values) : []),
     [id, values],
   );
+  const dtiAffordabilityScenarios = useMemo(
+    () => (id === "debt-to-income-calculator" ? getDtiAffordabilityScenarios(values) : []),
+    [id, values],
+  );
+
+  const selectedComparisonScenarios = useMemo(
+    () =>
+      comparisonScenarioIds
+        .map((scenarioId) => scenarios.find((entry) => entry.id === scenarioId) ?? null)
+        .filter((entry): entry is CalculatorScenarioSnapshot => entry !== null),
+    [comparisonScenarioIds, scenarios],
+  );
+
+  const comparisonColumns = useMemo(() => {
+    const columns = [
+      {
+        id: "__current__",
+        label: "Current",
+        rows: runCalculator(id, values, { currency: selectedCurrency }),
+      },
+      ...selectedComparisonScenarios.map((scenario) => ({
+        id: scenario.id,
+        label: scenario.label,
+        rows: runCalculator(id, scenario.values, { currency: selectedCurrency }),
+      })),
+    ];
+    return columns.slice(0, 3);
+  }, [id, selectedComparisonScenarios, selectedCurrency, values]);
+
+  const comparisonRows = useMemo<CalculatorComparisonRow[]>(() => {
+    if (comparisonColumns.length < 2) return [];
+    const labels = new Set<string>();
+    comparisonColumns.forEach((column) => {
+      column.rows.forEach((row) => labels.add(row.label));
+    });
+
+    return [...labels].map((label) => {
+      const valuesByColumn = comparisonColumns.map((column) => column.rows.find((row) => row.label === label)?.value ?? "—");
+      const baseline = parseDisplayNumber(valuesByColumn[0]);
+      const deltas = valuesByColumn.map((value, index) => {
+        if (index === 0 || baseline === null) return null;
+        const currentValue = parseDisplayNumber(value);
+        return currentValue === null ? null : currentValue - baseline;
+      });
+      return {
+        label,
+        values: valuesByColumn,
+        deltas,
+      };
+    });
+  }, [comparisonColumns]);
+
+  const goalEvaluation = useMemo(() => {
+    if (!goalConfig) return null;
+    const row = resultRows.find((entry) => entry.label === goalConfig.metricLabel);
+    if (!row) {
+      return {
+        isValid: false,
+        isReached: false,
+        currentValue: null as number | null,
+        delta: null as number | null,
+      };
+    }
+    const currentValue = parseDisplayNumber(row.value);
+    if (currentValue === null) {
+      return {
+        isValid: false,
+        isReached: false,
+        currentValue: null as number | null,
+        delta: null as number | null,
+      };
+    }
+    const delta = goalConfig.direction === "at-most" ? currentValue - goalConfig.target : goalConfig.target - currentValue;
+    return {
+      isValid: true,
+      isReached: delta <= 0,
+      currentValue,
+      delta,
+    };
+  }, [goalConfig, resultRows]);
+
+  useEffect(() => {
+    if (!goalConfig || !goalEvaluation?.isReached || goalConfig.lastReachedAt) return;
+    setGoalConfig((current) =>
+      current ? { ...current, lastReachedAt: Date.now() } : current,
+    );
+    trackEvent("calculator_goal_reached", { tool: id, metric: goalConfig.metricLabel });
+  }, [goalConfig, goalEvaluation, id]);
 
   const visibleLoanRows = showFullTable ? loanSchedule : loanSchedule.slice(0, 24);
 
@@ -1770,6 +2754,31 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
               {preset.label}
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {isFinanceCalculator && activeFinanceProfile ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Reusable finance profile</h3>
+            <button className="action-button secondary" type="button" onClick={applyFinanceProfile}>
+              <Sparkles size={15} />
+              Apply profile
+            </button>
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>Profile</span>
+              <select value={selectedFinanceProfileId} onChange={(event) => setSelectedFinanceProfileId(event.target.value)}>
+                {FINANCE_PROFILE_PRESETS.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="supporting-text">{activeFinanceProfile.description}</p>
         </div>
       ) : null}
 
@@ -1928,6 +2937,189 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
       <ResultList rows={resultRows} />
 
       <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Goal tracker</h3>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                const parsedTarget = Number(goalTarget);
+                if (!goalMetricLabel || !Number.isFinite(parsedTarget)) {
+                  setCopyStatus("Choose a metric and a numeric goal target first.");
+                  return;
+                }
+                const nextGoal: CalculatorGoalConfig = {
+                  metricLabel: goalMetricLabel,
+                  target: parsedTarget,
+                  direction: goalDirection,
+                  lastReachedAt: null,
+                };
+                setGoalConfig(nextGoal);
+                setCopyStatus(`Goal saved for "${goalMetricLabel}".`);
+                trackEvent("calculator_goal_save", { tool: id, metric: goalMetricLabel, direction: goalDirection });
+              }}
+            >
+              Save goal
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setGoalConfig(null);
+                setGoalTarget("");
+                setCopyStatus("Goal cleared.");
+              }}
+            >
+              Clear goal
+            </button>
+          </div>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Metric</span>
+            <select value={goalMetricLabel} onChange={(event) => setGoalMetricLabel(event.target.value)}>
+              {resultRows.map((row) => (
+                <option key={row.label} value={row.label}>
+                  {row.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Target value</span>
+            <input type="number" value={goalTarget} onChange={(event) => setGoalTarget(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Target direction</span>
+            <select value={goalDirection} onChange={(event) => setGoalDirection(event.target.value as GoalDirection)}>
+              <option value="at-most">Current value should be at most target</option>
+              <option value="at-least">Current value should be at least target</option>
+            </select>
+          </label>
+        </div>
+        {goalConfig && goalEvaluation ? (
+          <p className="supporting-text">
+            {goalEvaluation.isValid
+              ? `${goalEvaluation.isReached ? "Goal reached" : "Goal not reached"} | Current: ${
+                  resultRows.find((row) => row.label === goalConfig.metricLabel)?.value ?? "--"
+                } | Target: ${goalConfig.target} | Delta: ${
+                  goalEvaluation.delta !== null ? formatNumericValue(Math.abs(goalEvaluation.delta)) : "--"
+                }${goalConfig.lastReachedAt ? ` | Last reached: ${new Date(goalConfig.lastReachedAt).toLocaleString()}` : ""}`
+              : "Selected goal metric is not numeric for this calculator output."}
+          </p>
+        ) : (
+          <p className="supporting-text">Set one measurable target to keep this calculator outcome on track.</p>
+        )}
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Scenario vault</h3>
+          <button className="action-button secondary" type="button" onClick={saveScenarioToVault}>
+            <Plus size={15} />
+            Save current scenario
+          </button>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Scenario label</span>
+            <input
+              type="text"
+              value={scenarioName}
+              onChange={(event) => setScenarioName(event.target.value)}
+              placeholder="e.g., Aggressive payoff plan"
+            />
+          </label>
+        </div>
+        {scenarios.length ? (
+          <ul className="plain-list">
+            {scenarios.slice(0, 12).map((scenario) => (
+              <li key={scenario.id}>
+                <strong>{scenario.label}</strong> ({new Date(scenario.createdAt).toLocaleDateString()})
+                <div className="button-row">
+                  <button className="action-button secondary" type="button" onClick={() => applyScenarioFromVault(scenario)}>
+                    Load
+                  </button>
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => toggleScenarioComparison(scenario.id)}
+                  >
+                    {comparisonScenarioIds.includes(scenario.id) ? "Remove from compare" : "Add to compare"}
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={() => removeScenarioFromVault(scenario.id)}>
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="supporting-text">No saved scenarios yet. Save your current setup to build your comparison vault.</p>
+        )}
+      </div>
+
+      {comparisonRows.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Compare mode (A/B/C)</h3>
+          <p className="supporting-text">Current scenario is baseline. Add up to two saved scenarios to compare against it.</p>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  {comparisonColumns.map((column) => (
+                    <th key={column.id}>{column.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {comparisonRows.map((row) => (
+                  <tr key={row.label}>
+                    <td>{row.label}</td>
+                    {row.values.map((value, valueIndex) => (
+                      <td key={`${row.label}-${valueIndex}`}>
+                        <div>{value}</div>
+                        {valueIndex > 0 && row.deltas[valueIndex] !== null ? (
+                          <small className="supporting-text">
+                            Δ {row.deltas[valueIndex]! >= 0 ? "+" : ""}
+                            {formatNumericValue(row.deltas[valueIndex] ?? 0)}
+                          </small>
+                        ) : null}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Smart action plan</h3>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={async () => {
+              const ok = await copyTextToClipboard(smartActionPlan.map((entry, index) => `${index + 1}. ${entry}`).join("\n"));
+              setCopyStatus(ok ? "Action plan copied." : "Nothing to copy.");
+            }}
+          >
+            <Copy size={15} />
+            Copy plan
+          </button>
+        </div>
+        <ul className="plain-list">
+          {smartActionPlan.map((plan) => (
+            <li key={plan}>{plan}</li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="mini-panel">
         <h3 className="mini-heading">
           <Sparkles size={15} />
           Insights
@@ -1938,6 +3130,27 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
           ))}
         </ul>
       </div>
+
+      {funnelLinks.length ? (
+        <div className="mini-panel">
+          <h3>Funnel navigation</h3>
+          <ul className="plain-list">
+            {funnelLinks.map((link) => (
+              <li key={`${id}-${link.id}-${link.label}`}>
+                <strong>{link.label}</strong>: {link.description}
+                <div className="button-row">
+                  <button className="action-button secondary" type="button" onClick={() => openFunnelCalculator(link.id, false)}>
+                    Open {link.id}
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={() => openFunnelCalculator(link.id, true)}>
+                    Open with carry-over
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {(id === "loan-emi-calculator" || id === "mortgage-calculator") && loanSchedule.length > 0 ? (
         <div className="mini-panel">
@@ -2122,6 +3335,67 @@ function CalculatorTool({ id }: { id: CalculatorId }) {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {id === "debt-to-income-calculator" && dtiAffordabilityScenarios.length > 0 ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>DTI affordability scenarios</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                downloadCsv(
+                  "dti-affordability-scenarios.csv",
+                  ["Scenario", "Front-end limit", "Back-end limit", "Max housing payment", "Max total debt", "Headroom", "Constraint"],
+                  dtiAffordabilityScenarios.map((row) => [
+                    row.label,
+                    `${row.frontEndLimit}%`,
+                    `${row.backEndLimit}%`,
+                    row.maxHousingPayment.toFixed(2),
+                    row.maxTotalDebt.toFixed(2),
+                    row.headroom.toFixed(2),
+                    row.constraint,
+                  ]),
+                )
+              }
+            >
+              <Download size={15} />
+              CSV
+            </button>
+          </div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Scenario</th>
+                  <th>Limits (Front/Back)</th>
+                  <th>Max Housing Payment</th>
+                  <th>Max Total Debt</th>
+                  <th>Headroom vs Current Housing</th>
+                  <th>Constraint</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dtiAffordabilityScenarios.map((row) => (
+                  <tr key={`dti-${row.label}`}>
+                    <td>{row.label}</td>
+                    <td>
+                      {row.frontEndLimit}% / {row.backEndLimit}%
+                    </td>
+                    <td>{formatCalculatorCurrency(row.maxHousingPayment)}</td>
+                    <td>{formatCalculatorCurrency(row.maxTotalDebt)}</td>
+                    <td>
+                      {row.headroom >= 0 ? "+" : "-"}
+                      {formatCalculatorCurrency(Math.abs(row.headroom))}
+                    </td>
+                    <td>{row.constraint}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

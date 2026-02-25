@@ -30,6 +30,7 @@ export interface AffiliateOffer {
 export type CalculatorId =
   | "loan-emi-calculator"
   | "mortgage-calculator"
+  | "debt-to-income-calculator"
   | "compound-interest-calculator"
   | "simple-interest-calculator"
   | "inflation-calculator"

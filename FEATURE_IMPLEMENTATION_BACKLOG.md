@@ -32,7 +32,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 14 | Text Translator | Productivity/SEO | Massive multilingual demand | Planned |
 | 15 | Document Translator | Productivity | High practical workflow demand | Planned |
 | 16 | Auto Loan Calculator | Calculators | High financial intent traffic | Planned |
-| 17 | Debt-to-Income (DTI) Calculator | Calculators | Mortgage/loan funnel demand | Planned |
+| 17 | Debt-to-Income (DTI) Calculator | Calculators | Mortgage/loan funnel demand | Done |
 | 18 | Refinance Calculator | Calculators | High-value finance traffic | Planned |
 
 ## Current Build Sprint
@@ -48,4 +48,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `Internet Speed Test` (`/developer-tools/internet-speed-test`)
 - Completed feature: `AI Detector` (`/seo-tools/ai-detector`)
 - Completed feature: `Plagiarism Checker` (`/seo-tools/plagiarism-checker`)
+- Completed feature: `Debt-to-Income (DTI) Calculator` (`/calculators/debt-to-income-calculator`)
 - Active next feature: `Background Remover`

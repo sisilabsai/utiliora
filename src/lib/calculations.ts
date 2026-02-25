@@ -34,6 +34,16 @@ export interface BreakEvenScenarioRow {
   revenue: number;
 }
 
+export interface DtiAffordabilityScenarioRow {
+  label: string;
+  frontEndLimit: number;
+  backEndLimit: number;
+  maxHousingPayment: number;
+  maxTotalDebt: number;
+  headroom: number;
+  constraint: "Front-end" | "Back-end" | "Income";
+}
+
 export interface CalculatorOutputOptions {
   currency?: string;
 }
@@ -310,6 +320,134 @@ function mortgageMetrics(rawValues: Record<string, unknown>): MortgageMetrics {
     totalPayment,
     totalInterest,
     downPaymentPercent,
+  };
+}
+
+interface DtiMetrics {
+  grossMonthlyIncome: number;
+  coBorrowerMonthlyIncome: number;
+  otherMonthlyIncome: number;
+  totalMonthlyIncome: number;
+  monthlyHousingPayment: number;
+  monthlyPropertyTax: number;
+  monthlyInsuranceHoa: number;
+  housingTotal: number;
+  monthlyCarPayment: number;
+  monthlyStudentLoanPayment: number;
+  monthlyCreditCardPayments: number;
+  monthlyPersonalLoanPayments: number;
+  monthlyChildSupportAlimony: number;
+  monthlyOtherDebts: number;
+  nonHousingDebtTotal: number;
+  monthlyDebtTotal: number;
+  frontEndDti: number;
+  backEndDti: number;
+  targetFrontEndDti: number;
+  targetBackEndDti: number;
+  maxTotalDebtAtTarget: number;
+  maxHousingAtTargets: number;
+  debtCapacityAtTarget: number;
+  debtReductionNeededAtTarget: number;
+  housingHeadroomAtTarget: number;
+  remainingPreTaxIncome: number;
+  requiredIncomeFor36: number;
+  requiredIncomeFor43: number;
+  requiredIncomeFor50: number;
+  riskTier: string;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function classifyDtiRisk(backEndDti: number): string {
+  if (backEndDti <= 20) return "Very healthy";
+  if (backEndDti <= 28) return "Healthy";
+  if (backEndDti <= 36) return "Lender-friendly";
+  if (backEndDti <= 43) return "Manageable";
+  if (backEndDti <= 50) return "Stretched";
+  return "High risk";
+}
+
+function dtiMetrics(rawValues: Record<string, unknown>): DtiMetrics {
+  const grossMonthlyIncome = Math.max(0, toNumber(rawValues.grossMonthlyIncome));
+  const coBorrowerMonthlyIncome = Math.max(0, toNumber(rawValues.coBorrowerMonthlyIncome));
+  const otherMonthlyIncome = Math.max(0, toNumber(rawValues.otherMonthlyIncome));
+  const totalMonthlyIncome = grossMonthlyIncome + coBorrowerMonthlyIncome + otherMonthlyIncome;
+
+  const monthlyHousingPayment = Math.max(0, toNumber(rawValues.monthlyHousingPayment));
+  const monthlyPropertyTax = Math.max(0, toNumber(rawValues.monthlyPropertyTax));
+  const monthlyInsuranceHoa = Math.max(0, toNumber(rawValues.monthlyInsuranceHoa));
+  const housingTotal = monthlyHousingPayment + monthlyPropertyTax + monthlyInsuranceHoa;
+
+  const monthlyCarPayment = Math.max(0, toNumber(rawValues.monthlyCarPayment));
+  const monthlyStudentLoanPayment = Math.max(0, toNumber(rawValues.monthlyStudentLoanPayment));
+  const monthlyCreditCardPayments = Math.max(0, toNumber(rawValues.monthlyCreditCardPayments));
+  const monthlyPersonalLoanPayments = Math.max(0, toNumber(rawValues.monthlyPersonalLoanPayments));
+  const monthlyChildSupportAlimony = Math.max(0, toNumber(rawValues.monthlyChildSupportAlimony));
+  const monthlyOtherDebts = Math.max(0, toNumber(rawValues.monthlyOtherDebts));
+
+  const nonHousingDebtTotal =
+    monthlyCarPayment +
+    monthlyStudentLoanPayment +
+    monthlyCreditCardPayments +
+    monthlyPersonalLoanPayments +
+    monthlyChildSupportAlimony +
+    monthlyOtherDebts;
+  const monthlyDebtTotal = housingTotal + nonHousingDebtTotal;
+
+  const frontEndDti = totalMonthlyIncome > 0 ? (housingTotal / totalMonthlyIncome) * 100 : 0;
+  const backEndDti = totalMonthlyIncome > 0 ? (monthlyDebtTotal / totalMonthlyIncome) * 100 : 0;
+
+  const targetFrontEndDti = clampNumber(toNumber(rawValues.targetFrontEndDti, 31), 5, 60);
+  const targetBackEndDti = clampNumber(toNumber(rawValues.targetBackEndDti, 43), 10, 80);
+
+  const maxTotalDebtAtTarget = totalMonthlyIncome * (targetBackEndDti / 100);
+  const maxHousingByFront = totalMonthlyIncome * (targetFrontEndDti / 100);
+  const maxHousingByBack = maxTotalDebtAtTarget - nonHousingDebtTotal;
+  const maxHousingAtTargets = Math.max(0, Math.min(maxHousingByFront, maxHousingByBack));
+
+  const debtCapacityAtTarget = maxTotalDebtAtTarget - monthlyDebtTotal;
+  const debtReductionNeededAtTarget = Math.max(0, -debtCapacityAtTarget);
+  const housingHeadroomAtTarget = maxHousingAtTargets - housingTotal;
+  const remainingPreTaxIncome = totalMonthlyIncome - monthlyDebtTotal;
+
+  const requiredIncomeFor36 = monthlyDebtTotal > 0 ? (monthlyDebtTotal * 100) / 36 : 0;
+  const requiredIncomeFor43 = monthlyDebtTotal > 0 ? (monthlyDebtTotal * 100) / 43 : 0;
+  const requiredIncomeFor50 = monthlyDebtTotal > 0 ? (monthlyDebtTotal * 100) / 50 : 0;
+  const riskTier = classifyDtiRisk(backEndDti);
+
+  return {
+    grossMonthlyIncome,
+    coBorrowerMonthlyIncome,
+    otherMonthlyIncome,
+    totalMonthlyIncome,
+    monthlyHousingPayment,
+    monthlyPropertyTax,
+    monthlyInsuranceHoa,
+    housingTotal,
+    monthlyCarPayment,
+    monthlyStudentLoanPayment,
+    monthlyCreditCardPayments,
+    monthlyPersonalLoanPayments,
+    monthlyChildSupportAlimony,
+    monthlyOtherDebts,
+    nonHousingDebtTotal,
+    monthlyDebtTotal,
+    frontEndDti,
+    backEndDti,
+    targetFrontEndDti,
+    targetBackEndDti,
+    maxTotalDebtAtTarget,
+    maxHousingAtTargets,
+    debtCapacityAtTarget,
+    debtReductionNeededAtTarget,
+    housingHeadroomAtTarget,
+    remainingPreTaxIncome,
+    requiredIncomeFor36,
+    requiredIncomeFor43,
+    requiredIncomeFor50,
+    riskTier,
   };
 }
 
@@ -1016,6 +1154,41 @@ export function getBreakEvenScenarios(rawValues: Record<string, unknown>): Break
   });
 }
 
+export function getDtiAffordabilityScenarios(rawValues: Record<string, unknown>): DtiAffordabilityScenarioRow[] {
+  const metrics = dtiMetrics(rawValues);
+  const targets: Array<{ label: string; frontEndLimit: number; backEndLimit: number }> = [
+    { label: "Conservative", frontEndLimit: 25, backEndLimit: 35 },
+    { label: "Standard", frontEndLimit: 28, backEndLimit: 36 },
+    { label: "Flexible", frontEndLimit: 31, backEndLimit: 43 },
+    { label: "Aggressive", frontEndLimit: 33, backEndLimit: 50 },
+  ];
+
+  if (metrics.totalMonthlyIncome <= 0) {
+    return targets.map((target) => ({
+      ...target,
+      maxHousingPayment: 0,
+      maxTotalDebt: 0,
+      headroom: -metrics.housingTotal,
+      constraint: "Income",
+    }));
+  }
+
+  return targets.map((target) => {
+    const maxTotalDebt = metrics.totalMonthlyIncome * (target.backEndLimit / 100);
+    const maxHousingByFront = metrics.totalMonthlyIncome * (target.frontEndLimit / 100);
+    const maxHousingByBack = maxTotalDebt - metrics.nonHousingDebtTotal;
+    const maxHousingPayment = Math.max(0, Math.min(maxHousingByFront, maxHousingByBack));
+    const constraint = maxHousingByFront <= maxHousingByBack ? "Front-end" : "Back-end";
+    return {
+      ...target,
+      maxHousingPayment,
+      maxTotalDebt,
+      headroom: maxHousingPayment - metrics.housingTotal,
+      constraint,
+    };
+  });
+}
+
 export function getCalculatorInsights(
   id: CalculatorId,
   rawValues: Record<string, unknown>,
@@ -1038,6 +1211,28 @@ export function getCalculatorInsights(
       return [
         `Down payment ratio: ${formatPercent(metrics.downPaymentPercent)} of home price.`,
         `Monthly principal+interest: ${formatMoney(metrics.principalAndInterest)}. Total housing payment: ${formatMoney(metrics.totalMonthlyPayment)}.`,
+      ];
+    }
+    case "debt-to-income-calculator": {
+      const metrics = dtiMetrics(rawValues);
+      if (metrics.totalMonthlyIncome <= 0) {
+        return [
+          "Enter gross monthly income to calculate front-end and back-end DTI.",
+          "Lenders usually compare housing DTI and total DTI before approving new credit.",
+        ];
+      }
+      const debtCapacityInsight =
+        metrics.debtCapacityAtTarget >= 0
+          ? `At target ${formatPercent(metrics.targetBackEndDti)} back-end DTI, you have ${formatMoney(metrics.debtCapacityAtTarget)} monthly debt capacity remaining.`
+          : `To hit target ${formatPercent(metrics.targetBackEndDti)} back-end DTI, reduce monthly debt by ${formatMoney(metrics.debtReductionNeededAtTarget)}.`;
+      const housingHeadroomInsight =
+        metrics.housingHeadroomAtTarget >= 0
+          ? `Housing payment headroom at ${formatPercent(metrics.targetFrontEndDti)}/${formatPercent(metrics.targetBackEndDti)} targets: ${formatMoney(metrics.housingHeadroomAtTarget)}.`
+          : `Current housing costs are ${formatMoney(Math.abs(metrics.housingHeadroomAtTarget))} above target affordability.`;
+      return [
+        `Front-end DTI: ${formatPercent(metrics.frontEndDti)}. Back-end DTI: ${formatPercent(metrics.backEndDti)} (${metrics.riskTier}).`,
+        debtCapacityInsight,
+        housingHeadroomInsight,
       ];
     }
     case "compound-interest-calculator": {
@@ -1242,6 +1437,39 @@ export function runCalculator(
           value: formatMoney(metrics.monthlyPropertyTax + metrics.monthlyInsurance + metrics.monthlyHoa),
         },
         { label: "Total Interest (Loan Term)", value: formatMoney(metrics.totalInterest) },
+      ];
+    }
+    case "debt-to-income-calculator": {
+      const metrics = dtiMetrics(rawValues);
+      if (metrics.totalMonthlyIncome <= 0) {
+        return [
+          { label: "Status", value: "Enter gross monthly income" },
+          { label: "Tip", value: "Include all recurring debt payments to get a realistic DTI result." },
+        ];
+      }
+
+      return [
+        { label: "Total Gross Monthly Income", value: formatMoney(metrics.totalMonthlyIncome) },
+        { label: "Housing-related Debt", value: formatMoney(metrics.housingTotal) },
+        { label: "Non-housing Debt", value: formatMoney(metrics.nonHousingDebtTotal) },
+        { label: "Total Monthly Debt Payments", value: formatMoney(metrics.monthlyDebtTotal) },
+        { label: "Front-end DTI (Housing)", value: formatPercent(metrics.frontEndDti) },
+        { label: "Back-end DTI (Total)", value: formatPercent(metrics.backEndDti) },
+        { label: "DTI Risk Tier", value: metrics.riskTier },
+        { label: "Remaining Pre-tax Income", value: formatMoney(metrics.remainingPreTaxIncome) },
+        {
+          label: `Max Total Debt @ ${formatPercent(metrics.targetBackEndDti)}`,
+          value: formatMoney(metrics.maxTotalDebtAtTarget),
+        },
+        {
+          label: metrics.debtCapacityAtTarget >= 0 ? "Additional Debt Capacity" : "Debt Reduction Needed",
+          value: formatMoney(Math.abs(metrics.debtCapacityAtTarget)),
+        },
+        {
+          label: `Max Housing @ ${formatPercent(metrics.targetFrontEndDti)}/${formatPercent(metrics.targetBackEndDti)}`,
+          value: formatMoney(metrics.maxHousingAtTargets),
+        },
+        { label: "Income Needed for 36% Back-end DTI", value: formatMoney(metrics.requiredIncomeFor36) },
       ];
     }
     case "compound-interest-calculator": {
