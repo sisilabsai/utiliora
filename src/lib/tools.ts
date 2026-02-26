@@ -1117,10 +1117,10 @@ const productivityTools: ToolDefinition[] = [
     slug: "resume-builder",
     category: "productivity-tools",
     title: "Resume Builder",
-    summary: "Build ATS-friendly resumes with advanced templates, starter profiles, and PDF-ready output.",
+    summary: "Build ATS-friendly resumes with profile photos, modern templates, smart recommendations, and multi-format export.",
     description:
-      "Create polished resumes with role-based starter templates, smart summary and bullet suggestions, keyword alignment checks, and print-to-PDF export.",
-    keywords: ["resume builder", "cv builder", "resume template", "resume pdf"],
+      "Create polished resumes with role-based starter templates, profile-picture support, one-click improvement actions, ATS keyword alignment checks, and export to PDF, DOC, HTML, Markdown, and TXT.",
+    keywords: ["resume builder", "cv builder", "resume template", "resume pdf", "resume doc export", "ats resume"],
     engine: { kind: "productivity-tool", id: "resume-builder" },
     faq: baseFaq("Resume Builder"),
   },

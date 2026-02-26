@@ -1311,6 +1311,7 @@ textarea {
 }
 
 .resume-preview {
+  --resume-accent: #1f6feb;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-soft);
@@ -1324,8 +1325,50 @@ textarea {
   margin: 0;
 }
 
+.resume-profile-photo {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid color-mix(in srgb, var(--resume-accent, #1f6feb) 55%, var(--border) 45%);
+  background: color-mix(in srgb, var(--resume-accent, #1f6feb) 6%, #fff 94%);
+  flex-shrink: 0;
+}
+
+.resume-profile-photo-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--resume-accent, #1f6feb) 75%, var(--text) 25%);
+}
+
+.resume-color-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, #000 20%, transparent 80%);
+}
+
+.resume-recommendation-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 0.6rem;
+  margin-top: 0.55rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.resume-recommendation-row .supporting-text {
+  margin: 0;
+}
+
 .resume-preview.resume-template-executive {
-  border-color: color-mix(in srgb, var(--accent-strong) 35%, var(--border) 65%);
+  border-color: color-mix(in srgb, var(--resume-accent, #1f6feb) 35%, var(--border) 65%);
 }
 
 .resume-preview.resume-template-executive .resume-header {
@@ -1333,21 +1376,43 @@ textarea {
 }
 
 .resume-preview.resume-template-creative {
-  border-color: color-mix(in srgb, #236f6a 35%, var(--border) 65%);
+  border-color: color-mix(in srgb, var(--resume-accent, #1f6feb) 35%, var(--border) 65%);
 }
 
 .resume-preview.resume-template-creative .resume-section h5 {
-  color: #236f6a;
+  color: color-mix(in srgb, var(--resume-accent, #1f6feb) 85%, var(--text) 15%);
 }
 
 .resume-preview.resume-template-creative .chip {
-  border-color: #236f6a;
-  color: #236f6a;
+  border-color: color-mix(in srgb, var(--resume-accent, #1f6feb) 45%, var(--border) 55%);
+  color: color-mix(in srgb, var(--resume-accent, #1f6feb) 80%, var(--text) 20%);
+}
+
+.resume-preview.resume-template-sidebar {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--resume-accent, #1f6feb) 8%, var(--surface-soft) 92%) 0%,
+    var(--surface-soft) 45%
+  );
+}
+
+.resume-preview.resume-template-spotlight .resume-header {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  background: color-mix(in srgb, var(--resume-accent, #1f6feb) 11%, #fff 89%);
 }
 
 .resume-header {
   border-bottom: 1px solid var(--border);
   padding-bottom: 0.5rem;
+}
+
+.resume-header-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
 }
 
 .resume-header h4 {
@@ -1357,6 +1422,10 @@ textarea {
 
 .resume-header p {
   margin: 0.25rem 0 0;
+}
+
+.resume-preview .resume-header h4 {
+  color: color-mix(in srgb, var(--resume-accent, #1f6feb) 80%, var(--text) 20%);
 }
 
 .resume-section {
@@ -1391,6 +1460,18 @@ textarea {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+@media (max-width: 860px) {
+  .resume-profile-photo {
+    width: 70px;
+    height: 70px;
+  }
+
+  .resume-recommendation-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .invoice-editor {

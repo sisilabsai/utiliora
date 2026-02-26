@@ -2,7 +2,7 @@
 
 import NextImage from "next/image";
 import type { jsPDF as JsPdfType } from "jspdf";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import JsBarcode from "jsbarcode";
 import {
   Bell,
@@ -24928,7 +24928,7 @@ function NotesPadTool() {
   );
 }
 
-type ResumeTemplate = "modern" | "minimal" | "compact" | "executive" | "creative";
+type ResumeTemplate = "modern" | "minimal" | "compact" | "executive" | "creative" | "sidebar" | "spotlight";
 
 interface ResumePersonalInfo {
   fullName: string;
@@ -24969,6 +24969,9 @@ interface ResumeLink {
 
 interface ResumeData {
   template: ResumeTemplate;
+  accentColor: string;
+  photoDataUrl: string;
+  photoFileName: string;
   personal: ResumePersonalInfo;
   skills: string[];
   experience: ResumeExperience[];
@@ -24979,6 +24982,9 @@ interface ResumeData {
 function createDefaultResumeData(): ResumeData {
   return {
     template: "modern",
+    accentColor: "#1f6feb",
+    photoDataUrl: "",
+    photoFileName: "",
     personal: {
       fullName: "",
       headline: "",
@@ -25021,6 +25027,7 @@ interface ResumeStarterProfile {
   label: string;
   description: string;
   template: ResumeTemplate;
+  accentColor?: string;
   personal: ResumePersonalInfo;
   skills: string[];
   experience: Array<Omit<ResumeExperience, "id">>;
@@ -25034,6 +25041,7 @@ const RESUME_STARTER_PROFILES: ResumeStarterProfile[] = [
     label: "Software engineer",
     description: "Backend/frontend impact-focused profile.",
     template: "modern",
+    accentColor: "#1f6feb",
     personal: {
       fullName: "Alex Morgan",
       headline: "Senior Software Engineer",
@@ -25087,6 +25095,7 @@ const RESUME_STARTER_PROFILES: ResumeStarterProfile[] = [
     label: "Product manager",
     description: "Growth and execution-oriented product profile.",
     template: "executive",
+    accentColor: "#1f3347",
     personal: {
       fullName: "Jordan Lee",
       headline: "Senior Product Manager",
@@ -25140,6 +25149,7 @@ const RESUME_STARTER_PROFILES: ResumeStarterProfile[] = [
     label: "UX designer",
     description: "Research and product design profile.",
     template: "creative",
+    accentColor: "#236f6a",
     personal: {
       fullName: "Taylor Brooks",
       headline: "Senior UX/UI Designer",
@@ -25193,12 +25203,80 @@ const RESUME_STARTER_PROFILES: ResumeStarterProfile[] = [
 function createResumeFromStarter(starter: ResumeStarterProfile): ResumeData {
   return {
     template: starter.template,
+    accentColor: starter.accentColor ?? "#1f6feb",
+    photoDataUrl: "",
+    photoFileName: "",
     personal: starter.personal,
     skills: starter.skills,
     experience: starter.experience.map((item) => ({ ...item, id: crypto.randomUUID() })),
     education: starter.education.map((item) => ({ ...item, id: crypto.randomUUID() })),
     links: starter.links.map((item) => ({ ...item, id: crypto.randomUUID() })),
   };
+}
+
+const RESUME_TEMPLATE_OPTIONS: Array<{ id: ResumeTemplate; label: string; description: string }> = [
+  { id: "modern", label: "Modern", description: "Balanced two-column rhythm with clean spacing." },
+  { id: "minimal", label: "Minimal", description: "Lightweight ATS-first layout with minimal decoration." },
+  { id: "compact", label: "Compact", description: "Dense structure for one-page resumes." },
+  { id: "executive", label: "Executive", description: "Strong hierarchy for senior leadership profiles." },
+  { id: "creative", label: "Creative", description: "Color-forward style with expressive sectioning." },
+  { id: "sidebar", label: "Sidebar", description: "Modern side rail for profile, skills, and links." },
+  { id: "spotlight", label: "Spotlight", description: "Photo-centric hero header with polished spacing." },
+];
+
+const RESUME_ACCENT_PRESETS = ["#1f6feb", "#236f6a", "#1f3347", "#b25400", "#7a1fa2", "#0f766e", "#0b5fff"];
+
+const RESUME_PHOTO_ACCEPT = "image/png,image/jpeg,image/webp,image/svg+xml";
+const RESUME_PHOTO_MAX_BYTES = 2_000_000;
+
+const RESUME_PRINT_CSS = `
+.resume-doc { max-width: 900px; margin: 0 auto; display: grid; gap: 14px; color: #14213d; }
+.resume-doc .resume-header { border-bottom: 1px solid #d3dbe5; padding-bottom: 10px; display: grid; gap: 8px; }
+.resume-doc .resume-header h1 { margin: 0; font-size: 28px; }
+.resume-doc .resume-headline { margin: 0; font-weight: 600; color: color-mix(in srgb, var(--resume-accent, #1f6feb) 80%, #1f2937 20%); }
+.resume-doc .resume-contact { margin: 0; color: #4a5968; }
+.resume-doc h2 { font-size: 16px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em; color: color-mix(in srgb, var(--resume-accent, #1f6feb) 75%, #1f2937 25%); }
+.resume-doc .entry { margin-bottom: 10px; border: 1px solid #d3dbe5; border-radius: 10px; padding: 8px 10px; background: #fff; }
+.resume-doc .entry-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.resume-doc .entry-head h3 { margin: 0; font-size: 15px; }
+.resume-doc .entry-head p { margin: 0; font-weight: 600; }
+.resume-doc .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.resume-doc .pill { border: 1px solid color-mix(in srgb, var(--resume-accent, #1f6feb) 32%, #d3dbe5 68%); border-radius: 999px; padding: 3px 8px; font-size: 12px; color: color-mix(in srgb, var(--resume-accent, #1f6feb) 80%, #1f2937 20%); }
+.resume-doc ul { margin: 6px 0 0; padding-left: 18px; }
+.resume-doc .resume-header-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.resume-doc .resume-photo { width: 88px; height: 88px; border-radius: 50%; object-fit: cover; border: 2px solid color-mix(in srgb, var(--resume-accent, #1f6feb) 55%, #d3dbe5 45%); flex-shrink: 0; background: #f2f6fb; }
+.resume-doc .resume-photo.resume-photo-placeholder { display: inline-flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: 0.02em; color: color-mix(in srgb, var(--resume-accent, #1f6feb) 70%, #1f2937 30%); }
+.resume-template-compact .entry-head { display: block; }
+.resume-template-minimal h2 { text-transform: none; letter-spacing: 0; }
+.resume-template-executive .resume-header { border-bottom: 2px solid color-mix(in srgb, var(--resume-accent, #1f3347) 80%, #12253a 20%); }
+.resume-template-creative .resume-header { border-bottom: 2px solid color-mix(in srgb, var(--resume-accent, #236f6a) 78%, #11413e 22%); }
+.resume-template-sidebar .resume-doc-grid { display: grid; grid-template-columns: 240px 1fr; gap: 16px; }
+.resume-template-sidebar .resume-sidebar { background: color-mix(in srgb, var(--resume-accent, #1f6feb) 8%, #ffffff 92%); border: 1px solid #d3dbe5; border-radius: 12px; padding: 12px; }
+.resume-template-sidebar .resume-main { display: grid; gap: 10px; }
+.resume-template-spotlight .resume-header { border: 0; padding: 14px; border-radius: 12px; background: color-mix(in srgb, var(--resume-accent, #1f6feb) 12%, #ffffff 88%); }
+@media print {
+  .resume-doc { max-width: none; }
+}
+`;
+
+function sanitizeResumeAccentColor(value: string): string {
+  const normalized = value.trim();
+  return /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(normalized) ? normalized.toLowerCase() : "#1f6feb";
+}
+
+function getResumeInitials(name: string): string {
+  const tokens = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+  if (!tokens.length) return "YN";
+  return tokens.map((token) => token[0]?.toUpperCase() ?? "").join("");
+}
+
+function buildResumeFileStem(resume: ResumeData): string {
+  const stem = slugify(resume.personal.fullName.trim() || "resume");
+  return stem || "resume";
 }
 
 function suggestExperienceHighlights(role: string, company: string): string {
@@ -25229,9 +25307,15 @@ function sanitizeResumeData(raw: unknown): ResumeData | null {
     candidate.template === "compact" ||
     candidate.template === "modern" ||
     candidate.template === "executive" ||
-    candidate.template === "creative"
+    candidate.template === "creative" ||
+    candidate.template === "sidebar" ||
+    candidate.template === "spotlight"
       ? candidate.template
       : defaults.template;
+  const accentColor =
+    typeof candidate.accentColor === "string" ? sanitizeResumeAccentColor(candidate.accentColor) : defaults.accentColor;
+  const photoDataUrl = typeof candidate.photoDataUrl === "string" ? candidate.photoDataUrl : defaults.photoDataUrl;
+  const photoFileName = typeof candidate.photoFileName === "string" ? candidate.photoFileName : defaults.photoFileName;
 
   const personalCandidate = (candidate.personal ?? {}) as Partial<ResumePersonalInfo>;
   const personal: ResumePersonalInfo = {
@@ -25302,6 +25386,9 @@ function sanitizeResumeData(raw: unknown): ResumeData | null {
 
   return {
     template,
+    accentColor,
+    photoDataUrl,
+    photoFileName,
     personal,
     skills,
     experience: experience.length ? experience : defaults.experience,
@@ -25383,6 +25470,13 @@ function buildResumePlainText(resume: ResumeData): string {
 }
 
 function buildResumePrintHtml(resume: ResumeData): string {
+  const safeAccentColor = sanitizeResumeAccentColor(resume.accentColor);
+  const safeInitials = escapeHtml(getResumeInitials(resume.personal.fullName));
+  const photoHtml = resume.photoDataUrl.trim()
+    ? `<img class="resume-photo" src="${escapeHtml(resume.photoDataUrl)}" alt="${escapeHtml(
+        resume.photoFileName || `${resume.personal.fullName || "Resume"} photo`,
+      )}" />`
+    : `<span class="resume-photo resume-photo-placeholder">${safeInitials}</span>`;
   const skillHtml = resume.skills.map((skill) => `<span class="pill">${escapeHtml(skill)}</span>`).join("");
   const linksHtml = resume.links
     .filter((item) => item.label.trim() || item.url.trim())
@@ -25425,28 +25519,140 @@ function buildResumePrintHtml(resume: ResumeData): string {
 </article>`;
     })
     .join("");
+  const summaryHtml = resume.personal.summary ? `<section><h2>Profile</h2><p>${escapeHtml(resume.personal.summary)}</p></section>` : "";
+  const skillsSectionHtml = skillHtml ? `<section><h2>Skills</h2><div class="pill-row">${skillHtml}</div></section>` : "";
+  const experienceSectionHtml = experienceHtml ? `<section><h2>Experience</h2>${experienceHtml}</section>` : "";
+  const educationSectionHtml = educationHtml ? `<section><h2>Education</h2>${educationHtml}</section>` : "";
+  const linksSectionHtml = linksHtml ? `<section><h2>Links</h2><ul>${linksHtml}</ul></section>` : "";
+  const contactLine = escapeHtml(
+    [resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website].filter(Boolean).join(" | "),
+  );
+  const headerHtml = `<header class="resume-header">
+  <div class="resume-header-main">
+    <div>
+      <h1>${escapeHtml(resume.personal.fullName || "Your Name")}</h1>
+      <p class="resume-headline">${escapeHtml(resume.personal.headline || "Professional headline")}</p>
+      <p class="resume-contact">${contactLine || "Contact details"}</p>
+    </div>
+    ${photoHtml}
+  </div>
+</header>`;
 
-  return `<main class="resume-doc resume-template-${resume.template}">
-<header class="resume-header">
-  <h1>${escapeHtml(resume.personal.fullName || "Your Name")}</h1>
-  <p class="resume-headline">${escapeHtml(resume.personal.headline || "Professional headline")}</p>
-  <p class="muted">${escapeHtml(
-    [resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
-      .filter(Boolean)
-      .join(" | "),
-  )}</p>
-</header>
-${resume.personal.summary ? `<section><h2>Profile</h2><p>${escapeHtml(resume.personal.summary)}</p></section>` : ""}
-${skillHtml ? `<section><h2>Skills</h2><div class="pill-row">${skillHtml}</div></section>` : ""}
-${experienceHtml ? `<section><h2>Experience</h2>${experienceHtml}</section>` : ""}
-${educationHtml ? `<section><h2>Education</h2>${educationHtml}</section>` : ""}
-${linksHtml ? `<section><h2>Links</h2><ul>${linksHtml}</ul></section>` : ""}
+  if (resume.template === "sidebar") {
+    return `<main class="resume-doc resume-template-${resume.template}" style="--resume-accent:${escapeHtml(safeAccentColor)};">
+${headerHtml}
+<div class="resume-doc-grid">
+  <aside class="resume-sidebar">
+    ${summaryHtml}
+    ${skillsSectionHtml}
+    ${linksSectionHtml}
+  </aside>
+  <section class="resume-main">
+    ${experienceSectionHtml}
+    ${educationSectionHtml}
+  </section>
+</div>
 </main>`;
+  }
+
+  return `<main class="resume-doc resume-template-${resume.template}" style="--resume-accent:${escapeHtml(safeAccentColor)};">
+${headerHtml}
+${summaryHtml}
+${skillsSectionHtml}
+${experienceSectionHtml}
+${educationSectionHtml}
+${linksSectionHtml}
+</main>`;
+}
+
+function buildResumeMarkdown(resume: ResumeData): string {
+  const lines: string[] = [];
+  lines.push(`# ${resume.personal.fullName || "Your Name"}`);
+  lines.push(`**${resume.personal.headline || "Professional headline"}**`);
+  const contact = [resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
+    .filter(Boolean)
+    .join(" | ");
+  if (contact) lines.push(contact);
+  lines.push("");
+
+  if (resume.personal.summary.trim()) {
+    lines.push("## Profile");
+    lines.push(resume.personal.summary.trim());
+    lines.push("");
+  }
+
+  if (resume.skills.length) {
+    lines.push("## Skills");
+    lines.push(resume.skills.map((skill) => `- ${skill}`).join("\n"));
+    lines.push("");
+  }
+
+  const filledExperience = resume.experience.filter((item) => item.role.trim() || item.company.trim() || item.highlights.trim());
+  if (filledExperience.length) {
+    lines.push("## Experience");
+    for (const item of filledExperience) {
+      const roleLine = `${item.role || "Role"} | ${item.company || "Company"}`;
+      const metaLine = `${formatDateRange(item.startDate, item.endDate, item.current)}${item.location ? ` | ${item.location}` : ""}`;
+      lines.push(`### ${roleLine}`);
+      lines.push(metaLine);
+      const highlights = item.highlights
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      for (const highlight of highlights) lines.push(`- ${highlight}`);
+      lines.push("");
+    }
+  }
+
+  const filledEducation = resume.education.filter((item) => item.school.trim() || item.degree.trim() || item.field.trim() || item.details.trim());
+  if (filledEducation.length) {
+    lines.push("## Education");
+    for (const item of filledEducation) {
+      lines.push(`### ${item.school || "School"}`);
+      lines.push(`${[item.degree, item.field].filter(Boolean).join(", ") || "Program"} | ${formatDateRange(item.startDate, item.endDate, false)}`);
+      if (item.details.trim()) lines.push(item.details.trim());
+      lines.push("");
+    }
+  }
+
+  const filledLinks = resume.links.filter((item) => item.label.trim() || item.url.trim());
+  if (filledLinks.length) {
+    lines.push("## Links");
+    for (const item of filledLinks) {
+      const label = item.label.trim() || "Link";
+      const url = item.url.trim() || "#";
+      lines.push(`- [${label}](${url})`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
+function buildResumeExportHtmlDocument(resume: ResumeData): string {
+  const title = `${escapeHtml(resume.personal.fullName || "Resume")} - Utiliora`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: "Segoe UI", Arial, sans-serif; background: #f6f8fb; }
+    main.resume-doc { background: #fff; border: 1px solid #d3dbe5; border-radius: 14px; padding: 18px; }
+    ${RESUME_PRINT_CSS}
+  </style>
+</head>
+<body>
+  ${buildResumePrintHtml(resume)}
+</body>
+</html>`;
 }
 
 function ResumeBuilderTool() {
   const storageKey = "utiliora-resume-builder-v1";
   const importRef = useRef<HTMLInputElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
   const [resume, setResume] = useState<ResumeData>(() => createDefaultResumeData());
   const [skillDraft, setSkillDraft] = useState("");
   const [jobDescription, setJobDescription] = useState("");
@@ -25496,6 +25702,8 @@ function ResumeBuilderTool() {
     }));
   };
 
+  const resumeFileStem = useMemo(() => buildResumeFileStem(resume), [resume]);
+
   const resumeKeywords = useMemo(() => extractImportantKeywords(buildResumePlainText(resume)), [resume]);
   const jobKeywords = useMemo(() => extractImportantKeywords(jobDescription).slice(0, 35), [jobDescription]);
   const matchedKeywords = useMemo(() => {
@@ -25536,31 +25744,24 @@ function ResumeBuilderTool() {
     return Math.round((passed / resumeScoreChecks.length) * 100);
   }, [resumeScoreChecks]);
 
+  const weakHighlightItem = useMemo(
+    () =>
+      resume.experience.find(
+        (item) => item.role.trim() && item.company.trim() && item.highlights.trim().split(/\r?\n/).filter(Boolean).length < 2,
+      ),
+    [resume.experience],
+  );
+  const needsSummary = resume.personal.summary.trim().length < 80;
+  const needsPhoto = !resume.photoDataUrl.trim();
+  const needsLinks = !resume.links.some((item) => item.url.trim());
+  const missingSkills = resume.skills.length < 8;
+  const needsKeywordAlignment = jobKeywords.length > 0 && coveragePercent < 65 && missingKeywords.length > 0;
+
   const printResume = () => {
     const opened = openPrintWindow(
       `${resume.personal.fullName || "Resume"} - Utiliora`,
       buildResumePrintHtml(resume),
-      `
-      .resume-doc { max-width: 900px; margin: 0 auto; display: grid; gap: 14px; }
-      .resume-header { border-bottom: 1px solid #d3dbe5; padding-bottom: 10px; }
-      .resume-header h1 { margin: 0; font-size: 28px; }
-      .resume-headline { margin: 4px 0 0; font-weight: 600; }
-      h2 { font-size: 16px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
-      .entry { margin-bottom: 10px; }
-      .entry-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
-      .entry-head h3 { margin: 0; font-size: 15px; }
-      .entry-head p { margin: 0; font-weight: 600; }
-      .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
-      .pill { border: 1px solid #d3dbe5; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
-      ul { margin: 6px 0 0; padding-left: 18px; }
-      .resume-template-compact .entry-head { display: block; }
-      .resume-template-minimal h2 { text-transform: none; letter-spacing: 0; }
-      .resume-template-executive .resume-header { border-bottom: 2px solid #1f3347; }
-      .resume-template-executive h2 { color: #1f3347; }
-      .resume-template-creative .resume-header { border-bottom: 2px solid #236f6a; }
-      .resume-template-creative h2 { color: #236f6a; }
-      .resume-template-creative .pill { border-color: #236f6a; color: #236f6a; }
-      `,
+      RESUME_PRINT_CSS,
     );
     if (!opened) {
       setStatus("Enable popups to print or save PDF.");
@@ -25570,28 +25771,77 @@ function ResumeBuilderTool() {
     trackEvent("resume_print_open", { template: resume.template });
   };
 
+  const downloadResumeMarkdown = () => {
+    downloadTextFile(`${resumeFileStem}.md`, buildResumeMarkdown(resume), "text/markdown;charset=utf-8;");
+    setStatus("Resume exported as Markdown.");
+  };
+
+  const downloadResumeText = () => {
+    downloadTextFile(`${resumeFileStem}.txt`, buildResumePlainText(resume), "text/plain;charset=utf-8;");
+    setStatus("Resume exported as plain text.");
+  };
+
+  const downloadResumeHtml = () => {
+    downloadTextFile(`${resumeFileStem}.html`, buildResumeExportHtmlDocument(resume), "text/html;charset=utf-8;");
+    setStatus("Resume exported as HTML.");
+  };
+
+  const downloadResumeDoc = () => {
+    downloadTextFile(`${resumeFileStem}.doc`, buildResumeExportHtmlDocument(resume), "application/msword;charset=utf-8;");
+    setStatus("Resume exported as Word-compatible DOC.");
+  };
+
+  const autoAddKeywordSkills = () => {
+    const additions = missingKeywords
+      .slice(0, 8)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!additions.length) {
+      setStatus("No missing target keywords available to add.");
+      return;
+    }
+    setResume((current) => ({
+      ...current,
+      skills: [...new Set([...current.skills, ...additions])].slice(0, 50),
+    }));
+    setStatus(`Added ${additions.length} keyword-oriented skill${additions.length > 1 ? "s" : ""}.`);
+  };
+
+  const autoAddCoreSkills = () => {
+    const candidates = [
+      "Communication",
+      "Stakeholder Management",
+      "Problem Solving",
+      "Project Delivery",
+      "Data Analysis",
+      "Leadership",
+      "Cross-functional Collaboration",
+      "Strategic Planning",
+    ];
+    setResume((current) => ({
+      ...current,
+      skills: [...new Set([...current.skills, ...candidates])].slice(0, 50),
+    }));
+    setStatus("Added a balanced set of core resume skills.");
+  };
+
   return (
     <section className="tool-surface">
       <ToolHeading
         icon={FileText}
         title="Resume builder"
-        subtitle="Build modern resumes with templates, ATS keyword matching, and print-ready output."
+        subtitle="Build modern resumes with profile photos, smart recommendations, ATS keyword matching, and multi-format downloads."
       />
       <div className="button-row">
         <span className="supporting-text">Template:</span>
-        {[
-          { id: "modern", label: "Modern" },
-          { id: "minimal", label: "Minimal" },
-          { id: "compact", label: "Compact" },
-          { id: "executive", label: "Executive" },
-          { id: "creative", label: "Creative" },
-        ].map((option) => (
+        {RESUME_TEMPLATE_OPTIONS.map((option) => (
           <button
             key={option.id}
             className="chip-button"
             type="button"
-            onClick={() => setResume((current) => ({ ...current, template: option.id as ResumeTemplate }))}
+            onClick={() => setResume((current) => ({ ...current, template: option.id }))}
             aria-pressed={resume.template === option.id}
+            title={option.description}
           >
             {option.label}
           </button>
@@ -25619,7 +25869,7 @@ function ResumeBuilderTool() {
           className="action-button secondary"
           type="button"
           onClick={() => {
-            downloadTextFile("resume-data.json", JSON.stringify(resume, null, 2), "application/json;charset=utf-8;");
+            downloadTextFile(`${resumeFileStem}-data.json`, JSON.stringify(resume, null, 2), "application/json;charset=utf-8;");
             setStatus("Resume JSON exported.");
           }}
         >
@@ -25629,6 +25879,22 @@ function ResumeBuilderTool() {
         <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
           <Plus size={15} />
           Import JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={downloadResumeMarkdown}>
+          <Download size={15} />
+          Markdown
+        </button>
+        <button className="action-button secondary" type="button" onClick={downloadResumeText}>
+          <Download size={15} />
+          TXT
+        </button>
+        <button className="action-button secondary" type="button" onClick={downloadResumeHtml}>
+          <Download size={15} />
+          HTML
+        </button>
+        <button className="action-button secondary" type="button" onClick={downloadResumeDoc}>
+          <Download size={15} />
+          DOC
         </button>
         <button className="action-button" type="button" onClick={printResume}>
           <Printer size={15} />
@@ -25651,6 +25917,45 @@ function ResumeBuilderTool() {
             setStatus("Imported resume JSON.");
           } catch {
             setStatus("Could not import this JSON file.");
+          } finally {
+            event.target.value = "";
+          }
+        }}
+      />
+      <input
+        ref={photoInputRef}
+        type="file"
+        hidden
+        accept={RESUME_PHOTO_ACCEPT}
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          if (!file.type.startsWith("image/")) {
+            setStatus("Please upload a valid profile image.");
+            event.target.value = "";
+            return;
+          }
+          if (file.size > RESUME_PHOTO_MAX_BYTES) {
+            setStatus("Profile photo is too large. Keep it under 2 MB.");
+            event.target.value = "";
+            return;
+          }
+          try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+              reader.onerror = () => reject(new Error("photo-read-failed"));
+              reader.readAsDataURL(file);
+            });
+            if (!dataUrl) throw new Error("empty-photo");
+            setResume((current) => ({
+              ...current,
+              photoDataUrl: dataUrl,
+              photoFileName: file.name,
+            }));
+            setStatus("Profile photo updated.");
+          } catch {
+            setStatus("Could not read this profile photo.");
           } finally {
             event.target.value = "";
           }
@@ -25683,6 +25988,79 @@ function ResumeBuilderTool() {
               <span>Website</span>
               <input type="url" value={resume.personal.website} onChange={(event) => updatePersonal("website", event.target.value)} />
             </label>
+          </div>
+          <div className="mini-panel">
+            <div className="panel-head">
+              <h3>Profile style</h3>
+            </div>
+            <div className="button-row">
+              {resume.photoDataUrl ? (
+                <NextImage
+                  className="resume-profile-photo"
+                  src={resume.photoDataUrl}
+                  alt={resume.photoFileName || "Profile photo"}
+                  width={96}
+                  height={96}
+                  unoptimized
+                />
+              ) : (
+                <span className="resume-profile-photo resume-profile-photo-placeholder">{getResumeInitials(resume.personal.fullName)}</span>
+              )}
+              <button className="action-button secondary" type="button" onClick={() => photoInputRef.current?.click()}>
+                <Plus size={15} />
+                Upload photo
+              </button>
+              <button
+                className="action-button secondary"
+                type="button"
+                onClick={() => {
+                  setResume((current) => ({ ...current, photoDataUrl: "", photoFileName: "" }));
+                  setStatus("Removed profile photo.");
+                }}
+                disabled={!resume.photoDataUrl}
+              >
+                <Trash2 size={15} />
+                Remove photo
+              </button>
+            </div>
+            <div className="button-row">
+              <label className="field" style={{ maxWidth: "190px" }}>
+                <span>Accent color</span>
+                <input
+                  type="color"
+                  value={resume.accentColor}
+                  onChange={(event) =>
+                    setResume((current) => ({
+                      ...current,
+                      accentColor: sanitizeResumeAccentColor(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <div className="chip-list">
+                {RESUME_ACCENT_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    className="chip-button"
+                    type="button"
+                    onClick={() =>
+                      setResume((current) => ({
+                        ...current,
+                        accentColor: preset,
+                      }))
+                    }
+                    title={`Use accent ${preset}`}
+                    aria-label={`Accent ${preset}`}
+                    style={{
+                      borderColor: resume.accentColor === preset ? preset : undefined,
+                    }}
+                  >
+                    <span className="resume-color-dot" style={{ backgroundColor: preset }} />
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
           <label className="field">
             <span>Summary</span>
@@ -25717,6 +26095,99 @@ function ResumeBuilderTool() {
                 </span>
               ))}
             </div>
+          </div>
+          <div className="mini-panel">
+            <h3>Smart recommendations</h3>
+            {needsSummary ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">Summary is short. Add a stronger value proposition for recruiters and ATS parsing.</p>
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() => {
+                    updatePersonal("summary", generateProfessionalSummary(resume));
+                    setStatus("Applied recommendation: generated stronger summary.");
+                  }}
+                >
+                  <Sparkles size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {needsPhoto ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">Add a profile photo for modern templates and stronger brand identity.</p>
+                <button className="action-button secondary" type="button" onClick={() => photoInputRef.current?.click()}>
+                  <Plus size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {missingSkills ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">Skill depth is low. Add high-signal professional skills for better matching.</p>
+                <button className="action-button secondary" type="button" onClick={autoAddCoreSkills}>
+                  <Sparkles size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {needsKeywordAlignment ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">ATS keyword coverage is below target. Add missing target terms to your profile.</p>
+                <button className="action-button secondary" type="button" onClick={autoAddKeywordSkills}>
+                  <Sparkles size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {weakHighlightItem ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">
+                  Add stronger bullets for <strong>{weakHighlightItem.role || "current role"}</strong> with measurable impact.
+                </p>
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() => {
+                    updateExperience(
+                      weakHighlightItem.id,
+                      { highlights: suggestExperienceHighlights(weakHighlightItem.role, weakHighlightItem.company) },
+                    );
+                    setStatus("Applied recommendation: regenerated role bullets.");
+                  }}
+                >
+                  <Sparkles size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {needsLinks ? (
+              <div className="resume-recommendation-row">
+                <p className="supporting-text">Include portfolio/LinkedIn links to improve trust and interview conversion.</p>
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() => {
+                    setResume((current) => ({
+                      ...current,
+                      links: [
+                        ...current.links,
+                        { id: crypto.randomUUID(), label: "LinkedIn", url: "https://linkedin.com/in/your-handle" },
+                        { id: crypto.randomUUID(), label: "Portfolio", url: "https://yourportfolio.com" },
+                      ].slice(0, 12),
+                    }));
+                    setStatus("Applied recommendation: added link placeholders.");
+                  }}
+                >
+                  <Plus size={15} />
+                  Apply
+                </button>
+              </div>
+            ) : null}
+            {!needsSummary && !needsPhoto && !missingSkills && !needsKeywordAlignment && !weakHighlightItem && !needsLinks ? (
+              <p className="supporting-text">No critical recommendations right now. Your resume structure is in strong shape.</p>
+            ) : null}
           </div>
           <div className="mini-panel">
             <h3>Skills</h3>
@@ -26028,16 +26499,37 @@ function ResumeBuilderTool() {
             )}
           </div>
         </div>
-        <aside className={`resume-preview resume-template-${resume.template}`}>
+        <aside
+          className={`resume-preview resume-template-${resume.template}`}
+          style={{ "--resume-accent": sanitizeResumeAccentColor(resume.accentColor) } as CSSProperties}
+        >
           <h3>Live preview</h3>
           <header className="resume-header">
-            <h4>{resume.personal.fullName || "Your Name"}</h4>
-            <p>{resume.personal.headline || "Professional headline"}</p>
-            <p className="supporting-text">
-              {[resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
-                .filter(Boolean)
-                .join(" | ") || "Contact details"}
-            </p>
+            <div className="resume-header-main">
+              <div>
+                <h4>{resume.personal.fullName || "Your Name"}</h4>
+                <p>{resume.personal.headline || "Professional headline"}</p>
+                <p className="supporting-text">
+                  {[resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
+                    .filter(Boolean)
+                    .join(" | ") || "Contact details"}
+                </p>
+              </div>
+              {resume.photoDataUrl ? (
+                <NextImage
+                  className="resume-profile-photo"
+                  src={resume.photoDataUrl}
+                  alt={resume.photoFileName || "Profile photo"}
+                  width={84}
+                  height={84}
+                  unoptimized
+                />
+              ) : (
+                <span className="resume-profile-photo resume-profile-photo-placeholder">
+                  {getResumeInitials(resume.personal.fullName)}
+                </span>
+              )}
+            </div>
           </header>
           {resume.personal.summary ? (
             <section className="resume-section">
