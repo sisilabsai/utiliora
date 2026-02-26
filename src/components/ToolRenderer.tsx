@@ -9713,6 +9713,514 @@ function AiHumanizerTool() {
   );
 }
 
+type ParaphraseTone = "natural" | "formal" | "casual" | "seo";
+type ParaphraseLengthMode = "same" | "shorter" | "longer";
+
+interface ParaphraseVariant {
+  id: string;
+  label: string;
+  text: string;
+  words: number;
+  riskScore: number;
+  similarity: number;
+  readingEase: number | null;
+}
+
+interface ParaphraseUploadSummary {
+  fileName: string;
+  source: string;
+  words: number;
+}
+
+function parseParaphraseKeywordLocks(value: string): string[] {
+  const seen = new Set<string>();
+  const entries = value
+    .split(/[,\n]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const output: string[] = [];
+  for (const entry of entries) {
+    const normalized = entry.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(entry.slice(0, 80));
+    if (output.length >= 40) break;
+  }
+  return output;
+}
+
+function ParaphrasingTool() {
+  const [sourceText, setSourceText] = useState("");
+  const [outputText, setOutputText] = useState("");
+  const [tone, setTone] = useState<ParaphraseTone>("natural");
+  const [strength, setStrength] = useState(2);
+  const [variationCount, setVariationCount] = useState(3);
+  const [lengthMode, setLengthMode] = useState<ParaphraseLengthMode>("same");
+  const [keywordLocksInput, setKeywordLocksInput] = useState("");
+  const [preserveKeywords, setPreserveKeywords] = useState(true);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPdfPages, setMaxPdfPages] = useState(AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+  const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [uploadSummaries, setUploadSummaries] = useState<ParaphraseUploadSummary[]>([]);
+  const [variants, setVariants] = useState<ParaphraseVariant[]>([]);
+  const [selectedVariantId, setSelectedVariantId] = useState("");
+  const [status, setStatus] = useState("Paste or upload text, then generate paraphrase variations.");
+
+  const sourceReport = useMemo(() => buildAiDetectorReport(sourceText, "balanced"), [sourceText]);
+  const outputReport = useMemo(() => buildAiDetectorReport(outputText, "balanced"), [outputText]);
+  const riskDelta = sourceReport && outputReport ? outputReport.riskScore - sourceReport.riskScore : null;
+
+  const rewriteWithTone = useCallback(
+    (input: string, seed: number): string => {
+      const lockTerms = keywordLocksInput
+        .split(/[,\n]/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .slice(0, 40);
+      let tokenIndex = 0;
+      const lockMap: Array<{ token: string; value: string }> = [];
+      let working = normalizeDocumentText(input);
+
+      if (preserveKeywords && lockTerms.length) {
+        lockTerms
+          .sort((left, right) => right.length - left.length)
+          .forEach((term) => {
+            const pattern = new RegExp(escapeRegExp(term), "gi");
+            working = working.replace(pattern, (match) => {
+              const token = `__UTILIORA_PARAPHRASE_LOCK_${tokenIndex}__`;
+              lockMap.push({ token, value: match });
+              tokenIndex += 1;
+              return token;
+            });
+          });
+      }
+
+      const mappedPreset: AiHumanizerStyle =
+        tone === "casual"
+          ? "conversational"
+          : tone === "formal"
+            ? "professional"
+            : tone === "seo"
+              ? "concise"
+              : "balanced";
+      const humanized = humanizeTextWithPreset(working, mappedPreset, strength);
+      working = humanized.text;
+
+      const synonymBank: Record<ParaphraseTone, Record<string, string[]>> = {
+        natural: {
+          important: ["notable", "meaningful", "key"],
+          improve: ["enhance", "refine", "strengthen"],
+          shows: ["reveals", "highlights", "indicates"],
+          use: ["apply", "leverage", "adopt"],
+        },
+        formal: {
+          important: ["critical", "significant", "material"],
+          improve: ["optimize", "enhance", "elevate"],
+          shows: ["demonstrates", "indicates", "illustrates"],
+          use: ["utilize", "apply", "implement"],
+        },
+        casual: {
+          important: ["key", "worth noting", "big"],
+          improve: ["make better", "boost", "clean up"],
+          shows: ["points out", "makes clear", "shows"],
+          use: ["use", "go with", "lean on"],
+        },
+        seo: {
+          important: ["key", "critical", "high-value"],
+          improve: ["optimize", "strengthen", "improve"],
+          shows: ["signals", "demonstrates", "highlights"],
+          use: ["apply", "use", "deploy"],
+        },
+      };
+      const replaceEvery = Math.max(2, 5 - Math.max(1, Math.min(3, strength)));
+      Object.entries(synonymBank[tone]).forEach(([term, replacements]) => {
+        const pattern = new RegExp(`\\b${escapeRegExp(term)}\\b`, "gi");
+        let occurrence = 0;
+        working = working.replace(pattern, (match) => {
+          occurrence += 1;
+          if ((occurrence + seed) % replaceEvery !== 0) return match;
+          const replacement = replacements[(occurrence + seed) % replacements.length];
+          return preserveMatchCase(match, replacement);
+        });
+      });
+
+      if (tone === "casual") {
+        const converted = applyPhraseRules(working, AI_HUMANIZER_CONTRACTIONS);
+        working = converted.text;
+      } else if (tone === "formal") {
+        const expanded = applyPhraseRules(working, AI_HUMANIZER_EXPANSIONS);
+        working = expanded.text;
+      } else if (tone === "seo") {
+        const concise = applyConciseRewrite(working);
+        working = concise.text;
+      }
+
+      if (lengthMode === "shorter") {
+        const concise = applyConciseRewrite(working);
+        working = concise.text
+          .replace(/\b(really|very|quite|basically|actually)\b/gi, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+      } else if (lengthMode === "longer") {
+        const sentences = splitAiSentences(working);
+        const fillers = [
+          "This gives clearer practical context.",
+          "That helps connect the idea to real outcomes.",
+          "It also makes the message easier to apply.",
+        ];
+        const expanded: string[] = [];
+        sentences.forEach((sentence, index) => {
+          expanded.push(ensureSentenceEnding(sentence));
+          if (index % 2 === 0 && tokenizeAiWords(sentence).length < 16) {
+            expanded.push(fillers[(seed + index) % fillers.length]);
+          }
+        });
+        working = expanded.join(" ");
+      }
+
+      lockMap.forEach((entry) => {
+        working = working.replaceAll(entry.token, entry.value);
+      });
+      return normalizeDocumentText(working);
+    },
+    [keywordLocksInput, lengthMode, preserveKeywords, strength, tone],
+  );
+
+  const generateParaphrases = useCallback(() => {
+    const normalized = normalizeDocumentText(sourceText);
+    if (!normalized) {
+      setStatus("Add source text before generating paraphrases.");
+      setVariants([]);
+      setSelectedVariantId("");
+      setOutputText("");
+      return;
+    }
+
+    const target = Math.max(1, Math.min(5, Math.round(variationCount)));
+    const generated: ParaphraseVariant[] = [];
+    const dedupe = new Set<string>();
+    for (let index = 0; index < target; index += 1) {
+      const rewritten = rewriteWithTone(normalized, index + 1);
+      if (!rewritten || dedupe.has(rewritten)) continue;
+      dedupe.add(rewritten);
+      const report = buildAiDetectorReport(rewritten, "balanced");
+      const sourceSet = new Set(tokenizeAiWords(normalized));
+      const rewrittenSet = new Set(tokenizeAiWords(rewritten));
+      let overlap = 0;
+      sourceSet.forEach((token) => {
+        if (rewrittenSet.has(token)) overlap += 1;
+      });
+      const union = sourceSet.size + rewrittenSet.size - overlap;
+      const similarity = union ? (overlap / union) * 100 : 0;
+      generated.push({
+        id: crypto.randomUUID(),
+        label: `Variation ${generated.length + 1}`,
+        text: rewritten,
+        words: countWords(rewritten),
+        riskScore: report?.riskScore ?? 50,
+        similarity: Number(similarity.toFixed(1)),
+        readingEase: report?.readingEase ?? null,
+      });
+    }
+
+    const ranked = [...generated].sort((left, right) => left.riskScore - right.riskScore || left.similarity - right.similarity);
+    const relabeled = ranked.map((entry, index) => ({ ...entry, label: `Variation ${index + 1}` }));
+    setVariants(relabeled);
+    if (relabeled.length) {
+      setSelectedVariantId(relabeled[0].id);
+      setOutputText(relabeled[0].text);
+    } else {
+      setSelectedVariantId("");
+      setOutputText("");
+    }
+    setStatus(relabeled.length ? `Generated ${relabeled.length} paraphrase variation(s).` : "Could not generate unique paraphrases from this source.");
+    trackEvent("tool_paraphrasing_generate", {
+      tone,
+      strength,
+      lengthMode,
+      requested: target,
+      generated: relabeled.length,
+      words: countWords(normalized),
+    });
+  }, [lengthMode, rewriteWithTone, sourceText, strength, tone, variationCount]);
+
+  const handleUpload = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+      const files = Array.from(fileList).slice(0, AI_DETECTOR_MAX_UPLOAD_FILES);
+      setIsImporting(true);
+      setStatus(`Importing ${files.length} document${files.length === 1 ? "" : "s"}...`);
+      let failed = 0;
+      const extracted: Array<ParaphraseUploadSummary & { text: string }> = [];
+
+      try {
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          if (file.size > AI_DETECTOR_UPLOAD_MAX_BYTES) {
+            failed += 1;
+            continue;
+          }
+          try {
+            const lowerName = file.name.toLowerCase();
+            const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+            let source = "Text";
+            let importedText = "";
+            if (isPdf) {
+              const parsedPdf = await extractTextFromPdfDocument(file, {
+                pageRangeInput,
+                maxPages: maxPdfPages,
+                includePageMarkers: includePdfPageMarkers,
+              });
+              importedText = parsedPdf.text;
+              source = `PDF (${parsedPdf.selectedPages.length}/${parsedPdf.totalPages} pages)`;
+            } else {
+              const parsedDocument = await extractTextFromDocumentFile(file, {
+                convertHtmlToText: convertHtmlUploadToText,
+              });
+              importedText = parsedDocument.text;
+              source = parsedDocument.source;
+            }
+            const normalized = normalizeDocumentText(importedText);
+            if (!normalized) {
+              failed += 1;
+              continue;
+            }
+            extracted.push({ fileName: file.name, source, text: normalized, words: countWords(normalized) });
+          } catch {
+            failed += 1;
+          }
+        }
+
+        if (!extracted.length) {
+          setStatus("No readable text was extracted from the selected files.");
+          return;
+        }
+        const mergedImported = extracted
+          .map((entry) => (extracted.length > 1 ? `${entry.fileName} (${entry.source})\n${entry.text}` : entry.text))
+          .join("\n\n");
+        const bounded = mergedImported.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+        const merged = mergeUploadedText(sourceText, bounded, uploadMode);
+        setSourceText(merged);
+        setUploadSummaries(extracted.map(({ fileName, source, words }) => ({ fileName, source, words })));
+        setStatus(`Imported ${extracted.length}/${files.length} file(s).${failed ? ` Failed: ${failed}.` : ""}`);
+        trackEvent("tool_paraphrasing_upload", { filesImported: extracted.length, filesFailed: failed, uploadMode });
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [convertHtmlUploadToText, includePdfPageMarkers, maxPdfPages, pageRangeInput, sourceText, uploadMode],
+  );
+
+  const applyOutputRecommendation = useCallback(
+    (recommendationId: AiDetectorRecommendationId) => {
+      if (!outputReport || !outputText.trim()) return;
+      const recommendation = outputReport.recommendations.find((entry) => entry.id === recommendationId);
+      if (!recommendation?.autoApplicable) {
+        setStatus("This recommendation requires manual edits.");
+        return;
+      }
+      const result = applyAiDetectorRecommendation(recommendationId, outputText, outputReport);
+      if (!result.changeCount || result.text === outputText) {
+        setStatus(result.summary);
+        return;
+      }
+      setOutputText(result.text);
+      setStatus(result.summary);
+      trackEvent("tool_paraphrasing_apply_fix", { recommendationId, changes: result.changeCount });
+    },
+    [outputReport, outputText],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Sparkles}
+        title="Paraphrasing tool"
+        subtitle="Generate multiple rewrites with tone control, keyword locks, and before/after quality scoring."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Tone</span>
+          <select value={tone} onChange={(event) => setTone(event.target.value as ParaphraseTone)}>
+            <option value="natural">Natural</option>
+            <option value="formal">Formal</option>
+            <option value="casual">Casual</option>
+            <option value="seo">SEO-focused</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Rewrite strength</span>
+          <input type="number" min={1} max={3} step={1} value={strength} onChange={(event) => setStrength(Math.max(1, Math.min(3, Number.parseInt(event.target.value, 10) || 2)))} />
+        </label>
+        <label className="field">
+          <span>Variations</span>
+          <input type="number" min={1} max={5} step={1} value={variationCount} onChange={(event) => setVariationCount(Math.max(1, Math.min(5, Number.parseInt(event.target.value, 10) || 3)))} />
+        </label>
+        <label className="field">
+          <span>Length mode</span>
+          <select value={lengthMode} onChange={(event) => setLengthMode(event.target.value as ParaphraseLengthMode)}>
+            <option value="same">Similar length</option>
+            <option value="shorter">Shorter</option>
+            <option value="longer">Longer</option>
+          </select>
+        </label>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace source text</option>
+            <option value="append">Append to source text</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>PDF page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,8" />
+        </label>
+        <label className="field">
+          <span>Max PDF pages</span>
+          <input type="number" min={1} max={300} step={1} value={maxPdfPages} onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(300, Number.parseInt(event.target.value, 10) || AI_DETECTOR_DEFAULT_MAX_PDF_PAGES)))} />
+        </label>
+        <label className="field">
+          <span>Upload documents</span>
+          <input type="file" accept={AI_DETECTOR_UPLOAD_ACCEPT} multiple onChange={(event) => { void handleUpload(event.target.files); event.target.value = ""; }} disabled={isImporting} />
+        </label>
+      </div>
+      <label className="checkbox">
+        <input type="checkbox" checked={preserveKeywords} onChange={(event) => setPreserveKeywords(event.target.checked)} />
+        Preserve keyword locks exactly in output
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={convertHtmlUploadToText} onChange={(event) => setConvertHtmlUploadToText(event.target.checked)} />
+        Convert HTML-like files to plain text
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={includePdfPageMarkers} onChange={(event) => setIncludePdfPageMarkers(event.target.checked)} />
+        Include page markers while extracting PDF text
+      </label>
+      <label className="field">
+        <span>Keyword locks (comma or newline separated)</span>
+        <textarea value={keywordLocksInput} onChange={(event) => setKeywordLocksInput(event.target.value)} rows={3} placeholder="brand name, primary keyword, product model" />
+      </label>
+      <label className="field">
+        <span>Source text</span>
+        <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} rows={10} placeholder="Paste text to paraphrase." />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generateParaphrases} disabled={isImporting}>
+          Generate paraphrases
+        </button>
+        <button className="action-button secondary" type="button" onClick={async () => {
+          const ok = await copyTextToClipboard(outputText);
+          setStatus(ok ? "Active output copied." : "Nothing to copy.");
+        }} disabled={!outputText.trim()}>
+          <Copy size={15} />
+          Copy active
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => downloadTextFile("paraphrased-output.txt", outputText)} disabled={!outputText.trim()}>
+          <Download size={15} />
+          Download active
+        </button>
+      </div>
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "Source words", value: formatNumericValue(countWords(sourceText)) },
+          { label: "Generated variants", value: formatNumericValue(variants.length) },
+          { label: "Keyword locks", value: formatNumericValue(parseParaphraseKeywordLocks(keywordLocksInput).length) },
+          { label: "Imported docs", value: formatNumericValue(uploadSummaries.length) },
+        ]}
+      />
+
+      {variants.length ? (
+        <div className="mini-panel">
+          <h3>Paraphrase variants</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Variant</th>
+                  <th>Words</th>
+                  <th>Risk</th>
+                  <th>Similarity</th>
+                  <th>Reading ease</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {variants.map((variant) => (
+                  <tr key={variant.id}>
+                    <td>{variant.label}</td>
+                    <td>{formatNumericValue(variant.words)}</td>
+                    <td>{variant.riskScore}</td>
+                    <td>{variant.similarity.toFixed(1)}%</td>
+                    <td>{variant.readingEase != null ? variant.readingEase.toFixed(1) : "N/A"}</td>
+                    <td>
+                      <button
+                        className="action-button secondary"
+                        type="button"
+                        onClick={() => {
+                          setSelectedVariantId(variant.id);
+                          setOutputText(variant.text);
+                          setStatus(`${variant.label} selected.`);
+                        }}
+                      >
+                        {selectedVariantId === variant.id ? "Active" : "Use"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Active paraphrase output</span>
+        <textarea value={outputText} onChange={(event) => setOutputText(event.target.value)} rows={10} placeholder="Selected paraphrase appears here." />
+      </label>
+
+      {sourceReport && outputReport ? (
+        <ResultList
+          rows={[
+            { label: "Source risk score", value: `${sourceReport.riskScore}` },
+            { label: "Output risk score", value: `${outputReport.riskScore}` },
+            { label: "Risk delta", value: riskDelta == null ? "-" : `${riskDelta > 0 ? "+" : ""}${riskDelta}` },
+            { label: "Source confidence", value: `${sourceReport.confidence}%` },
+            { label: "Output confidence", value: `${outputReport.confidence}%` },
+          ]}
+        />
+      ) : null}
+
+      {outputReport?.recommendations.length ? (
+        <div className="mini-panel">
+          <h3>Recommended output adjustments</h3>
+          <ul className="plain-list">
+            {outputReport.recommendations.map((entry) => (
+              <li key={entry.id}>
+                {entry.title} ({entry.priority})
+                {entry.autoApplicable ? (
+                  <>
+                    {" "}
+                    <button className="action-button secondary" type="button" onClick={() => applyOutputRecommendation(entry.id)}>
+                      Apply
+                    </button>
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 interface PlagiarismSourceResult {
   sourceLabel: string;
   sourceWordCount: number;
@@ -10155,6 +10663,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <AiDetectorTool />;
     case "ai-humanizer":
       return <AiHumanizerTool />;
+    case "paraphrasing-tool":
+      return <ParaphrasingTool />;
     case "plagiarism-checker":
       return <PlagiarismCheckerTool />;
     case "password-generator":

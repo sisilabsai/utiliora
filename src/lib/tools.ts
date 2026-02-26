@@ -640,6 +640,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("AI Human Rewrite Assistant"),
   },
   {
+    slug: "paraphrasing-tool",
+    category: "seo-tools",
+    title: "Paraphrasing Tool",
+    summary: "Generate multiple high-quality rewrites with tone control, keyword locks, and detector-aware quality signals.",
+    description:
+      "Rewrite drafts into clearer alternatives with adjustable tone, strength, and length while preserving critical terms and comparing before/after quality metrics.",
+    keywords: [
+      "paraphrasing tool",
+      "paraphrase text",
+      "rewrite sentence",
+      "reword paragraph",
+      "text rewriter",
+    ],
+    engine: { kind: "text-tool", id: "paraphrasing-tool" },
+    faq: baseFaq("Paraphrasing Tool"),
+  },
+  {
     slug: "plagiarism-checker",
     category: "seo-tools",
     title: "Plagiarism Checker",

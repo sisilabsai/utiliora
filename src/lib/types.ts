@@ -92,6 +92,7 @@ export type TextToolId =
   | "base64-encoder-decoder"
   | "ai-detector"
   | "ai-humanizer"
+  | "paraphrasing-tool"
   | "plagiarism-checker"
   | "password-generator"
   | "lorem-ipsum-generator";
