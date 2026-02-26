@@ -9118,6 +9118,601 @@ function AiDetectorTool() {
   );
 }
 
+type AiHumanizerStyle = "balanced" | "conversational" | "professional" | "concise" | "storytelling";
+
+const AI_HUMANIZER_PRESETS: Array<{
+  id: AiHumanizerStyle;
+  label: string;
+  description: string;
+}> = [
+  { id: "balanced", label: "Balanced", description: "Natural rewrite with moderate changes and stable meaning." },
+  { id: "conversational", label: "Conversational", description: "Friendly, simpler phrasing with spoken flow." },
+  { id: "professional", label: "Professional", description: "Formal tone with clear and polished structure." },
+  { id: "concise", label: "Concise", description: "Shorter and sharper phrasing with less filler." },
+  { id: "storytelling", label: "Storytelling", description: "More narrative flow and engaging sentence rhythm." },
+];
+
+const AI_HUMANIZER_CONTRACTIONS: Array<{ from: RegExp; to: string }> = [
+  { from: /\bdo not\b/gi, to: "don't" },
+  { from: /\bdoes not\b/gi, to: "doesn't" },
+  { from: /\bcannot\b/gi, to: "can't" },
+  { from: /\bit is\b/gi, to: "it's" },
+  { from: /\bthat is\b/gi, to: "that's" },
+  { from: /\bthere is\b/gi, to: "there's" },
+  { from: /\bwe are\b/gi, to: "we're" },
+  { from: /\bthey are\b/gi, to: "they're" },
+  { from: /\byou are\b/gi, to: "you're" },
+  { from: /\bi am\b/gi, to: "I'm" },
+  { from: /\bwill not\b/gi, to: "won't" },
+];
+
+const AI_HUMANIZER_EXPANSIONS: Array<{ from: RegExp; to: string }> = [
+  { from: /\bdon't\b/gi, to: "do not" },
+  { from: /\bdoesn't\b/gi, to: "does not" },
+  { from: /\bcan't\b/gi, to: "cannot" },
+  { from: /\bit's\b/gi, to: "it is" },
+  { from: /\bthat's\b/gi, to: "that is" },
+  { from: /\bthere's\b/gi, to: "there is" },
+  { from: /\bwe're\b/gi, to: "we are" },
+  { from: /\bthey're\b/gi, to: "they are" },
+  { from: /\byou're\b/gi, to: "you are" },
+  { from: /\bi'm\b/gi, to: "I am" },
+  { from: /\bwon't\b/gi, to: "will not" },
+];
+
+function preserveMatchCase(original: string, replacement: string): string {
+  if (!original) return replacement;
+  if (original === original.toUpperCase()) return replacement.toUpperCase();
+  if (original[0] === original[0].toUpperCase()) return capitalizeFirstCharacter(replacement);
+  return replacement;
+}
+
+function applyPhraseRules(value: string, rules: Array<{ from: RegExp; to: string }>): { text: string; changes: number } {
+  let changes = 0;
+  let next = value;
+  rules.forEach((rule) => {
+    next = next.replace(rule.from, (match) => {
+      changes += 1;
+      return preserveMatchCase(match, rule.to);
+    });
+  });
+  return { text: next, changes };
+}
+
+function applyConciseRewrite(value: string): { text: string; changes: number } {
+  const conciseRules: Array<{ from: RegExp; to: string }> = [
+    { from: /\bin order to\b/gi, to: "to" },
+    { from: /\bit is important to note that\b/gi, to: "" },
+    { from: /\bit should be noted that\b/gi, to: "" },
+    { from: /\bat this point in time\b/gi, to: "now" },
+    { from: /\bdue to the fact that\b/gi, to: "because" },
+    { from: /\ba large number of\b/gi, to: "many" },
+    { from: /\bfor the purpose of\b/gi, to: "for" },
+    { from: /\bin the event that\b/gi, to: "if" },
+  ];
+  const rewritten = applyPhraseRules(value, conciseRules);
+  return {
+    text: normalizeDocumentText(rewritten.text.replace(/\s{2,}/g, " ")),
+    changes: rewritten.changes,
+  };
+}
+
+function applyStorytellingTone(value: string): { text: string; changes: number } {
+  const sentences = splitAiSentences(value);
+  if (!sentences.length) return { text: value, changes: 0 };
+  const hooks = ["In practice,", "Here's the key point:", "Now, this matters because"];
+  const output = [...sentences];
+  let changes = 0;
+  if (output.length >= 2 && !/^(in practice|here's the key point|now, this matters because)/i.test(output[0])) {
+    output[0] = `${hooks[changes % hooks.length]} ${output[0]}`;
+    changes += 1;
+  }
+  for (let index = 1; index < output.length; index += 3) {
+    if (/^(however|moreover|therefore|furthermore|additionally)\b/i.test(output[index])) {
+      output[index] = output[index].replace(/^(however|moreover|therefore|furthermore|additionally)\b[:,]?\s*/i, "Also, ");
+      changes += 1;
+    }
+  }
+  return { text: normalizeDocumentText(output.join(" ")), changes };
+}
+
+function protectCriticalMeaningTokens(value: string): { text: string; map: Array<{ token: string; value: string }> } {
+  const map: Array<{ token: string; value: string }> = [];
+  const pattern =
+    /https?:\/\/[^\s)]+|[\w.+-]+@[\w.-]+\.\w+|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b\d+(?:[.,]\d+)?%?\b/g;
+  let index = 0;
+  const text = value.replace(pattern, (match) => {
+    const token = `__UTILIORA_TOKEN_${index}__`;
+    map.push({ token, value: match });
+    index += 1;
+    return token;
+  });
+  return { text, map };
+}
+
+function restoreCriticalMeaningTokens(value: string, map: Array<{ token: string; value: string }>): string {
+  let next = value;
+  map.forEach((entry) => {
+    next = next.replaceAll(entry.token, entry.value);
+  });
+  return next;
+}
+
+function humanizeTextWithPreset(
+  input: string,
+  preset: AiHumanizerStyle,
+  strength: number,
+): { text: string; changeCount: number; notes: string[] } {
+  const protectedPayload = protectCriticalMeaningTokens(input);
+  let working = protectedPayload.text;
+  let workingReport = buildAiDetectorReport(working, "balanced");
+  let changeCount = 0;
+  const notes: string[] = [];
+  const passes = Math.max(1, Math.min(3, Math.round(strength)));
+
+  const applyDetectorFix = (id: AiDetectorRecommendationId) => {
+    if (!workingReport) return;
+    const result = applyAiDetectorRecommendation(id, working, workingReport);
+    if (!result.changeCount || result.text === working) return;
+    working = result.text;
+    changeCount += result.changeCount;
+    notes.push(result.summary);
+    const refreshed = buildAiDetectorReport(working, "balanced");
+    if (refreshed) workingReport = refreshed;
+  };
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    applyDetectorFix("normalize-transition-openers");
+    applyDetectorFix("reduce-repeated-phrases");
+    applyDetectorFix("diversify-vocabulary");
+    applyDetectorFix("split-long-sentences");
+  }
+
+  if (preset === "conversational") {
+    const conversational = applyPhraseRules(working, AI_HUMANIZER_CONTRACTIONS);
+    working = conversational.text;
+    changeCount += conversational.changes;
+    if (conversational.changes) notes.push("Applied conversational contractions.");
+  } else if (preset === "professional") {
+    const professional = applyPhraseRules(working, AI_HUMANIZER_EXPANSIONS);
+    working = professional.text;
+    changeCount += professional.changes;
+    if (professional.changes) notes.push("Expanded contractions for formal tone.");
+  } else if (preset === "concise") {
+    const concise = applyConciseRewrite(working);
+    working = concise.text;
+    changeCount += concise.changes;
+    if (concise.changes) notes.push("Removed filler phrases for concise style.");
+  } else if (preset === "storytelling") {
+    const story = applyStorytellingTone(working);
+    working = story.text;
+    changeCount += story.changes;
+    if (story.changes) notes.push("Adjusted flow for storytelling style.");
+  }
+
+  const restored = restoreCriticalMeaningTokens(working, protectedPayload.map);
+  return {
+    text: normalizeDocumentText(restored),
+    changeCount,
+    notes,
+  };
+}
+
+interface AiHumanizerUploadSummary {
+  fileName: string;
+  source: string;
+  words: number;
+}
+
+function AiHumanizerTool() {
+  const [sourceText, setSourceText] = useState("");
+  const [rewrittenText, setRewrittenText] = useState("");
+  const [preset, setPreset] = useState<AiHumanizerStyle>("balanced");
+  const [strength, setStrength] = useState(2);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPdfPages, setMaxPdfPages] = useState(AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+  const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [status, setStatus] = useState("Upload or paste draft text, then generate a human rewrite.");
+  const [uploadSummaries, setUploadSummaries] = useState<AiHumanizerUploadSummary[]>([]);
+
+  const beforeReport = useMemo(() => buildAiDetectorReport(sourceText, "balanced"), [sourceText]);
+  const afterReport = useMemo(() => buildAiDetectorReport(rewrittenText, "balanced"), [rewrittenText]);
+  const riskDelta = beforeReport && afterReport ? afterReport.riskScore - beforeReport.riskScore : null;
+  const readabilityDelta =
+    beforeReport && afterReport && beforeReport.readingEase != null && afterReport.readingEase != null
+      ? Number((afterReport.readingEase - beforeReport.readingEase).toFixed(1))
+      : null;
+
+  const handleUpload = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+      const files = Array.from(fileList).slice(0, AI_DETECTOR_MAX_UPLOAD_FILES);
+      setIsImporting(true);
+      setStatus(`Importing ${files.length} document${files.length === 1 ? "" : "s"}...`);
+      let failed = 0;
+      const extracted: Array<AiHumanizerUploadSummary & { text: string }> = [];
+
+      try {
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          if (file.size > AI_DETECTOR_UPLOAD_MAX_BYTES) {
+            failed += 1;
+            continue;
+          }
+          try {
+            const lowerName = file.name.toLowerCase();
+            const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+            let source = "Text";
+            let importedText = "";
+            if (isPdf) {
+              const parsedPdf = await extractTextFromPdfDocument(file, {
+                pageRangeInput,
+                maxPages: maxPdfPages,
+                includePageMarkers: includePdfPageMarkers,
+              });
+              importedText = parsedPdf.text;
+              source = `PDF (${parsedPdf.selectedPages.length}/${parsedPdf.totalPages} pages)`;
+            } else {
+              const parsedDocument = await extractTextFromDocumentFile(file, {
+                convertHtmlToText: convertHtmlUploadToText,
+              });
+              importedText = parsedDocument.text;
+              source = parsedDocument.source;
+            }
+            const normalized = normalizeDocumentText(importedText);
+            if (!normalized) {
+              failed += 1;
+              continue;
+            }
+            extracted.push({
+              fileName: file.name,
+              source,
+              text: normalized,
+              words: countWords(normalized),
+            });
+          } catch {
+            failed += 1;
+          }
+        }
+
+        if (!extracted.length) {
+          setStatus("No readable text was extracted from the uploaded files.");
+          return;
+        }
+
+        const mergedImported = extracted
+          .map((entry) => (extracted.length > 1 ? `${entry.fileName} (${entry.source})\n${entry.text}` : entry.text))
+          .join("\n\n");
+        const bounded = mergedImported.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+        const merged = mergeUploadedText(sourceText, bounded, uploadMode);
+        setSourceText(merged);
+        setUploadSummaries(extracted.map(({ fileName, source, words }) => ({ fileName, source, words })));
+        setStatus(
+          `Imported ${extracted.length}/${files.length} file(s).${failed ? ` Failed: ${failed}.` : ""}`,
+        );
+        trackEvent("tool_ai_humanizer_upload", {
+          filesImported: extracted.length,
+          filesFailed: failed,
+          uploadMode,
+        });
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [convertHtmlUploadToText, includePdfPageMarkers, maxPdfPages, pageRangeInput, sourceText, uploadMode],
+  );
+
+  const humanize = useCallback(() => {
+    const trimmed = sourceText.trim();
+    if (!trimmed) {
+      setStatus("Add source text first.");
+      return;
+    }
+    const result = humanizeTextWithPreset(trimmed, preset, strength);
+    setRewrittenText(result.text);
+    setStatus(
+      result.changeCount
+        ? `Humanized with ${formatNumericValue(result.changeCount)} automated edit(s).`
+        : "Rewrite complete. Try a stronger setting for deeper changes.",
+    );
+    trackEvent("tool_ai_humanizer_generate", {
+      preset,
+      strength,
+      words: countWords(trimmed),
+      edits: result.changeCount,
+      notes: result.notes.join(" | ").slice(0, 220),
+    });
+  }, [preset, sourceText, strength]);
+
+  const applyRewriteRecommendation = useCallback(
+    (recommendationId: AiDetectorRecommendationId) => {
+      if (!afterReport || !rewrittenText.trim()) return;
+      const recommendation = afterReport.recommendations.find((entry) => entry.id === recommendationId);
+      if (!recommendation?.autoApplicable) {
+        setStatus("This recommendation requires manual editing.");
+        return;
+      }
+      const result = applyAiDetectorRecommendation(recommendationId, rewrittenText, afterReport);
+      if (!result.changeCount || result.text === rewrittenText) {
+        setStatus(result.summary);
+        return;
+      }
+      setRewrittenText(result.text);
+      setStatus(result.summary);
+      trackEvent("tool_ai_humanizer_apply_fix", { recommendationId, changes: result.changeCount });
+    },
+    [afterReport, rewrittenText],
+  );
+
+  const activePreset = AI_HUMANIZER_PRESETS.find((entry) => entry.id === preset);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Sparkles}
+        title="AI human rewrite assistant"
+        subtitle="Rewrite AI-like drafts into natural human voice with style presets, detector-based deltas, and one-click refinement actions."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Rewrite style</span>
+          <select value={preset} onChange={(event) => setPreset(event.target.value as AiHumanizerStyle)}>
+            {AI_HUMANIZER_PRESETS.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Rewrite strength</span>
+          <input
+            type="number"
+            min={1}
+            max={3}
+            step={1}
+            value={strength}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              setStrength(Number.isFinite(parsed) ? Math.max(1, Math.min(3, parsed)) : 2);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="replace">Replace source text</option>
+            <option value="append">Append to source text</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>PDF page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,8" />
+        </label>
+      </div>
+      <div className="field-grid">
+        <label className="field">
+          <span>Max PDF pages</span>
+          <input
+            type="number"
+            min={1}
+            max={300}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Upload documents</span>
+          <input
+            type="file"
+            accept={AI_DETECTOR_UPLOAD_ACCEPT}
+            multiple
+            onChange={(event) => {
+              void handleUpload(event.target.files);
+              event.target.value = "";
+            }}
+            disabled={isImporting}
+          />
+        </label>
+      </div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={convertHtmlUploadToText}
+          onChange={(event) => setConvertHtmlUploadToText(event.target.checked)}
+        />
+        Convert HTML-like files to plain text
+      </label>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={includePdfPageMarkers}
+          onChange={(event) => setIncludePdfPageMarkers(event.target.checked)}
+        />
+        Include page markers while extracting PDF content
+      </label>
+
+      <p className="supporting-text">
+        {activePreset?.description} This tool is for clarity and editorial quality improvement, not for academic dishonesty or impersonation.
+      </p>
+
+      <label className="field">
+        <span>Source draft</span>
+        <textarea
+          value={sourceText}
+          onChange={(event) => setSourceText(event.target.value)}
+          rows={10}
+          placeholder="Paste source text to humanize."
+        />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={humanize} disabled={isImporting}>
+          Humanize draft
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (!rewrittenText.trim()) return;
+            setSourceText(rewrittenText);
+            setStatus("Rewritten text moved to source editor.");
+          }}
+          disabled={!rewrittenText.trim()}
+        >
+          <RefreshCw size={15} />
+          Use rewritten as source
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(rewrittenText);
+            setStatus(ok ? "Rewritten text copied." : "Nothing to copy.");
+          }}
+          disabled={!rewrittenText.trim()}
+        >
+          <Copy size={15} />
+          Copy rewritten
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("ai-humanized-output.txt", rewrittenText)}
+          disabled={!rewrittenText.trim()}
+        >
+          <Download size={15} />
+          Download rewritten
+        </button>
+      </div>
+
+      <label className="field">
+        <span>Rewritten output</span>
+        <textarea
+          value={rewrittenText}
+          onChange={(event) => setRewrittenText(event.target.value)}
+          rows={10}
+          placeholder="Humanized output appears here."
+        />
+      </label>
+
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "Source words", value: formatNumericValue(countWords(sourceText)) },
+          { label: "Rewritten words", value: formatNumericValue(countWords(rewrittenText)) },
+          {
+            label: "Risk delta",
+            value:
+              riskDelta == null
+                ? "-"
+                : `${riskDelta > 0 ? "+" : ""}${riskDelta} (${riskDelta <= 0 ? "improved" : "higher"})`,
+          },
+          {
+            label: "Reading ease delta",
+            value: readabilityDelta == null ? "-" : `${readabilityDelta > 0 ? "+" : ""}${readabilityDelta}`,
+          },
+          { label: "Imported docs", value: formatNumericValue(uploadSummaries.length) },
+        ]}
+      />
+
+      {beforeReport && afterReport ? (
+        <div className="mini-panel">
+          <h3>Before vs after</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Before</th>
+                  <th>After</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Verdict</td>
+                  <td>{beforeReport.verdict}</td>
+                  <td>{afterReport.verdict}</td>
+                </tr>
+                <tr>
+                  <td>Risk score</td>
+                  <td>{beforeReport.riskScore}</td>
+                  <td>{afterReport.riskScore}</td>
+                </tr>
+                <tr>
+                  <td>Confidence</td>
+                  <td>{beforeReport.confidence}%</td>
+                  <td>{afterReport.confidence}%</td>
+                </tr>
+                <tr>
+                  <td>Lexical diversity</td>
+                  <td>{(beforeReport.lexicalDiversity * 100).toFixed(1)}%</td>
+                  <td>{(afterReport.lexicalDiversity * 100).toFixed(1)}%</td>
+                </tr>
+                <tr>
+                  <td>Burstiness</td>
+                  <td>{beforeReport.burstiness.toFixed(2)}</td>
+                  <td>{afterReport.burstiness.toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td>Reading ease</td>
+                  <td>{beforeReport.readingEase != null ? beforeReport.readingEase.toFixed(1) : "N/A"}</td>
+                  <td>{afterReport.readingEase != null ? afterReport.readingEase.toFixed(1) : "N/A"}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {afterReport ? (
+        <div className="mini-panel">
+          <h3>Recommended adjustments on rewritten output</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Priority</th>
+                  <th>Recommendation</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {afterReport.recommendations.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.priority.toUpperCase()}</td>
+                    <td>{entry.title}</td>
+                    <td>
+                      {entry.autoApplicable ? (
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => applyRewriteRecommendation(entry.id)}
+                        >
+                          Apply
+                        </button>
+                      ) : (
+                        <span className="supporting-text">Manual edit</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 interface PlagiarismSourceResult {
   sourceLabel: string;
   sourceWordCount: number;
@@ -9558,6 +10153,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <Base64Tool />;
     case "ai-detector":
       return <AiDetectorTool />;
+    case "ai-humanizer":
+      return <AiHumanizerTool />;
     case "plagiarism-checker":
       return <PlagiarismCheckerTool />;
     case "password-generator":

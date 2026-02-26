@@ -623,6 +623,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("AI Detector"),
   },
   {
+    slug: "ai-humanizer",
+    category: "seo-tools",
+    title: "AI Human Rewrite Assistant",
+    summary: "Rewrite AI-like drafts into more natural human-style text with measurable before/after quality deltas.",
+    description:
+      "Humanize drafts with style presets, readability-aware rewrites, and one-click improvement actions while preserving meaning and structure.",
+    keywords: [
+      "ai humanizer",
+      "human rewrite assistant",
+      "humanize ai text",
+      "rewrite ai content",
+      "ai text rewriter",
+    ],
+    engine: { kind: "text-tool", id: "ai-humanizer" },
+    faq: baseFaq("AI Human Rewrite Assistant"),
+  },
+  {
     slug: "plagiarism-checker",
     category: "seo-tools",
     title: "Plagiarism Checker",

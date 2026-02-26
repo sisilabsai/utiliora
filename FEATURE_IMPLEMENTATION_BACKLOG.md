@@ -34,6 +34,7 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 | 16 | Auto Loan Calculator | Calculators | High financial intent traffic | Done |
 | 17 | Debt-to-Income (DTI) Calculator | Calculators | Mortgage/loan funnel demand | Done |
 | 18 | Refinance Calculator | Calculators | High-value finance traffic | Done |
+| 19 | AI Human Rewrite Assistant | SEO/Content | Very high AI-content workflow demand | Done |
 
 ## Current Build Sprint
 - Completed feature: `Age Calculator` (`/calculators/age-calculator`)
@@ -54,4 +55,5 @@ Ship high-traffic tools in a strict one-by-one sequence, starting with the faste
 - Completed feature: `Document Translator` (`/productivity-tools/document-translator`)
 - Completed feature: `Auto Loan Calculator` (`/calculators/auto-loan-calculator`)
 - Completed feature: `Refinance Calculator` (`/calculators/refinance-calculator`)
+- Completed feature: `AI Human Rewrite Assistant` (`/seo-tools/ai-humanizer`)
 - Active next feature: `Backlog complete - choose next roadmap item`
