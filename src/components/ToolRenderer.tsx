@@ -4828,9 +4828,51 @@ const CHARACTER_LIMIT_PRESETS = [
   { id: "seo-title", label: "SEO title", limit: 60 },
   { id: "meta-description", label: "Meta description", limit: 160 },
   { id: "x-post", label: "X / Twitter post", limit: 280 },
+  { id: "instagram-caption", label: "Instagram caption", limit: 2200 },
+  { id: "facebook-post", label: "Facebook post", limit: 63206 },
   { id: "linkedin-post", label: "LinkedIn post", limit: 3000 },
+  { id: "google-ads-headline", label: "Google Ads headline", limit: 30 },
+  { id: "google-ads-description", label: "Google Ads description", limit: 90 },
+  { id: "sms", label: "SMS", limit: 160 },
   { id: "youtube-description", label: "YouTube description", limit: 5000 },
+  { id: "youtube-title", label: "YouTube title", limit: 100 },
+  { id: "tiktok-caption", label: "TikTok caption", limit: 2200 },
 ] as const;
+
+const CHARACTER_COUNTER_UPLOAD_ACCEPT =
+  ".pdf,.doc,.docx,.docm,.dotx,.dotm,.ppt,.pptx,.pptm,.potx,.potm,.xls,.xlsx,.xlsm,.xltx,.xltm,.odt,.ods,.odp,.epub,.rtf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json";
+const CHARACTER_COUNTER_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
+
+function countParagraphs(value: string): number {
+  if (!value.trim()) return 0;
+  return value
+    .split(/\n\s*\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean).length;
+}
+
+function countGraphemeClusters(value: string): number {
+  if (!value) return 0;
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    return Array.from(segmenter.segment(value)).length;
+  }
+  return Array.from(value).length;
+}
+
+function buildTextWithinLimit(value: string, limit: number, includeSpaces: boolean): string {
+  if (!value || limit <= 0) return "";
+  let used = 0;
+  let output = "";
+  for (const char of value) {
+    const isWhitespace = /\s/.test(char);
+    const increment = includeSpaces ? 1 : isWhitespace ? 0 : 1;
+    if (used + increment > limit) break;
+    output += char;
+    used += increment;
+  }
+  return output.trimEnd();
+}
 
 function WordCounterTool() {
   const [text, setText] = useState("");
@@ -5020,38 +5062,151 @@ function CharacterCounterTool() {
   const [useCustomLimit, setUseCustomLimit] = useState(false);
   const [customLimit, setCustomLimit] = useState("160");
   const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
+  const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
+  const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(false);
+  const [includeDocumentHeaders, setIncludeDocumentHeaders] = useState(true);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPdfPages, setMaxPdfPages] = useState(120);
+  const [isImporting, setIsImporting] = useState(false);
   const [status, setStatus] = useState("");
-  const currentPreset = CHARACTER_LIMIT_PRESETS.find((preset) => preset.id === presetId) ?? CHARACTER_LIMIT_PRESETS[0];
+  const [copyStatus, setCopyStatus] = useState("");
+  const [uploadSummaries, setUploadSummaries] = useState<
+    Array<{ fileName: string; source: string; words: number; characters: number }>
+  >([]);
+
+  const currentPreset =
+    CHARACTER_LIMIT_PRESETS.find((preset) => preset.id === presetId) ?? CHARACTER_LIMIT_PRESETS[0];
   const parsedCustomLimit = Number.parseInt(customLimit, 10);
   const activeLimit =
     useCustomLimit && Number.isFinite(parsedCustomLimit) && parsedCustomLimit > 0
       ? Math.min(250000, parsedCustomLimit)
       : currentPreset.limit;
-  const count = countCharacters(text, includeSpaces);
+
+  const rawCharacters = text.length;
+  const charactersNoSpaces = countCharacters(text, false);
+  const charactersNoNewlines = text.replace(/\r?\n/g, "").length;
+  const graphemeCount = countGraphemeClusters(text);
   const words = countWords(text);
+  const sentences = splitAiSentences(text).length;
+  const paragraphs = countParagraphs(text);
   const lines = text ? text.split("\n").length : 0;
+  const nonEmptyLines = text.split("\n").filter((line) => line.trim()).length;
+  const readingTime = words ? Math.max(1, Math.ceil(words / 200)) : 0;
+  const speakingTime = words ? Math.max(1, Math.ceil(words / 130)) : 0;
+  const avgWordLength = words > 0 ? (charactersNoSpaces / words).toFixed(1) : "0.0";
+  const punctuationCount = (text.match(/[.,!?;:()[\]{}"'-]/g) ?? []).length;
+  const digitCount = (text.match(/\d/g) ?? []).length;
+  const uppercaseCount = (text.match(/[A-Z]/g) ?? []).length;
+  const lowercaseCount = (text.match(/[a-z]/g) ?? []).length;
+  const utf8Bytes = new TextEncoder().encode(text).length;
+  const count = includeSpaces ? rawCharacters : charactersNoSpaces;
   const remaining = activeLimit - count;
   const rawProgress = activeLimit > 0 ? (count / activeLimit) * 100 : 0;
   const progress = Math.max(0, Math.min(130, rawProgress));
   const overLimit = remaining < 0;
-  const snippet = count > activeLimit ? text.slice(0, activeLimit).trimEnd() : text;
+  const snippet = buildTextWithinLimit(text, activeLimit, includeSpaces);
+  const topTerms = keywordDensity(text, 10, {
+    nGram: 1,
+    excludeStopWords: true,
+    minLength: 3,
+  });
 
   const handleUpload = useCallback(
-    async (file: File | null) => {
-      if (!file) return;
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+      const files = Array.from(fileList).slice(0, AI_DETECTOR_MAX_UPLOAD_FILES);
+      setIsImporting(true);
+      setStatus(`Importing ${files.length} document${files.length === 1 ? "" : "s"}...`);
+      let failed = 0;
+      const extracted: Array<{ fileName: string; source: string; text: string; words: number; characters: number }> =
+        [];
+
       try {
-        const raw = await readTextFileWithLimit(file);
-        const extension = getFileExtension(file.name);
-        const normalized = normalizeUploadedText(raw);
-        const imported = extension === "html" || extension === "htm" ? extractPlainTextFromHtml(normalized) : normalized;
-        setText((current) => mergeUploadedText(current, imported, uploadMode));
-        setStatus(`Loaded text from ${file.name}.`);
-        trackEvent("tool_character_counter_upload", { extension: extension || "unknown", mode: uploadMode });
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Could not read uploaded text file.");
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          if (file.size > CHARACTER_COUNTER_UPLOAD_MAX_BYTES) {
+            failed += 1;
+            continue;
+          }
+
+          try {
+            const lowerName = file.name.toLowerCase();
+            const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+            let importedText = "";
+            let source = "Text";
+            if (isPdf) {
+              const parsedPdf = await extractTextFromPdfDocument(file, {
+                pageRangeInput,
+                maxPages: maxPdfPages,
+                includePageMarkers: includePdfPageMarkers,
+              });
+              importedText = parsedPdf.text;
+              source = `PDF (${parsedPdf.selectedPages.length}/${parsedPdf.totalPages} pages)`;
+            } else {
+              const parsedDocument = await extractTextFromDocumentFile(file, {
+                convertHtmlToText: convertHtmlUploadToText,
+              });
+              importedText = parsedDocument.text;
+              source = parsedDocument.source;
+            }
+
+            const normalized = normalizeUploadedText(importedText).trim();
+            if (!normalized) {
+              failed += 1;
+              continue;
+            }
+            extracted.push({
+              fileName: file.name,
+              source,
+              text: normalized,
+              words: countWords(normalized),
+              characters: normalized.length,
+            });
+          } catch {
+            failed += 1;
+          }
+        }
+
+        if (!extracted.length) {
+          setStatus("No readable text was extracted from the selected files.");
+          return;
+        }
+
+        const mergedImported = extracted
+          .map((entry, index) => {
+            if (!includeDocumentHeaders && extracted.length === 1) return entry.text;
+            const heading = includeDocumentHeaders
+              ? `--- Document ${index + 1}: ${entry.fileName} (${entry.source}) ---`
+              : "";
+            return heading ? `${heading}\n${entry.text}` : entry.text;
+          })
+          .join("\n\n");
+        const bounded = mergedImported.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+        const merged = mergeUploadedText(text, bounded, uploadMode);
+        setText(merged);
+        setUploadSummaries(extracted.map(({ fileName, source, words, characters }) => ({ fileName, source, words, characters })));
+        setStatus(
+          `Imported ${extracted.length}/${files.length} file(s).${failed ? ` Failed: ${failed}.` : ""}${bounded.length < mergedImported.length ? " Text was trimmed to processing limit." : ""}`,
+        );
+        trackEvent("tool_character_counter_upload", {
+          filesImported: extracted.length,
+          filesFailed: failed,
+          uploadMode,
+          htmlToText: convertHtmlUploadToText ? 1 : 0,
+        });
+      } finally {
+        setIsImporting(false);
       }
     },
-    [uploadMode],
+    [
+      convertHtmlUploadToText,
+      includeDocumentHeaders,
+      includePdfPageMarkers,
+      maxPdfPages,
+      pageRangeInput,
+      text,
+      uploadMode,
+    ],
   );
 
   return (
@@ -5059,11 +5214,16 @@ function CharacterCounterTool() {
       <ToolHeading
         icon={Hash}
         title="Character counter"
-        subtitle="Track copy limits for SEO tags and social platforms in real time."
+        subtitle="Advanced character analytics with multi-document upload, live platform limits, and copy-safe trimming actions."
       />
       <label className="field">
         <span>Text</span>
-        <textarea value={text} onChange={(event) => setText(event.target.value)} rows={8} />
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          rows={10}
+          placeholder="Paste content or upload documents to analyze."
+        />
       </label>
       <div className="field-grid">
         <label className="field">
@@ -5078,13 +5238,7 @@ function CharacterCounterTool() {
         </label>
         <label className="field">
           <span>Custom limit</span>
-          <input
-            type="number"
-            min={1}
-            max={250000}
-            value={customLimit}
-            onChange={(event) => setCustomLimit(event.target.value)}
-          />
+          <input type="number" min={1} max={250000} value={customLimit} onChange={(event) => setCustomLimit(event.target.value)} />
         </label>
         <label className="field">
           <span>Upload behavior</span>
@@ -5093,37 +5247,61 @@ function CharacterCounterTool() {
             <option value="append">Append to text</option>
           </select>
         </label>
+        <label className="field">
+          <span>PDF page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,8" />
+        </label>
+        <label className="field">
+          <span>Max PDF pages</span>
+          <input
+            type="number"
+            min={1}
+            max={300}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : 120);
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Upload documents</span>
+          <input
+            type="file"
+            accept={CHARACTER_COUNTER_UPLOAD_ACCEPT}
+            multiple
+            onChange={(event) => {
+              void handleUpload(event.target.files);
+              event.target.value = "";
+            }}
+            disabled={isImporting}
+          />
+        </label>
       </div>
       <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={includeSpaces}
-          onChange={(event) => setIncludeSpaces(event.target.checked)}
-        />
-        Include spaces
+        <input type="checkbox" checked={includeSpaces} onChange={(event) => setIncludeSpaces(event.target.checked)} />
+        Include spaces in primary character count
       </label>
       <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={useCustomLimit}
-          onChange={(event) => setUseCustomLimit(event.target.checked)}
-        />
+        <input type="checkbox" checked={useCustomLimit} onChange={(event) => setUseCustomLimit(event.target.checked)} />
         Use custom limit instead of preset
       </label>
-      <label className="field">
-        <span>Upload text/HTML file</span>
-        <input
-          type="file"
-          accept=".txt,.md,.markdown,.csv,.html,.htm"
-          onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)}
-        />
+      <label className="checkbox">
+        <input type="checkbox" checked={convertHtmlUploadToText} onChange={(event) => setConvertHtmlUploadToText(event.target.checked)} />
+        Convert HTML-like files to plain text while importing
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={includePdfPageMarkers} onChange={(event) => setIncludePdfPageMarkers(event.target.checked)} />
+        Include page markers for imported PDF text
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={includeDocumentHeaders} onChange={(event) => setIncludeDocumentHeaders(event.target.checked)} />
+        Add document headers when importing multiple files
       </label>
       <div className="limit-meter-wrap" aria-live="polite">
         <div className="limit-meter">
-          <div
-            className={`limit-meter-fill ${overLimit ? "over" : ""}`}
-            style={{ width: `${progress}%` }}
-          />
+          <div className={`limit-meter-fill ${overLimit ? "over" : ""}`} style={{ width: `${progress}%` }} />
         </div>
         <small className="supporting-text">
           {overLimit
@@ -5135,9 +5313,22 @@ function CharacterCounterTool() {
         <button
           className="action-button secondary"
           type="button"
+          onClick={() => {
+            setText("");
+            setUploadSummaries([]);
+            setCopyStatus("");
+            setStatus("Cleared content.");
+          }}
+        >
+          <Trash2 size={15} />
+          Clear
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
           onClick={async () => {
             const ok = await copyTextToClipboard(text);
-            setStatus(ok ? "Text copied." : "Nothing to copy.");
+            setCopyStatus(ok ? "Text copied." : "Nothing to copy.");
           }}
         >
           <Copy size={15} />
@@ -5148,22 +5339,140 @@ function CharacterCounterTool() {
           type="button"
           onClick={async () => {
             const ok = await copyTextToClipboard(snippet);
-            setStatus(ok ? "Trimmed snippet copied." : "Nothing to copy.");
+            setCopyStatus(ok ? "Snippet within limit copied." : "Nothing to copy.");
           }}
         >
           <Copy size={15} />
           Copy within limit
         </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            if (!snippet) {
+              setStatus("No content available for trim.");
+              return;
+            }
+            setText(snippet);
+            setStatus(`Trimmed editor content to ${activeLimit} characters.`);
+            trackEvent("tool_character_counter_trim", { limit: activeLimit, includeSpaces: includeSpaces ? 1 : 0 });
+          }}
+          disabled={!text.trim()}
+        >
+          <Type size={15} />
+          Trim to limit
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const normalized = normalizeDocumentText(text);
+            setText(normalized);
+            setStatus("Normalized spacing and paragraph breaks.");
+          }}
+          disabled={!text.trim()}
+        >
+          <RefreshCw size={15} />
+          Normalize spacing
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            const rows: string[][] = [
+              ["Characters (active mode)", formatNumericValue(count)],
+              ["Characters (raw)", formatNumericValue(rawCharacters)],
+              ["Characters (no spaces)", formatNumericValue(charactersNoSpaces)],
+              ["Characters (no newlines)", formatNumericValue(charactersNoNewlines)],
+              ["Grapheme clusters", formatNumericValue(graphemeCount)],
+              ["UTF-8 bytes", formatNumericValue(utf8Bytes)],
+              ["Words", formatNumericValue(words)],
+              ["Sentences", formatNumericValue(sentences)],
+              ["Paragraphs", formatNumericValue(paragraphs)],
+              ["Lines", formatNumericValue(lines)],
+              ["Non-empty lines", formatNumericValue(nonEmptyLines)],
+              ["Average word length", avgWordLength],
+              ["Estimated reading time", readingTime ? `${readingTime} min` : "0"],
+              ["Estimated speaking time", speakingTime ? `${speakingTime} min` : "0"],
+              ["Punctuation marks", formatNumericValue(punctuationCount)],
+              ["Digits", formatNumericValue(digitCount)],
+              ["Uppercase letters", formatNumericValue(uppercaseCount)],
+              ["Lowercase letters", formatNumericValue(lowercaseCount)],
+              ["Limit", formatNumericValue(activeLimit)],
+              ["Remaining", formatNumericValue(remaining)],
+            ];
+            downloadCsv("character-counter-summary.csv", ["Metric", "Value"], rows);
+            trackEvent("tool_character_counter_export", { chars: count, words, limit: activeLimit });
+          }}
+        >
+          <Download size={15} />
+          Export summary
+        </button>
+        {copyStatus ? <span className="supporting-text">{copyStatus}</span> : null}
       </div>
       <ResultList
         rows={[
-          { label: "Characters", value: count.toString() },
-          { label: "Words", value: words.toString() },
-          { label: "Lines", value: lines.toString() },
-          { label: "Limit", value: activeLimit.toString() },
-          { label: "Remaining", value: remaining.toString() },
+          { label: "Characters (active mode)", value: formatNumericValue(count) },
+          { label: "Characters (raw)", value: formatNumericValue(rawCharacters) },
+          { label: "Characters (no spaces)", value: formatNumericValue(charactersNoSpaces) },
+          { label: "Characters (no newlines)", value: formatNumericValue(charactersNoNewlines) },
+          { label: "Grapheme clusters", value: formatNumericValue(graphemeCount) },
+          { label: "UTF-8 bytes", value: formatNumericValue(utf8Bytes) },
+          { label: "Words", value: formatNumericValue(words) },
+          { label: "Sentences", value: formatNumericValue(sentences) },
+          { label: "Paragraphs", value: formatNumericValue(paragraphs) },
+          { label: "Lines", value: formatNumericValue(lines) },
+          { label: "Non-empty lines", value: formatNumericValue(nonEmptyLines) },
+          { label: "Avg word length", value: `${avgWordLength} chars` },
+          { label: "Reading time", value: readingTime ? `${readingTime} min` : "0 min" },
+          { label: "Speaking time", value: speakingTime ? `${speakingTime} min` : "0 min" },
+          { label: "Punctuation", value: formatNumericValue(punctuationCount) },
+          { label: "Digits", value: formatNumericValue(digitCount) },
+          { label: "Uppercase", value: formatNumericValue(uppercaseCount) },
+          { label: "Lowercase", value: formatNumericValue(lowercaseCount) },
+          { label: "Limit", value: formatNumericValue(activeLimit) },
+          { label: "Remaining", value: formatNumericValue(remaining) },
         ]}
       />
+      {uploadSummaries.length ? (
+        <div className="mini-panel">
+          <h3>Imported documents</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Source</th>
+                  <th>Words</th>
+                  <th>Characters</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploadSummaries.map((entry) => (
+                  <tr key={`${entry.fileName}-${entry.source}`}>
+                    <td>{entry.fileName}</td>
+                    <td>{entry.source}</td>
+                    <td>{formatNumericValue(entry.words)}</td>
+                    <td>{formatNumericValue(entry.characters)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+      {topTerms.length > 0 ? (
+        <div className="mini-panel">
+          <h3>Top terms (stop words removed)</h3>
+          <div className="chip-list">
+            {topTerms.map((row) => (
+              <span key={row.keyword} className="chip">
+                {row.keyword} ({row.count})
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {status ? <p className="supporting-text">{status}</p> : null}
     </section>
   );
