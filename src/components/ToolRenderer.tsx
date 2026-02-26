@@ -7925,12 +7925,29 @@ function LoremIpsumTool() {
 }
 
 type AiDetectorProfile = "balanced" | "strict" | "lenient";
+type AiRecommendationPriority = "high" | "medium" | "low";
+type AiDetectorRecommendationId =
+  | "split-long-sentences"
+  | "normalize-transition-openers"
+  | "reduce-repeated-phrases"
+  | "diversify-vocabulary"
+  | "expand-sample-manually";
 
 interface AiSentenceRiskRow {
   index: number;
   risk: number;
   sentence: string;
   reasons: string[];
+}
+
+interface AiDetectorRecommendation {
+  id: AiDetectorRecommendationId;
+  title: string;
+  reason: string;
+  actionLabel: string;
+  priority: AiRecommendationPriority;
+  autoApplicable: boolean;
+  estimatedRiskDrop: number;
 }
 
 interface AiDetectorReport {
@@ -7955,6 +7972,7 @@ interface AiDetectorReport {
   sentenceRiskRows: AiSentenceRiskRow[];
   signals: string[];
   rewriteTips: string[];
+  recommendations: AiDetectorRecommendation[];
 }
 
 const AI_TRANSITION_PATTERN =
@@ -7987,6 +8005,24 @@ const AI_COMMON_WORDS = new Set([
   "were",
   "with",
 ]);
+const AI_DETECTOR_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
+const AI_DETECTOR_MAX_UPLOAD_FILES = 20;
+const AI_DETECTOR_DEFAULT_MAX_PDF_PAGES = 120;
+const AI_DETECTOR_UPLOAD_ACCEPT =
+  ".pdf,.doc,.docx,.docm,.dotx,.dotm,.ppt,.pptx,.pptm,.potx,.potm,.xls,.xlsx,.xlsm,.xltx,.xltm,.odt,.ods,.odp,.epub,.rtf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json";
+
+const AI_VOCABULARY_VARIATION_MAP: Record<string, string[]> = {
+  important: ["critical", "notable", "meaningful"],
+  improve: ["enhance", "strengthen", "refine"],
+  improved: ["enhanced", "strengthened", "refined"],
+  good: ["strong", "solid", "effective"],
+  bad: ["weak", "poor", "problematic"],
+  use: ["apply", "leverage", "adopt"],
+  very: ["highly", "particularly", "notably"],
+  many: ["numerous", "multiple", "several"],
+  shows: ["indicates", "reveals", "demonstrates"],
+  make: ["build", "create", "shape"],
+};
 
 function tokenizeAiWords(value: string): string[] {
   return value.toLowerCase().match(/[a-z0-9']+/g) ?? [];
@@ -8032,6 +8068,244 @@ function calculateTokenEntropy(words: string[]): number {
     entropy -= p * Math.log2(p);
   });
   return Number(entropy.toFixed(3));
+}
+
+function buildAiRecommendations(input: {
+  wordCount: number;
+  lexicalDiversity: number;
+  burstiness: number;
+  averageSentenceLength: number;
+  repeatedPhraseCoverage: number;
+  transitionDensity: number;
+}): AiDetectorRecommendation[] {
+  const recommendations: AiDetectorRecommendation[] = [];
+  if (input.burstiness < 0.4 || input.averageSentenceLength > 24) {
+    recommendations.push({
+      id: "split-long-sentences",
+      title: "Increase sentence-length variation",
+      reason: "Sentence rhythm is too uniform, which raises AI-likeness risk.",
+      actionLabel: "Apply sentence split",
+      priority: "high",
+      autoApplicable: true,
+      estimatedRiskDrop: 8,
+    });
+  }
+  if (input.transitionDensity > 0.55) {
+    recommendations.push({
+      id: "normalize-transition-openers",
+      title: "Reduce formulaic transition openers",
+      reason: "Many sentences begin with connectors commonly overused by AI outputs.",
+      actionLabel: "Normalize openers",
+      priority: "high",
+      autoApplicable: true,
+      estimatedRiskDrop: 6,
+    });
+  }
+  if (input.repeatedPhraseCoverage > 0.1) {
+    recommendations.push({
+      id: "reduce-repeated-phrases",
+      title: "Reduce repeated phrase loops",
+      reason: "Repeated 3-word phrases are concentrated across the sample.",
+      actionLabel: "De-duplicate phrases",
+      priority: "high",
+      autoApplicable: true,
+      estimatedRiskDrop: 9,
+    });
+  }
+  if (input.lexicalDiversity < 0.42) {
+    recommendations.push({
+      id: "diversify-vocabulary",
+      title: "Diversify repeated vocabulary",
+      reason: "Word choices are narrow and repetitive relative to document length.",
+      actionLabel: "Vary vocabulary",
+      priority: "medium",
+      autoApplicable: true,
+      estimatedRiskDrop: 5,
+    });
+  }
+  if (input.wordCount < 120) {
+    recommendations.push({
+      id: "expand-sample-manually",
+      title: "Expand sample length before final verdict",
+      reason: "Short samples are less reliable and can over-trigger risk signals.",
+      actionLabel: "Manual step",
+      priority: "medium",
+      autoApplicable: false,
+      estimatedRiskDrop: 0,
+    });
+  }
+  if (!recommendations.length) {
+    recommendations.push({
+      id: "expand-sample-manually",
+      title: "Add personal anecdotes or unique details",
+      reason: "Current signals are mixed; stronger personal context improves confidence.",
+      actionLabel: "Manual step",
+      priority: "low",
+      autoApplicable: false,
+      estimatedRiskDrop: 0,
+    });
+  }
+  const priorityRank: Record<AiRecommendationPriority, number> = { high: 0, medium: 1, low: 2 };
+  return recommendations.sort((left, right) => priorityRank[left.priority] - priorityRank[right.priority]);
+}
+
+function ensureSentenceEnding(sentence: string): string {
+  const trimmed = sentence.trim();
+  if (!trimmed) return "";
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function capitalizeFirstCharacter(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function applySentenceSplitRecommendation(value: string): { text: string; changeCount: number } {
+  const sentences = splitAiSentences(value);
+  if (!sentences.length) return { text: value, changeCount: 0 };
+
+  const output: string[] = [];
+  let splits = 0;
+  const connectors = new Set(["and", "but", "while", "because", "which", "that", "so", "yet"]);
+
+  for (const sentence of sentences) {
+    const words = sentence.split(/\s+/).filter(Boolean);
+    if (words.length < 28) {
+      output.push(sentence);
+      continue;
+    }
+
+    const middle = Math.floor(words.length / 2);
+    let splitIndex = -1;
+    for (let offset = 0; offset < words.length; offset += 1) {
+      const leftIndex = middle - offset;
+      const rightIndex = middle + offset;
+      const candidates = [leftIndex, rightIndex];
+      for (const candidate of candidates) {
+        if (candidate <= 7 || candidate >= words.length - 7) continue;
+        const token = words[candidate].toLowerCase().replace(/[^a-z]/g, "");
+        const endsWithPause = /[,;:]$/.test(words[candidate]);
+        if (endsWithPause || connectors.has(token)) {
+          splitIndex = candidate;
+          break;
+        }
+      }
+      if (splitIndex >= 0) break;
+    }
+
+    if (splitIndex < 0) {
+      output.push(sentence);
+      continue;
+    }
+
+    const first = ensureSentenceEnding(words.slice(0, splitIndex + 1).join(" ").replace(/[,;:]+$/, ""));
+    const secondRaw = words.slice(splitIndex + 1).join(" ");
+    const second = ensureSentenceEnding(capitalizeFirstCharacter(secondRaw));
+    if (!first || !second) {
+      output.push(sentence);
+      continue;
+    }
+    output.push(first, second);
+    splits += 1;
+  }
+
+  return { text: normalizeDocumentText(output.join(" ")), changeCount: splits };
+}
+
+function applyTransitionNormalizationRecommendation(value: string): { text: string; changeCount: number } {
+  const sentences = splitAiSentences(value);
+  if (!sentences.length) return { text: value, changeCount: 0 };
+
+  const rules: Array<{ pattern: RegExp; replacement: string }> = [
+    { pattern: /^(however|nevertheless|nonetheless)\b[:,]?\s*/i, replacement: "" },
+    { pattern: /^(moreover|furthermore|additionally)\b[:,]?\s*/i, replacement: "Also, " },
+    { pattern: /^(therefore|thus)\b[:,]?\s*/i, replacement: "So, " },
+    { pattern: /^(in conclusion|in summary)\b[:,]?\s*/i, replacement: "To wrap up, " },
+    { pattern: /^(overall|finally|notably)\b[:,]?\s*/i, replacement: "" },
+  ];
+
+  let changeCount = 0;
+  const transformed = sentences.map((sentence) => {
+    let next = sentence;
+    for (const rule of rules) {
+      if (rule.pattern.test(next)) {
+        next = next.replace(rule.pattern, rule.replacement);
+        changeCount += 1;
+        break;
+      }
+    }
+    return ensureSentenceEnding(capitalizeFirstCharacter(next.trim()));
+  });
+
+  return { text: normalizeDocumentText(transformed.join(" ")), changeCount };
+}
+
+function applyRepeatedPhraseRecommendation(
+  value: string,
+  repeatedPhrases: Array<{ phrase: string; count: number }>,
+): { text: string; changeCount: number } {
+  let next = value;
+  let changeCount = 0;
+  const replacements = ["that approach", "this method", "the process", "the strategy"];
+  const topPhrases = repeatedPhrases.slice(0, 6).filter((entry) => entry.count > 1);
+
+  for (let index = 0; index < topPhrases.length; index += 1) {
+    const entry = topPhrases[index];
+    const regex = new RegExp(`\\b${escapeRegExp(entry.phrase)}\\b`, "gi");
+    let seen = 0;
+    next = next.replace(regex, (match) => {
+      seen += 1;
+      if (seen === 1) return match;
+      changeCount += 1;
+      return replacements[(index + seen) % replacements.length];
+    });
+  }
+
+  const dedupedSentences: string[] = [];
+  const seenSentences = new Set<string>();
+  const rawSentences = splitAiSentences(next);
+  for (const sentence of rawSentences) {
+    const normalizedKey = sentence.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (normalizedKey.length > 30 && seenSentences.has(normalizedKey)) {
+      changeCount += 1;
+      continue;
+    }
+    seenSentences.add(normalizedKey);
+    dedupedSentences.push(sentence);
+  }
+
+  return { text: normalizeDocumentText(dedupedSentences.join(" ")), changeCount };
+}
+
+function applyVocabularyVariationRecommendation(value: string): { text: string; changeCount: number } {
+  const frequencies = new Map<string, number>();
+  tokenizeAiWords(value).forEach((word) => {
+    frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
+  });
+
+  let next = value;
+  let changeCount = 0;
+  const preserveCase = (original: string, replacement: string) => {
+    if (original.toUpperCase() === original) return replacement.toUpperCase();
+    if (original[0] === original[0].toUpperCase()) return capitalizeFirstCharacter(replacement);
+    return replacement;
+  };
+
+  Object.entries(AI_VOCABULARY_VARIATION_MAP).forEach(([word, variants]) => {
+    const frequency = frequencies.get(word) ?? 0;
+    if (frequency < 4 || !variants.length) return;
+    const regex = new RegExp(`\\b${escapeRegExp(word)}\\b`, "gi");
+    let seen = 0;
+    next = next.replace(regex, (match) => {
+      seen += 1;
+      if (seen % 2 !== 0) return match;
+      const replacement = variants[(seen / 2 - 1) % variants.length];
+      changeCount += 1;
+      return preserveCase(match, replacement);
+    });
+  });
+
+  return { text: normalizeDocumentText(next), changeCount };
 }
 
 function buildAiDetectorReport(value: string, profile: AiDetectorProfile): AiDetectorReport | null {
@@ -8169,6 +8443,14 @@ function buildAiDetectorReport(value: string, profile: AiDetectorProfile): AiDet
   if (transitionDensity > 0.6) rewriteTips.push("Reduce formulaic connectors and use direct transitions.");
   if (tokenEntropy < 4) rewriteTips.push("Introduce domain-specific terminology to widen lexical distribution.");
   if (!rewriteTips.length) rewriteTips.push("Add personal examples and domain-specific references.");
+  const recommendations = buildAiRecommendations({
+    wordCount,
+    lexicalDiversity,
+    burstiness,
+    averageSentenceLength,
+    repeatedPhraseCoverage,
+    transitionDensity,
+  });
 
   const confidenceLengthFactor = Math.min(1, wordCount / 500);
   const confidenceSignalFactor = Math.min(
@@ -8216,7 +8498,71 @@ function buildAiDetectorReport(value: string, profile: AiDetectorProfile): AiDet
     sentenceRiskRows,
     signals,
     rewriteTips,
+    recommendations,
   };
+}
+
+function applyAiDetectorRecommendation(
+  id: AiDetectorRecommendationId,
+  text: string,
+  report: AiDetectorReport,
+): { text: string; changeCount: number; summary: string } {
+  if (id === "split-long-sentences") {
+    const result = applySentenceSplitRecommendation(text);
+    return {
+      text: result.text,
+      changeCount: result.changeCount,
+      summary:
+        result.changeCount > 0
+          ? `Split ${formatNumericValue(result.changeCount)} long sentence${result.changeCount === 1 ? "" : "s"}.`
+          : "No long sentence split was needed.",
+    };
+  }
+  if (id === "normalize-transition-openers") {
+    const result = applyTransitionNormalizationRecommendation(text);
+    return {
+      text: result.text,
+      changeCount: result.changeCount,
+      summary:
+        result.changeCount > 0
+          ? `Normalized ${formatNumericValue(result.changeCount)} transition opener${result.changeCount === 1 ? "" : "s"}.`
+          : "No transition opener changes were needed.",
+    };
+  }
+  if (id === "reduce-repeated-phrases") {
+    const result = applyRepeatedPhraseRecommendation(text, report.repeatedPhrases);
+    return {
+      text: result.text,
+      changeCount: result.changeCount,
+      summary:
+        result.changeCount > 0
+          ? `Reduced ${formatNumericValue(result.changeCount)} repeated phrase or duplicate sentence pattern${result.changeCount === 1 ? "" : "s"}.`
+          : "No repeated phrase loops were detected for auto-fix.",
+    };
+  }
+  if (id === "diversify-vocabulary") {
+    const result = applyVocabularyVariationRecommendation(text);
+    return {
+      text: result.text,
+      changeCount: result.changeCount,
+      summary:
+        result.changeCount > 0
+          ? `Varied ${formatNumericValue(result.changeCount)} repeated word occurrence${result.changeCount === 1 ? "" : "s"}.`
+          : "No vocabulary substitutions were needed.",
+    };
+  }
+  return {
+    text,
+    changeCount: 0,
+    summary: "This recommendation is a manual editing step.",
+  };
+}
+
+interface AiDetectorUploadSummary {
+  fileName: string;
+  source: string;
+  words: number;
+  characters: number;
 }
 
 function AiDetectorTool() {
@@ -8224,6 +8570,11 @@ function AiDetectorTool() {
   const [profile, setProfile] = useState<AiDetectorProfile>("balanced");
   const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
+  const [pageRangeInput, setPageRangeInput] = useState("all");
+  const [maxPdfPages, setMaxPdfPages] = useState(AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+  const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [uploadSummaries, setUploadSummaries] = useState<AiDetectorUploadSummary[]>([]);
   const [report, setReport] = useState<AiDetectorReport | null>(null);
   const [status, setStatus] = useState("Paste text and run analysis.");
 
@@ -8245,23 +8596,193 @@ function AiDetectorTool() {
   }, [profile, text]);
 
   const handleUpload = useCallback(
-    async (file: File | null) => {
-      if (!file) return;
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+      const files = Array.from(fileList).slice(0, AI_DETECTOR_MAX_UPLOAD_FILES);
+      setIsImporting(true);
+      setStatus(`Importing ${files.length} document${files.length === 1 ? "" : "s"}...`);
+
+      let failed = 0;
+      let trimmed = false;
+      const extracted: Array<AiDetectorUploadSummary & { text: string }> = [];
+
       try {
-        const raw = await readTextFileWithLimit(file);
-        const extension = getFileExtension(file.name);
-        const shouldExtractHtml = convertHtmlUploadToText && (extension === "html" || extension === "htm");
-        const imported = shouldExtractHtml ? extractPlainTextFromHtml(raw) : normalizeUploadedText(raw);
-        const merged = mergeUploadedText(text, imported, uploadMode);
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          setStatus(`Importing ${file.name} (${index + 1}/${files.length})...`);
+          if (file.size > AI_DETECTOR_UPLOAD_MAX_BYTES) {
+            failed += 1;
+            continue;
+          }
+
+          try {
+            const lowerName = file.name.toLowerCase();
+            const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+            let source = "Text";
+            let importedText = "";
+
+            if (isPdf) {
+              const parsedPdf = await extractTextFromPdfDocument(file, {
+                pageRangeInput,
+                maxPages: maxPdfPages,
+                includePageMarkers: includePdfPageMarkers,
+                onProgress: ({ processed, total, pageNumber }) => {
+                  setStatus(
+                    `Importing ${file.name} (${index + 1}/${files.length}) | PDF page ${pageNumber} (${processed}/${total})...`,
+                  );
+                },
+              });
+              importedText = parsedPdf.text;
+              source = `PDF (${parsedPdf.selectedPages.length}/${parsedPdf.totalPages} pages)`;
+            } else {
+              const extractedFile = await extractTextFromDocumentFile(file, {
+                convertHtmlToText: convertHtmlUploadToText,
+              });
+              importedText = extractedFile.text;
+              source = extractedFile.source;
+            }
+
+            const normalized = normalizeDocumentText(importedText);
+            if (!normalized) {
+              failed += 1;
+              continue;
+            }
+
+            extracted.push({
+              fileName: file.name,
+              source,
+              text: normalized,
+              words: countWords(normalized),
+              characters: normalized.length,
+            });
+          } catch {
+            failed += 1;
+          }
+        }
+
+        if (!extracted.length) {
+          setStatus(
+            failed
+              ? "No readable text was extracted from the selected files."
+              : "No files were imported.",
+          );
+          return;
+        }
+
+        const mergedImported = extracted
+          .map((entry, index) =>
+            extracted.length > 1
+              ? `Document ${index + 1}: ${entry.fileName} (${entry.source})\n${entry.text}`
+              : entry.text,
+          )
+          .join("\n\n");
+        const bounded = mergedImported.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
+        if (bounded.length < mergedImported.length) {
+          trimmed = true;
+        }
+        const merged = mergeUploadedText(text, bounded, uploadMode);
         setText(merged);
-        setStatus(`Imported ${file.name} (${formatNumericValue(countWords(imported))} words).`);
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Could not import text file.");
+        setUploadSummaries(extracted.map(({ fileName, source, words, characters }) => ({
+          fileName,
+          source,
+          words,
+          characters,
+        })));
+        setStatus(
+          `Imported ${extracted.length}/${files.length} file(s) with ${formatNumericValue(countWords(bounded))} words.${failed ? ` Failed: ${failed}.` : ""}${trimmed ? " Text was trimmed to processing limit." : ""}`,
+        );
+        trackEvent("tool_ai_detector_upload", {
+          filesImported: extracted.length,
+          filesFailed: failed,
+          uploadMode,
+          htmlToText: convertHtmlUploadToText ? 1 : 0,
+        });
+      } finally {
+        setIsImporting(false);
       }
     },
-    [convertHtmlUploadToText, text, uploadMode],
+    [convertHtmlUploadToText, includePdfPageMarkers, maxPdfPages, pageRangeInput, text, uploadMode],
   );
 
+  const applyRecommendation = useCallback(
+    (recommendationId: AiDetectorRecommendationId) => {
+      if (!report) return;
+      const recommendation = report.recommendations.find((entry) => entry.id === recommendationId);
+      if (!recommendation?.autoApplicable) {
+        setStatus("This recommendation requires manual edits.");
+        return;
+      }
+
+      const beforeRisk = report.riskScore;
+      const result = applyAiDetectorRecommendation(recommendationId, text, report);
+      if (!result.changeCount || result.text === text) {
+        setStatus(result.summary);
+        return;
+      }
+      const nextReport = buildAiDetectorReport(result.text, profile);
+      setText(result.text);
+      setReport(nextReport);
+      if (!nextReport) {
+        setStatus(result.summary);
+        return;
+      }
+
+      setStatus(`${result.summary} Risk score ${beforeRisk} -> ${nextReport.riskScore}.`);
+      trackEvent("tool_ai_detector_apply_recommendation", {
+        recommendationId,
+        changed: result.changeCount,
+        riskBefore: beforeRisk,
+        riskAfter: nextReport.riskScore,
+      });
+    },
+    [profile, report, text],
+  );
+
+  const applyAllAutoRecommendations = useCallback(() => {
+    if (!report) return;
+    const autoRecommendations = report.recommendations.filter((entry) => entry.autoApplicable);
+    if (!autoRecommendations.length) {
+      setStatus("No auto-applicable recommendations are available.");
+      return;
+    }
+
+    const beforeRisk = report.riskScore;
+    let totalChanges = 0;
+    let workingText = text;
+    let workingReport = report;
+    const notes: string[] = [];
+
+    for (const recommendation of autoRecommendations) {
+      const result = applyAiDetectorRecommendation(recommendation.id, workingText, workingReport);
+      if (!result.changeCount || result.text === workingText) continue;
+      workingText = result.text;
+      totalChanges += result.changeCount;
+      notes.push(result.summary);
+      const refreshed = buildAiDetectorReport(workingText, profile);
+      if (refreshed) {
+        workingReport = refreshed;
+      }
+    }
+
+    if (!totalChanges || workingText === text) {
+      setStatus("Auto-fix completed with no text changes.");
+      return;
+    }
+    setText(workingText);
+    setReport(workingReport);
+    setStatus(
+      `Applied ${autoRecommendations.length} recommendation(s) with ${formatNumericValue(totalChanges)} edit(s). Risk score ${beforeRisk} -> ${workingReport.riskScore}.`,
+    );
+    trackEvent("tool_ai_detector_apply_all", {
+      recommendations: autoRecommendations.length,
+      edits: totalChanges,
+      riskBefore: beforeRisk,
+      riskAfter: workingReport.riskScore,
+      notes: notes.join(" | ").slice(0, 280),
+    });
+  }, [profile, report, text]);
+
+  const autoRecommendationCount = report?.recommendations.filter((entry) => entry.autoApplicable).length ?? 0;
   const summary = report
     ? [
         `Verdict: ${report.verdict}`,
@@ -8274,6 +8795,7 @@ function AiDetectorTool() {
         `Token entropy: ${report.tokenEntropy.toFixed(3)}`,
         `Signals: ${report.signals.join("; ")}`,
         `Rewrite tips: ${report.rewriteTips.join("; ")}`,
+        `Recommendations: ${report.recommendations.map((entry) => `${entry.title} [${entry.priority}]`).join("; ")}`,
       ].join("\n")
     : "";
 
@@ -8282,7 +8804,7 @@ function AiDetectorTool() {
       <ToolHeading
         icon={Sparkles}
         title="AI detector"
-        subtitle="Run multi-signal AI-likeness analysis with profile modes, sentence diagnostics, and rewrite guidance."
+        subtitle="Run multi-signal AI-likeness analysis with broad document upload support, sentence diagnostics, and one-click recommendation patches."
       />
 
       <div className="field-grid">
@@ -8301,6 +8823,24 @@ function AiDetectorTool() {
             <option value="append">Append imported text</option>
           </select>
         </label>
+        <label className="field">
+          <span>PDF page range</span>
+          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,8" />
+        </label>
+        <label className="field">
+          <span>Max PDF pages</span>
+          <input
+            type="number"
+            min={1}
+            max={300}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => {
+              const parsed = Number.parseInt(event.target.value, 10);
+              setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+            }}
+          />
+        </label>
       </div>
 
       <label className="checkbox">
@@ -8309,7 +8849,15 @@ function AiDetectorTool() {
           checked={convertHtmlUploadToText}
           onChange={(event) => setConvertHtmlUploadToText(event.target.checked)}
         />
-        Convert uploaded HTML files to plain text before analysis
+        Convert uploaded HTML-like files to plain text before analysis
+      </label>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={includePdfPageMarkers}
+          onChange={(event) => setIncludePdfPageMarkers(event.target.checked)}
+        />
+        Include page markers when importing PDF text
       </label>
 
       <label className="field">
@@ -8318,18 +8866,36 @@ function AiDetectorTool() {
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={10}
-          placeholder="Paste article, essay, email, or any long-form text."
+          placeholder="Paste article, essay, email, or long-form text."
         />
       </label>
 
       <label className="field">
-        <span>Upload text / HTML / Markdown file</span>
-        <input type="file" accept=".txt,.md,.markdown,.html,.htm,.rtf" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        <span>Upload documents (PDF, Word, PowerPoint, Excel, OpenDocument, EPUB, HTML, text)</span>
+        <input
+          type="file"
+          accept={AI_DETECTOR_UPLOAD_ACCEPT}
+          multiple
+          onChange={(event) => {
+            void handleUpload(event.target.files);
+            event.target.value = "";
+          }}
+          disabled={isImporting}
+        />
       </label>
 
       <div className="button-row">
-        <button className="action-button" type="button" onClick={runAnalysis}>
+        <button className="action-button" type="button" onClick={runAnalysis} disabled={isImporting}>
           Analyze text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={applyAllAutoRecommendations}
+          disabled={!report || !autoRecommendationCount}
+        >
+          <RefreshCw size={15} />
+          Apply all auto-fixes ({autoRecommendationCount})
         </button>
         <button
           className="action-button secondary"
@@ -8365,6 +8931,7 @@ function AiDetectorTool() {
           type="button"
           onClick={() => {
             setText("");
+            setUploadSummaries([]);
             setReport(null);
             setStatus("Cleared analysis.");
           }}
@@ -8381,8 +8948,37 @@ function AiDetectorTool() {
           { label: "Characters", value: formatNumericValue(countCharacters(text, true)) },
           { label: "Words", value: formatNumericValue(countWords(text)) },
           { label: "Sentences", value: formatNumericValue(splitAiSentences(text).length) },
+          { label: "Imported docs", value: formatNumericValue(uploadSummaries.length) },
         ]}
       />
+
+      {uploadSummaries.length ? (
+        <div className="mini-panel">
+          <h3>Imported documents</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Source</th>
+                  <th>Words</th>
+                  <th>Characters</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploadSummaries.map((entry) => (
+                  <tr key={`${entry.fileName}-${entry.source}`}>
+                    <td>{entry.fileName}</td>
+                    <td>{entry.source}</td>
+                    <td>{formatNumericValue(entry.words)}</td>
+                    <td>{formatNumericValue(entry.characters)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {report ? (
         <>
@@ -8406,6 +9002,46 @@ function AiDetectorTool() {
               { label: "Reading ease", value: report.readingEase != null ? report.readingEase.toFixed(1) : "N/A" },
             ]}
           />
+
+          <div className="mini-panel">
+            <h3>Recommended adjustments</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Priority</th>
+                    <th>Adjustment</th>
+                    <th>Why</th>
+                    <th>Expected impact</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.recommendations.map((recommendation) => (
+                    <tr key={recommendation.id}>
+                      <td>{recommendation.priority.toUpperCase()}</td>
+                      <td>{recommendation.title}</td>
+                      <td>{recommendation.reason}</td>
+                      <td>{recommendation.estimatedRiskDrop ? `~-${recommendation.estimatedRiskDrop}` : "Manual"}</td>
+                      <td>
+                        {recommendation.autoApplicable ? (
+                          <button
+                            className="action-button secondary"
+                            type="button"
+                            onClick={() => applyRecommendation(recommendation.id)}
+                          >
+                            {recommendation.actionLabel}
+                          </button>
+                        ) : (
+                          <span className="supporting-text">Manual edit</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
           <div className="mini-panel">
             <h3>Detected signals</h3>
@@ -16023,17 +16659,276 @@ async function extractTextFromDocx(file: File): Promise<string> {
   return normalizeDocumentText(paragraphs.join("\n\n"));
 }
 
-async function extractTextFromDocumentFile(file: File): Promise<{ text: string; source: string }> {
+function sortPathsByTrailingNumber(paths: string[]): string[] {
+  return [...paths].sort((left, right) => {
+    const leftMatch = left.match(/(\d+)(?!.*\d)/);
+    const rightMatch = right.match(/(\d+)(?!.*\d)/);
+    const leftNumber = leftMatch ? Number.parseInt(leftMatch[1], 10) : 0;
+    const rightNumber = rightMatch ? Number.parseInt(rightMatch[1], 10) : 0;
+    if (leftNumber !== rightNumber) {
+      return leftNumber - rightNumber;
+    }
+    return left.localeCompare(right);
+  });
+}
+
+function extractXmlTextByPattern(xml: string, pattern: RegExp): string[] {
+  return Array.from(xml.matchAll(pattern))
+    .map((match) => decodeXmlEntities(match[1] ?? ""))
+    .map((value) => value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+async function extractTextFromPptx(file: File): Promise<string> {
+  const JSZip = await loadJsZipModule();
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const slidePaths = sortPathsByTrailingNumber(
+    Object.keys(zip.files).filter((path) => /^ppt\/slides\/slide\d+\.xml$/i.test(path)),
+  );
+  if (!slidePaths.length) {
+    throw new Error("No slide XML files were found in this PowerPoint document.");
+  }
+
+  const slideSections: string[] = [];
+  for (let index = 0; index < slidePaths.length; index += 1) {
+    const xml = await zip.file(slidePaths[index])?.async("string");
+    if (!xml) continue;
+    const textNodes = extractXmlTextByPattern(xml, /<a:t[^>]*>([\s\S]*?)<\/a:t>/g);
+    if (!textNodes.length) continue;
+    slideSections.push(`Slide ${index + 1}\n${textNodes.join("\n")}`);
+  }
+
+  return normalizeDocumentText(slideSections.join("\n\n"));
+}
+
+function parseXlsxSharedStrings(xml: string): string[] {
+  return Array.from(xml.matchAll(/<si[\s\S]*?<\/si>/g)).map((entry) =>
+    normalizeDocumentText(
+      extractXmlTextByPattern(entry[0] ?? "", /<t(?:\s+[^>]*)?>([\s\S]*?)<\/t>/g).join(" "),
+    ),
+  );
+}
+
+function parseXlsxSheetRows(sheetXml: string, sharedStrings: string[]): string[] {
+  const lines: string[] = [];
+  const rowMatches = Array.from(sheetXml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g));
+  const rowContents = rowMatches.length ? rowMatches.map((match) => match[1] ?? "") : [sheetXml];
+
+  for (let index = 0; index < rowContents.length; index += 1) {
+    const rowContent = rowContents[index];
+    const cellMatches = Array.from(rowContent.matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g));
+    const values: string[] = [];
+    for (const cellMatch of cellMatches) {
+      const attrs = cellMatch[1] ?? "";
+      const cellBody = cellMatch[2] ?? "";
+      const type = attrs.match(/\bt="([^"]+)"/)?.[1]?.trim().toLowerCase() ?? "";
+      let value = "";
+      if (type === "s") {
+        const sharedIndex = Number.parseInt(cellBody.match(/<v[^>]*>([\s\S]*?)<\/v>/)?.[1] ?? "", 10);
+        if (Number.isFinite(sharedIndex) && sharedIndex >= 0 && sharedIndex < sharedStrings.length) {
+          value = sharedStrings[sharedIndex];
+        }
+      } else if (type === "inlineStr") {
+        value = extractXmlTextByPattern(cellBody, /<t(?:\s+[^>]*)?>([\s\S]*?)<\/t>/g).join(" ");
+      } else {
+        value = decodeXmlEntities(cellBody.match(/<v[^>]*>([\s\S]*?)<\/v>/)?.[1] ?? "");
+      }
+      const normalized = normalizeDocumentText(value);
+      if (normalized) {
+        values.push(normalized);
+      }
+    }
+    if (values.length) {
+      lines.push(values.join(" | "));
+    }
+  }
+
+  return lines;
+}
+
+async function extractTextFromXlsx(file: File): Promise<string> {
+  const JSZip = await loadJsZipModule();
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const sharedStringsXml = (await zip.file("xl/sharedStrings.xml")?.async("string")) ?? "";
+  const sharedStrings = sharedStringsXml ? parseXlsxSharedStrings(sharedStringsXml) : [];
+
+  const sheetPaths = sortPathsByTrailingNumber(
+    Object.keys(zip.files).filter((path) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(path)),
+  );
+  if (!sheetPaths.length) {
+    throw new Error("No worksheet XML files were found in this spreadsheet.");
+  }
+
+  const workbookXml = (await zip.file("xl/workbook.xml")?.async("string")) ?? "";
+  const sheetNames = extractXmlTextByPattern(workbookXml, /<sheet[^>]*name="([^"]+)"[^>]*\/?>/g);
+
+  const sections: string[] = [];
+  for (let index = 0; index < sheetPaths.length; index += 1) {
+    const xml = await zip.file(sheetPaths[index])?.async("string");
+    if (!xml) continue;
+    const lines = parseXlsxSheetRows(xml, sharedStrings).slice(0, 2000);
+    if (!lines.length) continue;
+    const heading = sheetNames[index] ? `Sheet: ${sheetNames[index]}` : `Sheet ${index + 1}`;
+    sections.push(`${heading}\n${lines.join("\n")}`);
+  }
+
+  return normalizeDocumentText(sections.join("\n\n"));
+}
+
+function extractTextFromOpenDocumentXml(contentXml: string): string {
+  const normalizedXml = contentXml
+    .replace(/<text:tab\s*\/>/g, "\t")
+    .replace(/<text:line-break\s*\/>/g, "\n")
+    .replace(/<text:s(?:\s+text:c="(\d+)")?\s*\/>/g, (_match, count) =>
+      " ".repeat(Math.max(1, Number.parseInt(count ?? "1", 10) || 1)),
+    );
+  const blocks = extractXmlTextByPattern(normalizedXml, /<(?:text:p|text:h)[^>]*>([\s\S]*?)<\/(?:text:p|text:h)>/g);
+  if (blocks.length) {
+    return normalizeDocumentText(blocks.join("\n"));
+  }
+  return normalizeDocumentText(decodeBasicHtmlEntities(stripTagsFromMarkup(normalizedXml)));
+}
+
+async function extractTextFromOpenDocument(file: File, label: "ODT" | "ODS" | "ODP"): Promise<string> {
+  const JSZip = await loadJsZipModule();
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const contentXmlFile = zip.file("content.xml");
+  if (!contentXmlFile) {
+    throw new Error(`Could not locate content.xml in this ${label} file.`);
+  }
+  const contentXml = await contentXmlFile.async("string");
+  return extractTextFromOpenDocumentXml(contentXml);
+}
+
+function extractTextFromRtf(rawRtf: string): string {
+  const hexDecoded = rawRtf.replace(/\\'([0-9a-fA-F]{2})/g, (_match, hex) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+  return normalizeDocumentText(
+    hexDecoded
+      .replace(/\\par[d]?/g, "\n")
+      .replace(/\\tab/g, "\t")
+      .replace(/\\line/g, "\n")
+      .replace(/\\[a-zA-Z]+\d* ?/g, " ")
+      .replace(/[{}]/g, " ")
+      .replace(/\s+/g, " "),
+  );
+}
+
+function extractReadableBinarySegments(bytes: Uint8Array): string {
+  const asciiSegments: string[] = [];
+  let current = "";
+  const flush = () => {
+    const normalized = current.trim().replace(/\s+/g, " ");
+    if (normalized.length >= 4 && /[a-zA-Z]{3}/.test(normalized)) {
+      asciiSegments.push(normalized);
+    }
+    current = "";
+  };
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = bytes[index];
+    const printable = byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126);
+    if (printable) {
+      current += String.fromCharCode(byte);
+    } else {
+      flush();
+    }
+  }
+  flush();
+
+  let utf16Candidate = "";
+  try {
+    utf16Candidate = new TextDecoder("utf-16le").decode(bytes);
+  } catch {
+    utf16Candidate = "";
+  }
+  const normalizedUtf16 = normalizeDocumentText(
+    utf16Candidate
+      .replace(/[^A-Za-z0-9\s.,;:!?'"()\-]/g, " ")
+      .replace(/\s+/g, " "),
+  );
+  const normalizedAscii = normalizeDocumentText(asciiSegments.join("\n"));
+  return normalizedUtf16.length > normalizedAscii.length ? normalizedUtf16 : normalizedAscii;
+}
+
+async function extractTextFromEpub(file: File): Promise<string> {
+  const JSZip = await loadJsZipModule();
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const htmlPaths = sortPathsByTrailingNumber(
+    Object.keys(zip.files).filter((path) => /\.(xhtml|html|htm)$/i.test(path)),
+  ).slice(0, 80);
+  if (!htmlPaths.length) {
+    throw new Error("No HTML content files were found in this EPUB.");
+  }
+
+  const sections: string[] = [];
+  for (let index = 0; index < htmlPaths.length; index += 1) {
+    const markup = await zip.file(htmlPaths[index])?.async("string");
+    if (!markup) continue;
+    const text = extractTextFromHtmlMarkup(markup);
+    if (text) sections.push(text);
+  }
+  return normalizeDocumentText(sections.join("\n\n"));
+}
+
+function isLegacyBinaryOfficeName(lowerName: string): boolean {
+  return lowerName.endsWith(".doc") || lowerName.endsWith(".ppt") || lowerName.endsWith(".xls");
+}
+
+interface DocumentFileExtractionOptions {
+  convertHtmlToText?: boolean;
+}
+
+async function extractTextFromDocumentFile(
+  file: File,
+  options: DocumentFileExtractionOptions = {},
+): Promise<{ text: string; source: string }> {
   const lowerName = file.name.toLowerCase();
-  if (lowerName.endsWith(".docx")) {
+  const convertHtmlToText = options.convertHtmlToText ?? true;
+
+  if (/\.(docx|docm|dotx|dotm)$/.test(lowerName)) {
     const docxText = await extractTextFromDocx(file);
     return { text: docxText, source: "DOCX" };
   }
+  if (/\.(pptx|pptm|potx|potm)$/.test(lowerName)) {
+    const pptText = await extractTextFromPptx(file);
+    return { text: pptText, source: "PPTX" };
+  }
+  if (/\.(xlsx|xlsm|xltx|xltm)$/.test(lowerName)) {
+    const xlsxText = await extractTextFromXlsx(file);
+    return { text: xlsxText, source: "XLSX" };
+  }
+  if (lowerName.endsWith(".odt")) {
+    return { text: await extractTextFromOpenDocument(file, "ODT"), source: "ODT" };
+  }
+  if (lowerName.endsWith(".ods")) {
+    return { text: await extractTextFromOpenDocument(file, "ODS"), source: "ODS" };
+  }
+  if (lowerName.endsWith(".odp")) {
+    return { text: await extractTextFromOpenDocument(file, "ODP"), source: "ODP" };
+  }
+  if (lowerName.endsWith(".epub")) {
+    return { text: await extractTextFromEpub(file), source: "EPUB" };
+  }
 
   const rawText = await file.text();
+  if (lowerName.endsWith(".rtf") || rawText.trimStart().startsWith("{\\rtf")) {
+    return { text: extractTextFromRtf(rawText), source: "RTF" };
+  }
+
   const looksLikeHtml = /<\s*html|<\s*body|<\s*p|<\s*div/i.test(rawText);
   if (lowerName.endsWith(".doc") || lowerName.endsWith(".html") || lowerName.endsWith(".htm") || looksLikeHtml) {
-    return { text: extractTextFromHtmlMarkup(rawText), source: lowerName.endsWith(".doc") ? "DOC (HTML)" : "HTML" };
+    const htmlText = convertHtmlToText ? extractTextFromHtmlMarkup(rawText) : normalizeDocumentText(rawText);
+    return { text: htmlText, source: lowerName.endsWith(".doc") ? "DOC (HTML)" : "HTML" };
+  }
+
+  if (isLegacyBinaryOfficeName(lowerName) || /\u0000/.test(rawText)) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const recovered = extractReadableBinarySegments(bytes);
+    if (recovered) {
+      return { text: recovered, source: "Legacy binary document" };
+    }
   }
 
   return { text: normalizeDocumentText(rawText), source: "Text" };
