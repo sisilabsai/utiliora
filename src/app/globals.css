@@ -1472,10 +1472,14 @@ textarea {
 
 .ad-slot {
   display: grid;
-  place-items: center;
-  text-align: center;
-  min-height: 112px;
-  border-style: dashed;
+  gap: 0.6rem;
+  align-items: center;
+  min-height: 120px;
+}
+
+.ad-slot .adsbygoogle {
+  width: 100%;
+  min-height: 90px;
 }
 
 .affiliate-card a {
