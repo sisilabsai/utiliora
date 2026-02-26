@@ -8160,6 +8160,80 @@ function capitalizeFirstCharacter(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+const AI_REWRITE_LIST_PREFIX_PATTERN = /^(\s*(?:[-*•◦▪‣]|\d+[.)]|[A-Za-z][.)])\s+)(.*)$/;
+
+function isLikelyHeadingLine(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  const words = countWords(trimmed);
+  if (words <= 1) return true;
+  if (words <= 10 && !/[.!?]$/.test(trimmed) && /[A-Za-z]/.test(trimmed)) {
+    if (/^[A-Z0-9]/.test(trimmed) || /^\d+(\.\d+)*\s+[A-Za-z]/.test(trimmed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldSkipStructuredRewriteLine(trimmedLine: string): boolean {
+  if (!trimmedLine) return true;
+  if (/^```/.test(trimmedLine)) return true;
+  if (/^#{1,6}\s+/.test(trimmedLine)) return true;
+  if ((trimmedLine.match(/\|/g)?.length ?? 0) >= 2) return true;
+  if (trimmedLine.includes("\t")) return true;
+  if (/^[\s|:+\-_=]{3,}$/.test(trimmedLine)) return true;
+  if (/^>\s+/.test(trimmedLine)) return true;
+  if (/^https?:\/\/\S+$/i.test(trimmedLine)) return true;
+  if (/^\!\[[^\]]*\]\([^)]+\)$/.test(trimmedLine)) return true;
+  return false;
+}
+
+function rewriteTextPreservingFormatting(
+  value: string,
+  transform: (segment: string) => { text: string; changeCount: number },
+): { text: string; changeCount: number } {
+  const normalizedInput = normalizeUploadedText(value);
+  if (!normalizedInput.trim()) return { text: normalizedInput, changeCount: 0 };
+
+  const lines = normalizedInput.split("\n");
+  let totalChanges = 0;
+  let inCodeBlock = false;
+
+  const outputLines = lines.map((line) => {
+    const trimmed = line.trim();
+    if (/^```/.test(trimmed)) {
+      inCodeBlock = !inCodeBlock;
+      return line;
+    }
+    if (inCodeBlock || shouldSkipStructuredRewriteLine(trimmed)) {
+      return line;
+    }
+
+    const listMatch = line.match(AI_REWRITE_LIST_PREFIX_PATTERN);
+    const prefix = listMatch?.[1] ?? "";
+    const rawBody = (listMatch?.[2] ?? line).trim();
+    if (!rawBody || isLikelyHeadingLine(rawBody)) {
+      return line;
+    }
+
+    const result = transform(rawBody);
+    const rewrittenBody = normalizeUploadedText(result.text)
+      .replace(/\s*\n+\s*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (!rewrittenBody || rewrittenBody === rawBody) {
+      return line;
+    }
+    totalChanges += Math.max(1, result.changeCount);
+    return `${prefix}${rewrittenBody}`;
+  });
+
+  return {
+    text: outputLines.join("\n").replace(/[ \t]+\n/g, "\n").replace(/\n{4,}/g, "\n\n\n").trim(),
+    changeCount: totalChanges,
+  };
+}
+
 function applySentenceSplitRecommendation(value: string): { text: string; changeCount: number } {
   const sentences = splitAiSentences(value);
   if (!sentences.length) return { text: value, changeCount: 0 };
@@ -8507,8 +8581,29 @@ function applyAiDetectorRecommendation(
   text: string,
   report: AiDetectorReport,
 ): { text: string; changeCount: number; summary: string } {
+  const transformSegment = (segment: string): { text: string; changeCount: number } => {
+    if (id === "split-long-sentences") {
+      return applySentenceSplitRecommendation(segment);
+    }
+    if (id === "normalize-transition-openers") {
+      return applyTransitionNormalizationRecommendation(segment);
+    }
+    if (id === "reduce-repeated-phrases") {
+      const segmentReport = buildAiDetectorReport(segment, report.profile) ?? report;
+      return applyRepeatedPhraseRecommendation(segment, segmentReport.repeatedPhrases);
+    }
+    if (id === "diversify-vocabulary") {
+      return applyVocabularyVariationRecommendation(segment);
+    }
+    return { text: segment, changeCount: 0 };
+  };
+
+  if (id === "expand-sample-manually") {
+    return { text, changeCount: 0, summary: "This recommendation is a manual editing step." };
+  }
+
+  const result = rewriteTextPreservingFormatting(text, transformSegment);
   if (id === "split-long-sentences") {
-    const result = applySentenceSplitRecommendation(text);
     return {
       text: result.text,
       changeCount: result.changeCount,
@@ -8519,7 +8614,6 @@ function applyAiDetectorRecommendation(
     };
   }
   if (id === "normalize-transition-openers") {
-    const result = applyTransitionNormalizationRecommendation(text);
     return {
       text: result.text,
       changeCount: result.changeCount,
@@ -8530,7 +8624,6 @@ function applyAiDetectorRecommendation(
     };
   }
   if (id === "reduce-repeated-phrases") {
-    const result = applyRepeatedPhraseRecommendation(text, report.repeatedPhrases);
     return {
       text: result.text,
       changeCount: result.changeCount,
@@ -8540,21 +8633,13 @@ function applyAiDetectorRecommendation(
           : "No repeated phrase loops were detected for auto-fix.",
     };
   }
-  if (id === "diversify-vocabulary") {
-    const result = applyVocabularyVariationRecommendation(text);
-    return {
-      text: result.text,
-      changeCount: result.changeCount,
-      summary:
-        result.changeCount > 0
-          ? `Varied ${formatNumericValue(result.changeCount)} repeated word occurrence${result.changeCount === 1 ? "" : "s"}.`
-          : "No vocabulary substitutions were needed.",
-    };
-  }
   return {
-    text,
-    changeCount: 0,
-    summary: "This recommendation is a manual editing step.",
+    text: result.text,
+    changeCount: result.changeCount,
+    summary:
+      result.changeCount > 0
+        ? `Varied ${formatNumericValue(result.changeCount)} repeated word occurrence${result.changeCount === 1 ? "" : "s"}.`
+        : "No vocabulary substitutions were needed.",
   };
 }
 
@@ -9198,22 +9283,28 @@ function applyConciseRewrite(value: string): { text: string; changes: number } {
 }
 
 function applyStorytellingTone(value: string): { text: string; changes: number } {
-  const sentences = splitAiSentences(value);
-  if (!sentences.length) return { text: value, changes: 0 };
   const hooks = ["In practice,", "Here's the key point:", "Now, this matters because"];
-  const output = [...sentences];
-  let changes = 0;
-  if (output.length >= 2 && !/^(in practice|here's the key point|now, this matters because)/i.test(output[0])) {
-    output[0] = `${hooks[changes % hooks.length]} ${output[0]}`;
-    changes += 1;
-  }
-  for (let index = 1; index < output.length; index += 3) {
-    if (/^(however|moreover|therefore|furthermore|additionally)\b/i.test(output[index])) {
-      output[index] = output[index].replace(/^(however|moreover|therefore|furthermore|additionally)\b[:,]?\s*/i, "Also, ");
+  const rewritten = rewriteTextPreservingFormatting(value, (segment) => {
+    const sentences = splitAiSentences(segment);
+    if (!sentences.length) return { text: segment, changeCount: 0 };
+    const output = [...sentences];
+    let changes = 0;
+    if (output.length >= 2 && !/^(in practice|here's the key point|now, this matters because)/i.test(output[0])) {
+      output[0] = `${hooks[changes % hooks.length]} ${output[0]}`;
       changes += 1;
     }
-  }
-  return { text: normalizeDocumentText(output.join(" ")), changes };
+    for (let index = 1; index < output.length; index += 3) {
+      if (/^(however|moreover|therefore|furthermore|additionally)\b/i.test(output[index])) {
+        output[index] = output[index].replace(
+          /^(however|moreover|therefore|furthermore|additionally)\b[:,]?\s*/i,
+          "Also, ",
+        );
+        changes += 1;
+      }
+    }
+    return { text: output.join(" "), changeCount: changes };
+  });
+  return { text: rewritten.text, changes: rewritten.changeCount };
 }
 
 function protectCriticalMeaningTokens(value: string): { text: string; map: Array<{ token: string; value: string }> } {
@@ -9775,11 +9866,7 @@ function ParaphrasingTool() {
 
   const rewriteWithTone = useCallback(
     (input: string, seed: number): string => {
-      const lockTerms = keywordLocksInput
-        .split(/[,\n]/)
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, 40);
+      const lockTerms = parseParaphraseKeywordLocks(keywordLocksInput);
       let tokenIndex = 0;
       const lockMap: Array<{ token: string; value: string }> = [];
       let working = normalizeDocumentText(input);
@@ -9865,20 +9952,26 @@ function ParaphrasingTool() {
           .replace(/\s{2,}/g, " ")
           .trim();
       } else if (lengthMode === "longer") {
-        const sentences = splitAiSentences(working);
-        const fillers = [
-          "This gives clearer practical context.",
-          "That helps connect the idea to real outcomes.",
-          "It also makes the message easier to apply.",
-        ];
-        const expanded: string[] = [];
-        sentences.forEach((sentence, index) => {
-          expanded.push(ensureSentenceEnding(sentence));
-          if (index % 2 === 0 && tokenizeAiWords(sentence).length < 16) {
-            expanded.push(fillers[(seed + index) % fillers.length]);
-          }
+        const expanded = rewriteTextPreservingFormatting(working, (segment) => {
+          const sentences = splitAiSentences(segment);
+          if (!sentences.length) return { text: segment, changeCount: 0 };
+          const fillers = [
+            "This gives clearer practical context.",
+            "That helps connect the idea to real outcomes.",
+            "It also makes the message easier to apply.",
+          ];
+          const output: string[] = [];
+          let changeCount = 0;
+          sentences.forEach((sentence, index) => {
+            output.push(ensureSentenceEnding(sentence));
+            if (index % 2 === 0 && tokenizeAiWords(sentence).length < 16) {
+              output.push(fillers[(seed + index) % fillers.length]);
+              changeCount += 1;
+            }
+          });
+          return { text: output.join(" "), changeCount };
         });
-        working = expanded.join(" ");
+        working = expanded.text;
       }
 
       lockMap.forEach((entry) => {
@@ -17752,18 +17845,43 @@ async function extractTextFromDocx(file: File): Promise<string> {
     .replace(/<w:br\/>/g, "\n")
     .replace(/<w:cr\/>/g, "\n");
 
-  const rawParagraphs = documentXml.split("</w:p>");
-  const paragraphs: string[] = [];
-  for (const rawParagraph of rawParagraphs) {
-    const matches = Array.from(rawParagraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g));
-    const text = matches.map((match) => decodeXmlEntities(match[1] ?? "")).join("");
+  const blockMatches = Array.from(documentXml.matchAll(/<w:tbl[\s\S]*?<\/w:tbl>|<w:p[\s\S]*?<\/w:p>/g));
+  const blocks = blockMatches.length ? blockMatches.map((match) => match[0] ?? "") : [documentXml];
+  const sections: string[] = [];
+
+  blocks.forEach((block) => {
+    if (!block) return;
+    if (block.startsWith("<w:tbl")) {
+      const rowMatches = Array.from(block.matchAll(/<w:tr[\s\S]*?<\/w:tr>/g));
+      const rows: string[] = [];
+      rowMatches.forEach((rowMatch) => {
+        const rowXml = rowMatch[0] ?? "";
+        const cellMatches = Array.from(rowXml.matchAll(/<w:tc[\s\S]*?<\/w:tc>/g));
+        const cells: string[] = [];
+        cellMatches.forEach((cellMatch) => {
+          const cellXml = cellMatch[0] ?? "";
+          const text = extractXmlTextByPattern(cellXml, /<w:t[^>]*>([\s\S]*?)<\/w:t>/g).join(" ");
+          const normalized = normalizeDocumentText(text);
+          if (normalized) cells.push(normalized);
+        });
+        if (cells.length) {
+          rows.push(cells.join(" | "));
+        }
+      });
+      if (rows.length) {
+        sections.push(rows.join("\n"));
+      }
+      return;
+    }
+
+    const text = extractXmlTextByPattern(block, /<w:t[^>]*>([\s\S]*?)<\/w:t>/g).join("");
     const normalized = normalizeDocumentText(text);
     if (normalized) {
-      paragraphs.push(normalized);
+      sections.push(normalized);
     }
-  }
+  });
 
-  return normalizeDocumentText(paragraphs.join("\n\n"));
+  return normalizeDocumentText(sections.join("\n\n"));
 }
 
 function sortPathsByTrailingNumber(paths: string[]): string[] {
