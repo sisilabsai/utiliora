@@ -865,6 +865,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("Word to PDF Converter"),
   },
   {
+    slug: "html-to-pdf-converter",
+    category: "image-tools",
+    title: "HTML to PDF Converter",
+    summary: "Convert HTML/HTM files into clean PDF documents with page sizing and typography controls.",
+    description:
+      "Upload HTML files and convert extracted text into downloadable PDFs with configurable page size, margins, line height, and output naming.",
+    keywords: ["html to pdf", "convert html to pdf", "htm to pdf", "html pdf converter"],
+    engine: { kind: "image-tool", id: "word-to-pdf" },
+    faq: baseFaq("HTML to PDF Converter"),
+  },
+  {
     slug: "pdf-to-jpg-converter",
     category: "image-tools",
     title: "PDF to JPG Converter",
