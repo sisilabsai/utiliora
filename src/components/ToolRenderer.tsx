@@ -25757,18 +25757,206 @@ function ResumeBuilderTool() {
   const missingSkills = resume.skills.length < 8;
   const needsKeywordAlignment = jobKeywords.length > 0 && coveragePercent < 65 && missingKeywords.length > 0;
 
-  const printResume = () => {
-    const opened = openPrintWindow(
-      `${resume.personal.fullName || "Resume"} - Utiliora`,
-      buildResumePrintHtml(resume),
-      RESUME_PRINT_CSS,
-    );
-    if (!opened) {
-      setStatus("Enable popups to print or save PDF.");
-      return;
+  const downloadResumePdf = async () => {
+    setStatus("Generating PDF...");
+    try {
+      const { jsPDF } = await import("jspdf");
+      const pdf = new jsPDF({
+        unit: "mm",
+        format: "a4",
+        compress: true,
+      });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 14;
+      const contentWidth = pageWidth - margin * 2;
+      const bottomY = pageHeight - margin;
+      let y = margin;
+
+      const accentRgb = (hexToRgb(sanitizeResumeAccentColor(resume.accentColor)) ?? "31, 111, 235")
+        .split(",")
+        .map((part) => Number(part.trim()))
+        .filter((value) => Number.isFinite(value) && value >= 0 && value <= 255);
+      const accent: [number, number, number] =
+        accentRgb.length === 3 ? [accentRgb[0], accentRgb[1], accentRgb[2]] : [31, 111, 235];
+
+      const ensureSpace = (requiredHeight = 0) => {
+        if (y + requiredHeight > bottomY) {
+          pdf.addPage();
+          y = margin;
+        }
+      };
+
+      const drawLines = (lines: string[], fontSize = 10, lineHeight = 5, x = margin, maxWidth = contentWidth) => {
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(fontSize);
+        const rendered = lines.length ? lines : [""];
+        for (const line of rendered) {
+          const wrapped = pdf.splitTextToSize(line, Math.max(20, maxWidth)) as string[];
+          const safeWrapped = wrapped.length ? wrapped : [""];
+          for (const wrappedLine of safeWrapped) {
+            ensureSpace(lineHeight);
+            pdf.text(wrappedLine || " ", x, y);
+            y += lineHeight;
+          }
+        }
+      };
+
+      const drawParagraph = (text: string, fontSize = 10, lineHeight = 5, x = margin, maxWidth = contentWidth) => {
+        const parts = text
+          .split(/\r?\n/)
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (!parts.length) return;
+        for (const part of parts) {
+          drawLines([part], fontSize, lineHeight, x, maxWidth);
+          y += 1.5;
+        }
+      };
+
+      const drawSection = (title: string) => {
+        ensureSpace(10);
+        pdf.setDrawColor(...accent);
+        pdf.setTextColor(...accent);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11);
+        pdf.text(title, margin, y);
+        y += 2.5;
+        pdf.setLineWidth(0.4);
+        pdf.line(margin, y, pageWidth - margin, y);
+        y += 4;
+        pdf.setTextColor(20, 33, 61);
+      };
+
+      pdf.setTextColor(20, 33, 61);
+      const hasRenderablePhoto =
+        resume.photoDataUrl.startsWith("data:image/png") ||
+        resume.photoDataUrl.startsWith("data:image/jpeg") ||
+        resume.photoDataUrl.startsWith("data:image/jpg");
+      const photoSize = hasRenderablePhoto ? 24 : 0;
+      const headerGap = hasRenderablePhoto ? 6 : 0;
+      const headerTextWidth = contentWidth - photoSize - headerGap;
+      const photoX = pageWidth - margin - photoSize;
+      const photoY = y;
+      const headerYStart = y;
+
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(22);
+      const nameLines = pdf.splitTextToSize(resume.personal.fullName.trim() || "Your Name", Math.max(50, headerTextWidth)) as string[];
+      drawLines(nameLines, 22, 8, margin, headerTextWidth);
+
+      pdf.setTextColor(...accent);
+      pdf.setFont("helvetica", "bold");
+      drawLines([resume.personal.headline.trim() || "Professional headline"], 12, 6, margin, headerTextWidth);
+
+      pdf.setTextColor(75, 85, 99);
+      const headerContact =
+        [resume.personal.email, resume.personal.phone, resume.personal.location, resume.personal.website]
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .join(" | ") || "Contact details";
+      drawLines([headerContact], 9, 4.5, margin, headerTextWidth);
+
+      if (hasRenderablePhoto) {
+        try {
+          const imageType = resume.photoDataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+          pdf.addImage(resume.photoDataUrl, imageType, photoX, photoY, photoSize, photoSize);
+        } catch {
+          // Skip image rendering if format decoding fails.
+        }
+      }
+
+      y = Math.max(y, headerYStart + (hasRenderablePhoto ? photoSize : 0)) + 2;
+      pdf.setDrawColor(211, 219, 229);
+      pdf.setLineWidth(0.4);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 6;
+      pdf.setTextColor(20, 33, 61);
+
+      if (resume.personal.summary.trim()) {
+        drawSection("Profile");
+        drawParagraph(resume.personal.summary.trim(), 10, 5);
+        y += 1;
+      }
+
+      if (resume.skills.length) {
+        drawSection("Skills");
+        drawParagraph(resume.skills.join(" | "), 10, 5);
+        y += 1;
+      }
+
+      const experienceEntries = resume.experience.filter(
+        (item) => item.role.trim() || item.company.trim() || item.highlights.trim(),
+      );
+      if (experienceEntries.length) {
+        drawSection("Experience");
+        for (const item of experienceEntries) {
+          ensureSpace(10);
+          const heading = `${item.role.trim() || "Role"} - ${item.company.trim() || "Company"}`;
+          pdf.setTextColor(20, 33, 61);
+          pdf.setFont("helvetica", "bold");
+          drawLines([heading], 10.5, 5);
+          pdf.setTextColor(92, 106, 120);
+          drawLines(
+            [`${formatDateRange(item.startDate, item.endDate, item.current)}${item.location.trim() ? ` | ${item.location.trim()}` : ""}`],
+            9,
+            4.5,
+          );
+          pdf.setTextColor(20, 33, 61);
+          const highlights = item.highlights
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          for (const line of highlights) {
+            drawLines([`- ${line}`], 9.8, 4.8, margin + 2, contentWidth - 2);
+          }
+          y += 1.5;
+        }
+      }
+
+      const educationEntries = resume.education.filter(
+        (item) => item.school.trim() || item.degree.trim() || item.field.trim() || item.details.trim(),
+      );
+      if (educationEntries.length) {
+        drawSection("Education");
+        for (const item of educationEntries) {
+          ensureSpace(9);
+          const heading = item.school.trim() || "School";
+          const program = [item.degree.trim(), item.field.trim()].filter(Boolean).join(", ") || "Program";
+          pdf.setTextColor(20, 33, 61);
+          pdf.setFont("helvetica", "bold");
+          drawLines([`${heading} - ${program}`], 10.3, 4.8);
+          pdf.setTextColor(92, 106, 120);
+          drawLines([formatDateRange(item.startDate, item.endDate, false)], 9, 4.4);
+          pdf.setTextColor(20, 33, 61);
+          if (item.details.trim()) {
+            drawParagraph(item.details.trim(), 9.8, 4.8);
+          }
+          y += 1;
+        }
+      }
+
+      const linkEntries = resume.links.filter((item) => item.label.trim() || item.url.trim());
+      if (linkEntries.length) {
+        drawSection("Links");
+        for (const item of linkEntries) {
+          const line = `${item.label.trim() || "Link"}: ${item.url.trim() || "-"}`;
+          drawLines([line], 9.6, 4.6);
+        }
+      }
+
+      const filename = `${resumeFileStem}.pdf`;
+      const blob = pdf.output("blob");
+      downloadBlobFile(filename, blob);
+      setStatus(`Downloaded ${filename}.`);
+      trackEvent("resume_pdf_download", {
+        template: resume.template,
+        pages: pdf.getNumberOfPages(),
+        hasPhoto: Boolean(resume.photoDataUrl.trim()),
+      });
+    } catch {
+      setStatus("PDF download failed. Try again or export DOC/HTML.");
     }
-    setStatus("Opened print view. Choose Save as PDF.");
-    trackEvent("resume_print_open", { template: resume.template });
   };
 
   const downloadResumeMarkdown = () => {
@@ -25896,9 +26084,9 @@ function ResumeBuilderTool() {
           <Download size={15} />
           DOC
         </button>
-        <button className="action-button" type="button" onClick={printResume}>
-          <Printer size={15} />
-          Print / PDF
+        <button className="action-button" type="button" onClick={() => void downloadResumePdf()}>
+          <Download size={15} />
+          Download PDF
         </button>
       </div>
       <input
