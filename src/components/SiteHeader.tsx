@@ -3,7 +3,7 @@
 import NextImage from "next/image";
 import { usePathname } from "next/navigation";
 import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCategories } from "@/lib/categories";
 import { CategoryIcon } from "@/components/CategoryIcon";
 
@@ -63,6 +63,10 @@ export function SiteHeader() {
   const pathname = usePathname();
   const [recentDockEntry, setRecentDockEntry] = useState<RecentDockEntry | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [mobileNavHidden, setMobileNavHidden] = useState(false);
+  const [mobileNavCompact, setMobileNavCompact] = useState(false);
+  const lastScrollYRef = useRef(0);
+  const scrollTickingRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -103,6 +107,46 @@ export function SiteHeader() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [quickOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    lastScrollYRef.current = window.scrollY;
+
+    const handleScroll = () => {
+      if (scrollTickingRef.current) return;
+      scrollTickingRef.current = true;
+
+      window.requestAnimationFrame(() => {
+        const currentY = window.scrollY;
+        const previousY = lastScrollYRef.current;
+        const delta = currentY - previousY;
+
+        setMobileNavCompact(currentY > 24);
+
+        if (quickOpen) {
+          setMobileNavHidden(false);
+        } else if (currentY <= 40) {
+          setMobileNavHidden(false);
+        } else if (delta > 7) {
+          setMobileNavHidden(true);
+        } else if (delta < -7) {
+          setMobileNavHidden(false);
+        }
+
+        lastScrollYRef.current = currentY;
+        scrollTickingRef.current = false;
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [quickOpen]);
+
+  useEffect(() => {
+    if (quickOpen) {
+      setMobileNavHidden(false);
+    }
   }, [quickOpen]);
 
   const isActive = useCallback(
@@ -156,7 +200,10 @@ export function SiteHeader() {
         </div>
       </header>
 
-      <nav aria-label="Mobile quick access" className="mobile-quick-nav">
+      <nav
+        aria-label="Mobile quick access"
+        className={`mobile-quick-nav ${mobileNavHidden ? "mobile-quick-nav-hidden" : ""} ${mobileNavCompact ? "mobile-quick-nav-compact" : ""}`}
+      >
         <a
           href="/"
           className={`mobile-quick-link ${isActive("/") ? "mobile-quick-link-active" : ""}`}
