@@ -18,6 +18,21 @@ export function SiteFooter() {
             YouTube
           </a>
         </div>
+        <a
+          className="footer-badge"
+          href="https://www.producthunt.com/products/utiliora?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-utiliora"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Utiliora on Product Hunt"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt="Utiliora - Simple tools. Instant results. NO login. NO privacy worries. | Product Hunt"
+            width="250"
+            height="54"
+            src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1086978&theme=light&t=1772200395562"
+          />
+        </a>
       </div>
     </footer>
   );

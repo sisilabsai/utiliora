@@ -487,6 +487,17 @@ textarea {
   color: var(--text);
 }
 
+.footer-badge {
+  display: inline-flex;
+  align-items: center;
+}
+
+.footer-badge img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 .page-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

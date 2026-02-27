@@ -6,6 +6,8 @@ import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 
+const GA_MEASUREMENT_ID = "G-1KYZN51H12";
+
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
   variable: "--font-geist-sans",
@@ -49,6 +51,13 @@ const accessibilityBootScript = `
     root.dataset.theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
 })();
+`;
+
+const googleAnalyticsBootScript = `
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', '${GA_MEASUREMENT_ID}');
 `;
 
 export const metadata: Metadata = {
@@ -137,6 +146,8 @@ export default function RootLayout({
           src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8247984832507820"
           crossOrigin="anonymous"
         />
+        <script async src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} />
+        <script dangerouslySetInnerHTML={{ __html: googleAnalyticsBootScript }} />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <a className="skip-link" href="#content">
