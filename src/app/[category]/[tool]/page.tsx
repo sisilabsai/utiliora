@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { AdSlot } from "@/components/AdSlot";
 import { AffiliateCard } from "@/components/AffiliateCard";
 import { RelatedTools } from "@/components/RelatedTools";
+import { SocialSharePrompt } from "@/components/SocialSharePrompt";
 import { ToolRenderer } from "@/components/ToolRenderer";
 import { getCategory } from "@/lib/categories";
 import { getAllTools, getRelatedTools, getToolByCategoryAndSlug } from "@/lib/tools";
@@ -140,6 +141,7 @@ export default function ToolPage({ params }: ToolPageProps) {
       </section>
 
       <ToolRenderer tool={tool} />
+      <SocialSharePrompt toolTitle={tool.title} toolSlug={tool.slug} toolPath={`/${tool.category}/${tool.slug}`} />
 
       <AdSlot />
 

@@ -45,6 +45,7 @@ import {
   type ResultRow,
 } from "@/lib/calculations";
 import { trackEvent } from "@/lib/analytics";
+import { emitShareSignal } from "@/lib/social-share";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
   buildDocumentTranslationWordMarkup,
@@ -1106,6 +1107,7 @@ function downloadCsv(filename: string, headers: string[], rows: string[][]): voi
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+  emitShareSignal({ action: "download", context: filename });
 }
 
 function downloadTextFile(filename: string, content: string, mime = "text/plain;charset=utf-8;"): void {
@@ -1118,6 +1120,7 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain;
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+  emitShareSignal({ action: "download", context: filename });
 }
 
 function downloadDataUrl(filename: string, dataUrl: string): void {
@@ -1127,6 +1130,7 @@ function downloadDataUrl(filename: string, dataUrl: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
+  emitShareSignal({ action: "download", context: filename });
 }
 
 const TOOL_TEXT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
@@ -1408,6 +1412,7 @@ function downloadBlobFile(filename: string, blob: Blob): void {
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+  emitShareSignal({ action: "download", context: filename });
 }
 
 interface ImageWorkflowHandoffPayload {
@@ -4787,6 +4792,7 @@ async function copyTextToClipboard(value: string): Promise<boolean> {
   if (!value.trim()) return false;
   try {
     await navigator.clipboard.writeText(value);
+    emitShareSignal({ action: "copy" });
     return true;
   } catch {
     try {
@@ -4799,6 +4805,7 @@ async function copyTextToClipboard(value: string): Promise<boolean> {
       textarea.select();
       const copied = document.execCommand("copy");
       document.body.removeChild(textarea);
+      if (copied) emitShareSignal({ action: "copy" });
       return copied;
     } catch {
       return false;
@@ -15720,6 +15727,7 @@ function ImageTransformTool({
         const sizeSummary = `${formatBytes(sourceDetails.sizeBytes)} -> ${formatBytes(outputBlob.size)}`;
         setStatus(`Done (${sizeSummary}). ${trigger === "auto" ? "Auto-preview updated." : "Ready to download."}`);
         trackEvent("tool_image_process", { mode, trigger, outputType: outputMimeType });
+        emitShareSignal({ action: "success", context: mode });
       } catch {
         setStatus("Image processing failed. Please retry.");
       } finally {
@@ -16103,7 +16111,12 @@ function ImageTransformTool({
 
       {resultDetails ? (
         <>
-          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+          <a
+            className="action-link"
+            href={resultDetails.url}
+            download={resultDetails.downloadName}
+            onClick={() => emitShareSignal({ action: "download", context: mode })}
+          >
             Download {labelForMimeType(resultDetails.mimeType)}
           </a>
           <div className="button-row">
@@ -16560,6 +16573,7 @@ function BackgroundRemoverTool({ incomingFile }: { incomingFile?: ImageWorkflowI
           ].slice(0, BACKGROUND_REMOVER_HISTORY_LIMIT),
         );
         trackEvent("tool_background_remover_run", { trigger, outputMimeType, model });
+        emitShareSignal({ action: "success", context: "background-remover" });
       } catch (error) {
         const message = error instanceof Error && error.message ? error.message : "Background removal failed.";
         setStatus(message);
@@ -16793,7 +16807,12 @@ function BackgroundRemoverTool({ incomingFile }: { incomingFile?: ImageWorkflowI
 
       {resultDetails ? (
         <>
-          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+          <a
+            className="action-link"
+            href={resultDetails.url}
+            download={resultDetails.downloadName}
+            onClick={() => emitShareSignal({ action: "download", context: "background-remover" })}
+          >
             Download {labelForMimeType(resultDetails.mimeType)}
           </a>
           <div className="button-row">
@@ -17113,6 +17132,7 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
         });
         setStatus(trigger === "auto" ? "Auto preview updated." : "Cropped output ready.");
         trackEvent("tool_image_crop", { outputType: outputMimeType, trigger, aspectPreset, scalePercent });
+        emitShareSignal({ action: "success", context: "image-cropper" });
       } catch {
         setStatus("Cropping failed.");
       } finally {
@@ -17355,7 +17375,12 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
       </div>
       {resultDetails ? (
         <>
-          <a className="action-link" href={resultDetails.url} download={resultDetails.downloadName}>
+          <a
+            className="action-link"
+            href={resultDetails.url}
+            download={resultDetails.downloadName}
+            onClick={() => emitShareSignal({ action: "download", context: "image-cropper" })}
+          >
             Download cropped {labelForMimeType(resultDetails.mimeType)}
           </a>
           <div className="button-row">

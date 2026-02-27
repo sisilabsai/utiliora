@@ -572,6 +572,32 @@ textarea {
   background: var(--accent-strong);
 }
 
+.share-toast {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 45;
+  width: min(92vw, 380px);
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  box-shadow: var(--shadow-md);
+  padding: 0.85rem;
+}
+
+.share-toast-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.share-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
 .category-overview,
 .tool-grid {
   display: grid;
@@ -2045,6 +2071,18 @@ textarea {
   .button-row .icon-button,
   .button-row .chip-button {
     flex: 0 0 auto;
+  }
+
+  .share-toast {
+    left: 0.7rem;
+    right: 0.7rem;
+    width: auto;
+    bottom: 0.7rem;
+    padding: 0.7rem;
+  }
+
+  .share-channel-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .mini-panel {
