@@ -1481,6 +1481,7 @@ const IMAGE_TOOL_ROUTE_SLUGS: Record<ImageToolId, string> = {
   "image-cropper": "image-cropper",
   "barcode-generator": "barcode-generator",
   "image-to-pdf": "image-to-pdf-converter",
+  "pdf-editor": "pdf-editor",
   "pdf-merge": "pdf-merge",
   "pdf-split": "pdf-split",
   "pdf-compressor": "pdf-compressor",
@@ -1501,6 +1502,7 @@ const IMAGE_TOOL_LABELS: Record<ImageToolId, string> = {
   "image-cropper": "Image Cropper",
   "barcode-generator": "Barcode Generator",
   "image-to-pdf": "Image -> PDF",
+  "pdf-editor": "PDF Editor",
   "pdf-merge": "PDF Merge",
   "pdf-split": "PDF Split",
   "pdf-compressor": "PDF Compressor",
@@ -17977,6 +17979,84 @@ function applyGrayscaleToCanvas(
   context.putImageData(imageData, 0, 0);
 }
 
+function normalizeQuarterRotation(value: number): 0 | 90 | 180 | 270 {
+  const normalized = ((Math.round(value / 90) * 90) % 360 + 360) % 360;
+  if (normalized === 90 || normalized === 180 || normalized === 270) {
+    return normalized;
+  }
+  return 0;
+}
+
+function rotateCanvasByQuarterTurns(source: HTMLCanvasElement, rotation: 0 | 90 | 180 | 270): HTMLCanvasElement {
+  if (rotation === 0) return source;
+
+  const rotated = document.createElement("canvas");
+  if (rotation === 90 || rotation === 270) {
+    rotated.width = source.height;
+    rotated.height = source.width;
+  } else {
+    rotated.width = source.width;
+    rotated.height = source.height;
+  }
+
+  const context = rotated.getContext("2d");
+  if (!context) return source;
+
+  context.save();
+  if (rotation === 90) {
+    context.translate(rotated.width, 0);
+    context.rotate(Math.PI / 2);
+  } else if (rotation === 180) {
+    context.translate(rotated.width, rotated.height);
+    context.rotate(Math.PI);
+  } else {
+    context.translate(0, rotated.height);
+    context.rotate((-Math.PI) / 2);
+  }
+  context.drawImage(source, 0, 0);
+  context.restore();
+
+  return rotated;
+}
+
+function drawWatermarkOnCanvas(canvas: HTMLCanvasElement, text: string, opacity: number): void {
+  const content = text.trim();
+  if (!content) return;
+
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  const safeOpacity = Math.max(0.05, Math.min(0.85, opacity));
+  const fontSize = Math.max(16, Math.min(86, Math.round(Math.min(canvas.width, canvas.height) * 0.07)));
+
+  context.save();
+  context.globalAlpha = safeOpacity;
+  context.fillStyle = "#1d2736";
+  context.font = `700 ${fontSize}px "Segoe UI", Arial, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate((-18 * Math.PI) / 180);
+  context.fillText(content, 0, 0, Math.max(canvas.width, canvas.height) * 0.86);
+  context.restore();
+}
+
+function drawPdfPageNumber(canvas: HTMLCanvasElement, currentPage: number, totalPages: number): void {
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  const fontSize = Math.max(11, Math.min(24, Math.round(Math.min(canvas.width, canvas.height) * 0.028)));
+  const label = `Page ${currentPage} / ${totalPages}`;
+
+  context.save();
+  context.fillStyle = "rgba(16, 24, 40, 0.78)";
+  context.font = `600 ${fontSize}px "Segoe UI", Arial, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "bottom";
+  context.fillText(label, canvas.width / 2, canvas.height - Math.max(10, Math.round(fontSize * 0.5)));
+  context.restore();
+}
+
 function extractPdfTextLines(items: PdfJsTextItem[]): string[] {
   const lines: string[] = [];
   let currentLine = "";
@@ -19980,6 +20060,706 @@ function PdfCompressorTool() {
   );
 }
 
+interface PdfEditorWorkspacePage {
+  id: string;
+  sourcePageNumber: number;
+  width: number;
+  height: number;
+  previewDataUrl: string;
+  previewBytes: number;
+  rotation: 0 | 90 | 180 | 270;
+}
+
+const PDF_EDITOR_MAX_SOURCE_PAGES = 240;
+
+function clonePdfEditorWorkspacePages(pages: PdfEditorWorkspacePage[]): PdfEditorWorkspacePage[] {
+  return pages.map((page) => ({ ...page }));
+}
+
+function PdfEditorTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [sourcePageCount, setSourcePageCount] = useState(0);
+  const [workspacePages, setWorkspacePages] = useState<PdfEditorWorkspacePage[]>([]);
+  const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
+  const [selectionRangeInput, setSelectionRangeInput] = useState("1-3");
+  const [renderScalePercent, setRenderScalePercent] = useState(140);
+  const [jpegQuality, setJpegQuality] = useState(0.86);
+  const [fitDpi, setFitDpi] = useState(150);
+  const [watermarkText, setWatermarkText] = useState("");
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.16);
+  const [includePageNumbers, setIncludePageNumbers] = useState(true);
+  const [grayscale, setGrayscale] = useState(false);
+  const [exportSelectedOnly, setExportSelectedOnly] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a PDF to start editing pages.");
+  const [loadedPageLimit, setLoadedPageLimit] = useState<number | null>(null);
+  const [lastOutputPages, setLastOutputPages] = useState(0);
+  const [lastOutputBytes, setLastOutputBytes] = useState(0);
+  const [lastRunMs, setLastRunMs] = useState<number | null>(null);
+  const initialWorkspaceRef = useRef<PdfEditorWorkspacePage[]>([]);
+
+  const selectedPageSet = useMemo(() => new Set(selectedPageIds), [selectedPageIds]);
+  const selectedCount = selectedPageIds.length;
+  const previewTotalBytes = useMemo(
+    () => workspacePages.reduce((sum, page) => sum + page.previewBytes, 0),
+    [workspacePages],
+  );
+  const outputCandidateCount = useMemo(() => {
+    if (!exportSelectedOnly) return workspacePages.length;
+    return workspacePages.filter((page) => selectedPageSet.has(page.id)).length;
+  }, [exportSelectedOnly, selectedPageSet, workspacePages]);
+
+  useEffect(() => {
+    if (!workspacePages.length) {
+      if (selectedPageIds.length) setSelectedPageIds([]);
+      return;
+    }
+    setSelectedPageIds((current) => {
+      const valid = new Set(workspacePages.map((page) => page.id));
+      return current.filter((id) => valid.has(id));
+    });
+  }, [selectedPageIds.length, workspacePages]);
+
+  const loadPdfWorkspace = useCallback(async (nextFile: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      setStatus("Reading PDF document...");
+      setProgress(6);
+      const pdfjs = await loadPdfJsModule();
+      const bytes = await readPdfFileBytes(nextFile);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
+      const totalPages = pdfDocument.numPages;
+      const maxPages = Math.max(1, Math.min(PDF_EDITOR_MAX_SOURCE_PAGES, totalPages));
+      const nextPages: PdfEditorWorkspacePage[] = [];
+
+      for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+        setStatus(`Generating page previews ${pageNumber}/${maxPages}...`);
+        const page = await pdfDocument.getPage(pageNumber);
+        const fullViewport = page.getViewport({ scale: 1 });
+        const maxDimension = Math.max(1, fullViewport.width, fullViewport.height);
+        const previewScale = Math.max(0.14, Math.min(0.36, 280 / maxDimension));
+        const previewViewport = page.getViewport({ scale: previewScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(previewViewport.width));
+        canvas.height = Math.max(1, Math.floor(previewViewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas context unavailable.");
+        }
+        await page.render({ canvasContext: context, viewport: previewViewport }).promise;
+        const previewDataUrl = canvas.toDataURL("image/jpeg", 0.76);
+        nextPages.push({
+          id: crypto.randomUUID(),
+          sourcePageNumber: pageNumber,
+          width: Math.max(1, Math.floor(fullViewport.width)),
+          height: Math.max(1, Math.floor(fullViewport.height)),
+          previewDataUrl,
+          previewBytes: estimateBytesFromDataUrl(previewDataUrl),
+          rotation: 0,
+        });
+        const ratio = pageNumber / Math.max(1, maxPages);
+        setProgress(Math.round(6 + ratio * 90));
+      }
+
+      setSourcePageCount(totalPages);
+      setWorkspacePages(nextPages);
+      setSelectedPageIds(nextPages.length ? [nextPages[0].id] : []);
+      initialWorkspaceRef.current = clonePdfEditorWorkspacePages(nextPages);
+      setLoadedPageLimit(totalPages > maxPages ? maxPages : null);
+      setProgress(100);
+      if (totalPages > maxPages) {
+        setStatus(
+          `Loaded ${maxPages} pages for editing out of ${totalPages}. Split very large PDFs first for best performance.`,
+        );
+      } else {
+        setStatus(`Loaded ${totalPages} page(s). Reorder, rotate, and export when ready.`);
+      }
+    } catch {
+      setSourcePageCount(0);
+      setWorkspacePages([]);
+      setSelectedPageIds([]);
+      setLoadedPageLimit(null);
+      setStatus("Could not open this PDF. Try another file.");
+    } finally {
+      await closePdfDocumentResources(loadingTask, pdfDocument);
+    }
+  }, []);
+
+  const handleSelectedFile = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        setFile(null);
+        setPdfName("");
+        setSourceBytes(0);
+        setSourcePageCount(0);
+        setWorkspacePages([]);
+        setSelectedPageIds([]);
+        setLoadedPageLimit(null);
+        setProgress(0);
+        setStatus("Upload a PDF to start editing pages.");
+        return;
+      }
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF file.");
+        return;
+      }
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setSourceBytes(candidate.size);
+      setProgress(0);
+      setLastOutputPages(0);
+      setLastOutputBytes(0);
+      setLastRunMs(null);
+      void loadPdfWorkspace(candidate);
+      trackEvent("tool_pdf_editor_upload", { size: candidate.size });
+    },
+    [loadPdfWorkspace],
+  );
+
+  const movePage = useCallback((index: number, direction: -1 | 1) => {
+    setWorkspacePages((current) => {
+      const target = index + direction;
+      if (index < 0 || index >= current.length || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  }, []);
+
+  const togglePageSelection = useCallback((pageId: string) => {
+    setSelectedPageIds((current) => {
+      if (current.includes(pageId)) {
+        return current.filter((id) => id !== pageId);
+      }
+      return [...current, pageId];
+    });
+  }, []);
+
+  const selectAllPages = useCallback(() => {
+    setSelectedPageIds(workspacePages.map((page) => page.id));
+    setStatus(`Selected ${workspacePages.length} page(s).`);
+  }, [workspacePages]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedPageIds([]);
+    setStatus("Cleared page selection.");
+  }, []);
+
+  const applySelectionRange = useCallback(() => {
+    if (!workspacePages.length) return;
+    const selectedIndexes = parsePageRangeInput(selectionRangeInput, workspacePages.length);
+    if (!selectedIndexes?.length) {
+      setStatus("Invalid selection range. Example: 1-3,5,8");
+      return;
+    }
+    const ids = selectedIndexes
+      .map((position) => workspacePages[position - 1]?.id)
+      .filter((id): id is string => Boolean(id));
+    setSelectedPageIds(Array.from(new Set(ids)));
+    setStatus(`Selected ${ids.length} page(s) from range.`);
+  }, [selectionRangeInput, workspacePages]);
+
+  const rotateSelectedPages = useCallback(
+    (direction: "left" | "right") => {
+      if (!selectedPageIds.length) {
+        setStatus("Select pages first, then rotate.");
+        return;
+      }
+      const delta = direction === "left" ? -90 : 90;
+      setWorkspacePages((current) =>
+        current.map((page) =>
+          selectedPageSet.has(page.id)
+            ? { ...page, rotation: normalizeQuarterRotation(page.rotation + delta) }
+            : page,
+        ),
+      );
+      setStatus(`Rotated ${selectedPageIds.length} selected page(s).`);
+    },
+    [selectedPageIds.length, selectedPageSet],
+  );
+
+  const rotateSinglePage = useCallback((pageId: string, direction: "left" | "right") => {
+    const delta = direction === "left" ? -90 : 90;
+    setWorkspacePages((current) =>
+      current.map((page) =>
+        page.id === pageId ? { ...page, rotation: normalizeQuarterRotation(page.rotation + delta) } : page,
+      ),
+    );
+  }, []);
+
+  const duplicateSelectedPages = useCallback(() => {
+    if (!selectedPageIds.length) {
+      setStatus("Select pages to duplicate.");
+      return;
+    }
+    const selected = new Set(selectedPageIds);
+    const nextPages: PdfEditorWorkspacePage[] = [];
+    const duplicatedIds: string[] = [];
+    for (const page of workspacePages) {
+      nextPages.push(page);
+      if (selected.has(page.id)) {
+        const copy: PdfEditorWorkspacePage = {
+          ...page,
+          id: crypto.randomUUID(),
+        };
+        nextPages.push(copy);
+        duplicatedIds.push(copy.id);
+      }
+    }
+    setWorkspacePages(nextPages);
+    setSelectedPageIds(duplicatedIds);
+    setStatus(`Duplicated ${duplicatedIds.length} page(s).`);
+  }, [selectedPageIds, workspacePages]);
+
+  const removeSelectedPages = useCallback(() => {
+    if (!selectedPageIds.length) {
+      setStatus("Select pages to remove.");
+      return;
+    }
+    const selected = new Set(selectedPageIds);
+    const nextPages = workspacePages.filter((page) => !selected.has(page.id));
+    setWorkspacePages(nextPages);
+    setSelectedPageIds([]);
+    setStatus(`Removed ${selectedPageIds.length} page(s) from workspace.`);
+  }, [selectedPageIds, workspacePages]);
+
+  const removeSinglePage = useCallback(
+    (pageId: string) => {
+      const target = workspacePages.find((page) => page.id === pageId);
+      if (!target) return;
+      setWorkspacePages((current) => current.filter((page) => page.id !== pageId));
+      setSelectedPageIds((current) => current.filter((id) => id !== pageId));
+      setStatus(`Removed source page ${target.sourcePageNumber}.`);
+    },
+    [workspacePages],
+  );
+
+  const duplicateSinglePage = useCallback(
+    (pageId: string) => {
+      const index = workspacePages.findIndex((page) => page.id === pageId);
+      if (index < 0) return;
+      const page = workspacePages[index];
+      const copy: PdfEditorWorkspacePage = {
+        ...page,
+        id: crypto.randomUUID(),
+      };
+      const next = [...workspacePages];
+      next.splice(index + 1, 0, copy);
+      setWorkspacePages(next);
+      setSelectedPageIds([copy.id]);
+      setStatus(`Duplicated source page ${page.sourcePageNumber}.`);
+    },
+    [workspacePages],
+  );
+
+  const clearAllRotations = useCallback(() => {
+    setWorkspacePages((current) => current.map((page) => ({ ...page, rotation: 0 })));
+    setStatus("Cleared all manual rotations.");
+  }, []);
+
+  const reverseWorkspaceOrder = useCallback(() => {
+    setWorkspacePages((current) => [...current].reverse());
+    setStatus("Reversed page order.");
+  }, []);
+
+  const resetWorkspace = useCallback(() => {
+    const snapshot = initialWorkspaceRef.current;
+    if (!snapshot.length) return;
+    const cloned = clonePdfEditorWorkspacePages(snapshot);
+    setWorkspacePages(cloned);
+    setSelectedPageIds(cloned.length ? [cloned[0].id] : []);
+    setStatus("Workspace reset to the original document order.");
+  }, []);
+
+  const exportEditedPdf = useCallback(async () => {
+    if (!file) {
+      setStatus("Upload a PDF file first.");
+      return;
+    }
+    if (!workspacePages.length) {
+      setStatus("No pages available to export.");
+      return;
+    }
+    const pagesForOutput = exportSelectedOnly
+      ? workspacePages.filter((page) => selectedPageSet.has(page.id))
+      : workspacePages;
+    if (!pagesForOutput.length) {
+      setStatus("No pages selected for export.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(4);
+    setStatus("Preparing edited PDF output...");
+    const startedAt = Date.now();
+
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    try {
+      const pdfjs = await loadPdfJsModule();
+      const { jsPDF } = await import("jspdf");
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
+
+      const safeScale = Math.max(70, Math.min(260, renderScalePercent)) / 100;
+      const safeQuality = Math.max(0.45, Math.min(1, jpegQuality));
+      const trimmedWatermark = watermarkText.trim();
+      let output: JsPdfType | null = null;
+
+      for (let index = 0; index < pagesForOutput.length; index += 1) {
+        const pageConfig = pagesForOutput[index];
+        setStatus(`Rendering output page ${index + 1}/${pagesForOutput.length}...`);
+        const page = await pdfDocument.getPage(pageConfig.sourcePageNumber);
+        const viewport = page.getViewport({ scale: safeScale });
+        const baseCanvas = document.createElement("canvas");
+        baseCanvas.width = Math.max(1, Math.floor(viewport.width));
+        baseCanvas.height = Math.max(1, Math.floor(viewport.height));
+        const context = baseCanvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas context unavailable.");
+        }
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        if (grayscale) {
+          applyGrayscaleToCanvas(context, baseCanvas.width, baseCanvas.height);
+        }
+
+        const rotatedCanvas = rotateCanvasByQuarterTurns(baseCanvas, pageConfig.rotation);
+        if (trimmedWatermark) {
+          drawWatermarkOnCanvas(rotatedCanvas, trimmedWatermark, watermarkOpacity);
+        }
+        if (includePageNumbers) {
+          drawPdfPageNumber(rotatedCanvas, index + 1, pagesForOutput.length);
+        }
+
+        const pageSizeMm = resolvePdfPageSizeMm("fit-image", rotatedCanvas.width, rotatedCanvas.height, fitDpi);
+        const landscape = rotatedCanvas.width > rotatedCanvas.height;
+        const pageFormat: [number, number] = landscape ? [pageSizeMm[1], pageSizeMm[0]] : pageSizeMm;
+
+        if (!output) {
+          output = new jsPDF({
+            unit: "mm",
+            format: pageFormat,
+            compress: true,
+          });
+        } else {
+          output.addPage(pageFormat);
+        }
+
+        const pageWidth = output.internal.pageSize.getWidth();
+        const pageHeight = output.internal.pageSize.getHeight();
+        const imageData = rotatedCanvas.toDataURL("image/jpeg", safeQuality);
+        output.addImage(imageData, "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+
+        const ratio = (index + 1) / Math.max(1, pagesForOutput.length);
+        setProgress(Math.round(6 + ratio * 92));
+      }
+
+      if (!output) {
+        setStatus("Could not build edited PDF output.");
+        return;
+      }
+
+      const blob = output.output("blob");
+      const filenameBase = stripFileExtension(pdfName.trim()) || "edited-document";
+      const filename = `${filenameBase}.pdf`;
+      downloadBlobFile(filename, blob);
+
+      const elapsedMs = Date.now() - startedAt;
+      setProgress(100);
+      setLastOutputPages(pagesForOutput.length);
+      setLastOutputBytes(blob.size);
+      setLastRunMs(elapsedMs);
+      setStatus(`Exported ${pagesForOutput.length} page(s) to ${filename} in ${(elapsedMs / 1000).toFixed(1)}s.`);
+      trackEvent("tool_pdf_editor_export", {
+        pages: pagesForOutput.length,
+        selectedOnly: exportSelectedOnly,
+        watermark: Boolean(trimmedWatermark),
+        pageNumbers: includePageNumbers,
+        grayscale,
+      });
+      emitShareSignal({ action: "success", context: "pdf-editor" });
+    } catch {
+      setStatus("PDF export failed. Try fewer pages or lower render scale.");
+    } finally {
+      setProcessing(false);
+      await closePdfDocumentResources(loadingTask, pdfDocument);
+    }
+  }, [
+    exportSelectedOnly,
+    file,
+    fitDpi,
+    grayscale,
+    includePageNumbers,
+    jpegQuality,
+    pdfName,
+    renderScalePercent,
+    selectedPageSet,
+    watermarkOpacity,
+    watermarkText,
+    workspacePages,
+  ]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF editor"
+        subtitle="Reorder, rotate, duplicate, remove, watermark, and number pages before exporting a fresh PDF."
+      />
+
+      <label className="field">
+        <span>Upload PDF</span>
+        <input type="file" accept="application/pdf" onChange={(event) => handleSelectedFile(event.target.files?.[0] ?? null)} />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Selection range (current order)</span>
+          <input
+            type="text"
+            value={selectionRangeInput}
+            onChange={(event) => setSelectionRangeInput(event.target.value)}
+            placeholder="1-3,5,8"
+          />
+        </label>
+        <label className="field">
+          <span>Render scale ({renderScalePercent}%)</span>
+          <input
+            type="range"
+            min={70}
+            max={260}
+            step={10}
+            value={renderScalePercent}
+            onChange={(event) => setRenderScalePercent(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>JPEG quality ({jpegQuality.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.45}
+            max={1}
+            step={0.02}
+            value={jpegQuality}
+            onChange={(event) => setJpegQuality(Number(event.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>Fit DPI ({fitDpi})</span>
+          <input type="range" min={90} max={240} step={5} value={fitDpi} onChange={(event) => setFitDpi(Number(event.target.value))} />
+        </label>
+        <label className="field">
+          <span>Watermark text</span>
+          <input
+            type="text"
+            value={watermarkText}
+            onChange={(event) => setWatermarkText(event.target.value)}
+            placeholder="Optional watermark"
+          />
+        </label>
+        <label className="field">
+          <span>Watermark opacity ({watermarkOpacity.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.05}
+            max={0.6}
+            step={0.01}
+            value={watermarkOpacity}
+            onChange={(event) => setWatermarkOpacity(Number(event.target.value))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void exportEditedPdf()} disabled={!workspacePages.length || processing}>
+          {processing ? "Exporting..." : "Export edited PDF"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => file && void loadPdfWorkspace(file)}
+          disabled={!file || processing}
+        >
+          Reload source
+        </button>
+        <button className="action-button secondary" type="button" onClick={selectAllPages} disabled={!workspacePages.length || processing}>
+          Select all
+        </button>
+        <button className="action-button secondary" type="button" onClick={clearSelection} disabled={!selectedCount || processing}>
+          Clear selection
+        </button>
+        <button className="action-button secondary" type="button" onClick={applySelectionRange} disabled={!workspacePages.length || processing}>
+          Apply range selection
+        </button>
+        <button className="action-button secondary" type="button" onClick={resetWorkspace} disabled={!workspacePages.length || processing}>
+          Reset workspace
+        </button>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={() => rotateSelectedPages("left")} disabled={!selectedCount || processing}>
+          Rotate selected left
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => rotateSelectedPages("right")} disabled={!selectedCount || processing}>
+          Rotate selected right
+        </button>
+        <button className="action-button secondary" type="button" onClick={duplicateSelectedPages} disabled={!selectedCount || processing}>
+          Duplicate selected
+        </button>
+        <button className="action-button secondary" type="button" onClick={removeSelectedPages} disabled={!selectedCount || processing}>
+          Remove selected
+        </button>
+        <button className="action-button secondary" type="button" onClick={reverseWorkspaceOrder} disabled={workspacePages.length < 2 || processing}>
+          Reverse order
+        </button>
+        <button className="action-button secondary" type="button" onClick={clearAllRotations} disabled={!workspacePages.length || processing}>
+          Clear rotations
+        </button>
+      </div>
+
+      <div className="button-row">
+        <label className="checkbox">
+          <input type="checkbox" checked={includePageNumbers} onChange={(event) => setIncludePageNumbers(event.target.checked)} />
+          Add page numbers
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={grayscale} onChange={(event) => setGrayscale(event.target.checked)} />
+          Grayscale output
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={exportSelectedOnly} onChange={(event) => setExportSelectedOnly(event.target.checked)} />
+          Export selected pages only
+        </label>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Source pages", value: sourcePageCount ? formatNumericValue(sourcePageCount) : "-" },
+          { label: "Workspace pages", value: formatNumericValue(workspacePages.length) },
+          { label: "Selected pages", value: formatNumericValue(selectedCount) },
+          { label: "Output candidates", value: formatNumericValue(outputCandidateCount) },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Preview cache estimate", value: workspacePages.length ? formatBytes(previewTotalBytes) : "-" },
+          { label: "Last output pages", value: lastOutputPages ? formatNumericValue(lastOutputPages) : "-" },
+          { label: "Last output size", value: lastOutputBytes ? formatBytes(lastOutputBytes) : "-" },
+          { label: "Last run", value: lastRunMs ? `${(lastRunMs / 1000).toFixed(1)}s` : "-" },
+        ]}
+      />
+
+      {loadedPageLimit ? (
+        <p className="supporting-text">
+          Workspace loaded the first {loadedPageLimit} pages for performance. Use PDF Split for larger documents.
+        </p>
+      ) : null}
+
+      {workspacePages.length ? (
+        <div className="mini-panel">
+          <h3>Page workspace</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Preview</th>
+                  <th>Order</th>
+                  <th>Source page</th>
+                  <th>Size</th>
+                  <th>Rotation</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {workspacePages.map((page, index) => (
+                  <tr
+                    key={page.id}
+                    style={selectedPageSet.has(page.id) ? { background: "color-mix(in srgb, var(--accent) 10%, var(--surface) 90%)" } : undefined}
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedPageSet.has(page.id)}
+                        onChange={() => togglePageSelection(page.id)}
+                        aria-label={`Select page ${index + 1}`}
+                      />
+                    </td>
+                    <td>
+                      <div style={{ width: 86 }}>
+                        <NextImage
+                          src={page.previewDataUrl}
+                          alt={`PDF source page ${page.sourcePageNumber}`}
+                          width={page.width}
+                          height={page.height}
+                          style={{ width: "100%", height: "auto", borderRadius: 8, border: "1px solid var(--border)" }}
+                          unoptimized
+                        />
+                      </div>
+                    </td>
+                    <td>{index + 1}</td>
+                    <td>{page.sourcePageNumber}</td>
+                    <td>
+                      {page.width} x {page.height}
+                    </td>
+                    <td>{page.rotation}deg</td>
+                    <td>
+                      <div className="button-row">
+                        <button className="action-button secondary" type="button" onClick={() => movePage(index, -1)} disabled={index === 0 || processing}>
+                          Up
+                        </button>
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => movePage(index, 1)}
+                          disabled={index === workspacePages.length - 1 || processing}
+                        >
+                          Down
+                        </button>
+                        <button className="action-button secondary" type="button" onClick={() => rotateSinglePage(page.id, "left")} disabled={processing}>
+                          Left
+                        </button>
+                        <button className="action-button secondary" type="button" onClick={() => rotateSinglePage(page.id, "right")} disabled={processing}>
+                          Right
+                        </button>
+                        <button className="action-button secondary" type="button" onClick={() => duplicateSinglePage(page.id)} disabled={processing}>
+                          Duplicate
+                        </button>
+                        <button className="action-button secondary" type="button" onClick={() => removeSinglePage(page.id)} disabled={processing}>
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function PdfToWordTool() {
   const [file, setFile] = useState<File | null>(null);
   const [pdfName, setPdfName] = useState("");
@@ -20954,6 +21734,8 @@ function ImageTool({ id }: { id: ImageToolId }) {
       return <BarcodeGeneratorTool />;
     case "image-to-pdf":
       return <ImageToPdfTool incomingFile={incomingFile} />;
+    case "pdf-editor":
+      return <PdfEditorTool />;
     case "pdf-merge":
       return <PdfMergeTool />;
     case "pdf-split":

@@ -810,6 +810,17 @@ const imageTools: ToolDefinition[] = [
     faq: baseFaq("Image to PDF Converter"),
   },
   {
+    slug: "pdf-editor",
+    category: "image-tools",
+    title: "PDF Editor",
+    summary: "Edit PDF page order, rotation, and overlays, then export an updated PDF.",
+    description:
+      "Reorder, rotate, duplicate, remove, watermark, and number PDF pages with in-browser processing and downloadable output.",
+    keywords: ["pdf editor", "edit pdf pages", "reorder pdf pages", "rotate pdf pages", "watermark pdf"],
+    engine: { kind: "image-tool", id: "pdf-editor" },
+    faq: baseFaq("PDF Editor"),
+  },
+  {
     slug: "pdf-merge",
     category: "image-tools",
     title: "PDF Merge",

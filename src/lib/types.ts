@@ -125,6 +125,7 @@ export type ImageToolId =
   | "image-cropper"
   | "barcode-generator"
   | "image-to-pdf"
+  | "pdf-editor"
   | "pdf-merge"
   | "pdf-split"
   | "pdf-compressor"
