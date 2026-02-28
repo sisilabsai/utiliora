@@ -9713,19 +9713,114 @@ interface AiHumanizerUploadSummary {
   words: number;
 }
 
+type AiHumanizerWorkspaceMode = "quick" | "advanced";
+type AiHumanizerTone = "natural" | "formal" | "casual" | "seo";
+type AiHumanizerLengthMode = "same" | "shorter" | "longer";
+
+interface AiHumanizerVariant {
+  id: string;
+  label: string;
+  text: string;
+  words: number;
+  riskScore: number;
+  similarity: number;
+  readingEase: number | null;
+  meaningScore: number;
+  criticalRetention: number;
+  provider: "local" | "api";
+  explanation: string;
+}
+
+interface AiHumanizerApiCandidate {
+  text?: string;
+  explanation?: string;
+  source?: string;
+}
+
+interface AiHumanizerApiResponse {
+  ok?: boolean;
+  provider?: string;
+  candidates?: AiHumanizerApiCandidate[];
+  error?: string;
+}
+
+function computeAiHumanizerSimilarityPercent(source: string, rewritten: string): number {
+  const sourceSet = new Set(tokenizeAiWords(source));
+  const rewrittenSet = new Set(tokenizeAiWords(rewritten));
+  if (!sourceSet.size && !rewrittenSet.size) return 100;
+  let overlap = 0;
+  sourceSet.forEach((token) => {
+    if (rewrittenSet.has(token)) overlap += 1;
+  });
+  const union = sourceSet.size + rewrittenSet.size - overlap;
+  if (!union) return 100;
+  return Number(((overlap / union) * 100).toFixed(1));
+}
+
+function computeAiHumanizerCriticalRetentionPercent(source: string, rewritten: string): number {
+  const pattern = /https?:\/\/[^\s)]+|[\w.+-]+@[\w.-]+\.\w+|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b\d+(?:[.,]\d+)?%?\b/g;
+  const tokens = source.match(pattern) ?? [];
+  if (!tokens.length) return 100;
+  let retained = 0;
+  tokens.forEach((token) => {
+    if (rewritten.includes(token)) retained += 1;
+  });
+  return Number(((retained / tokens.length) * 100).toFixed(1));
+}
+
+function computeAiHumanizerMeaningScore(source: string, rewritten: string): number {
+  const similarity = computeAiHumanizerSimilarityPercent(source, rewritten);
+  const criticalRetention = computeAiHumanizerCriticalRetentionPercent(source, rewritten);
+  const sourceWords = Math.max(1, countWords(source));
+  const rewrittenWords = Math.max(1, countWords(rewritten));
+  const lengthScore = Number(((Math.min(sourceWords, rewrittenWords) / Math.max(sourceWords, rewrittenWords)) * 100).toFixed(1));
+  return Number((similarity * 0.5 + criticalRetention * 0.35 + lengthScore * 0.15).toFixed(1));
+}
+
+function rankAiHumanizerVariants(variants: AiHumanizerVariant[]): AiHumanizerVariant[] {
+  return [...variants].sort((left, right) => {
+    const leftPenalty = left.meaningScore < 70 ? 20 : 0;
+    const rightPenalty = right.meaningScore < 70 ? 20 : 0;
+    const leftScore =
+      left.meaningScore * 0.55 +
+      left.criticalRetention * 0.2 +
+      (100 - left.riskScore) * 0.2 +
+      (100 - left.similarity) * 0.05 -
+      leftPenalty;
+    const rightScore =
+      right.meaningScore * 0.55 +
+      right.criticalRetention * 0.2 +
+      (100 - right.riskScore) * 0.2 +
+      (100 - right.similarity) * 0.05 -
+      rightPenalty;
+    if (leftScore !== rightScore) return rightScore - leftScore;
+    return left.riskScore - right.riskScore;
+  });
+}
+
 function AiHumanizerTool() {
   const [sourceText, setSourceText] = useState("");
   const [rewrittenText, setRewrittenText] = useState("");
   const [preset, setPreset] = useState<AiHumanizerStyle>("balanced");
+  const [tone, setTone] = useState<AiHumanizerTone>("natural");
   const [strength, setStrength] = useState(2);
+  const [variationCount, setVariationCount] = useState(3);
+  const [lengthMode, setLengthMode] = useState<AiHumanizerLengthMode>("same");
+  const [workspaceMode, setWorkspaceMode] = useState<AiHumanizerWorkspaceMode>("quick");
+  const [keywordLocksInput, setKeywordLocksInput] = useState("");
+  const [preserveKeywordLocks, setPreserveKeywordLocks] = useState(true);
+  const [useCloudRewrite, setUseCloudRewrite] = useState(true);
   const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("replace");
   const [convertHtmlUploadToText, setConvertHtmlUploadToText] = useState(true);
   const [pageRangeInput, setPageRangeInput] = useState("all");
   const [maxPdfPages, setMaxPdfPages] = useState(AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
   const [includePdfPageMarkers, setIncludePdfPageMarkers] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [status, setStatus] = useState("Upload or paste draft text, then generate a human rewrite.");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [status, setStatus] = useState("Paste a draft, generate rewrites, then choose the best variant.");
   const [uploadSummaries, setUploadSummaries] = useState<AiHumanizerUploadSummary[]>([]);
+  const [variants, setVariants] = useState<AiHumanizerVariant[]>([]);
+  const [selectedVariantId, setSelectedVariantId] = useState("");
 
   const beforeReport = useMemo(() => buildAiDetectorReport(sourceText, "balanced"), [sourceText]);
   const afterReport = useMemo(() => buildAiDetectorReport(rewrittenText, "balanced"), [rewrittenText]);
@@ -9734,6 +9829,315 @@ function AiHumanizerTool() {
     beforeReport && afterReport && beforeReport.readingEase != null && afterReport.readingEase != null
       ? Number((afterReport.readingEase - beforeReport.readingEase).toFixed(1))
       : null;
+  const meaningScore =
+    sourceText.trim() && rewrittenText.trim() ? computeAiHumanizerMeaningScore(sourceText, rewrittenText) : null;
+  const criticalRetention =
+    sourceText.trim() && rewrittenText.trim()
+      ? computeAiHumanizerCriticalRetentionPercent(sourceText, rewrittenText)
+      : null;
+  const selectedVariant = variants.find((entry) => entry.id === selectedVariantId) ?? null;
+
+  const sentencePairs = useMemo(() => {
+    const sourceSentences = splitAiSentences(sourceText);
+    const rewrittenSentences = splitAiSentences(rewrittenText);
+    const total = Math.min(Math.max(sourceSentences.length, rewrittenSentences.length), 30);
+    return Array.from({ length: total }, (_, index) => ({
+      index,
+      sourceSentence: sourceSentences[index] ?? "",
+      rewrittenSentence: rewrittenSentences[index] ?? "",
+    }));
+  }, [rewrittenText, sourceText]);
+
+  const rewriteWithControls = useCallback(
+    (input: string, seed: number) => {
+      const lockTerms = parseParaphraseKeywordLocks(keywordLocksInput);
+      const lockMap: Array<{ token: string; value: string }> = [];
+      let tokenIndex = 0;
+      let working = normalizeDocumentText(input);
+
+      if (preserveKeywordLocks && lockTerms.length) {
+        lockTerms
+          .sort((left, right) => right.length - left.length)
+          .forEach((term) => {
+            const pattern = new RegExp(escapeRegExp(term), "gi");
+            working = working.replace(pattern, (match) => {
+              const token = `__UTILIORA_HUMANIZER_LOCK_${tokenIndex}__`;
+              lockMap.push({ token, value: match });
+              tokenIndex += 1;
+              return token;
+            });
+          });
+      }
+
+      const rewritten = humanizeTextWithPreset(working, preset, strength);
+      working = rewritten.text;
+
+      const synonymBank: Record<AiHumanizerTone, Record<string, string[]>> = {
+        natural: {
+          important: ["notable", "meaningful", "key"],
+          improve: ["enhance", "refine", "strengthen"],
+          shows: ["reveals", "highlights", "indicates"],
+          use: ["apply", "leverage", "adopt"],
+        },
+        formal: {
+          important: ["critical", "significant", "material"],
+          improve: ["optimize", "enhance", "elevate"],
+          shows: ["demonstrates", "indicates", "illustrates"],
+          use: ["utilize", "apply", "implement"],
+        },
+        casual: {
+          important: ["key", "worth noting", "big"],
+          improve: ["make better", "boost", "clean up"],
+          shows: ["points out", "makes clear", "shows"],
+          use: ["use", "go with", "lean on"],
+        },
+        seo: {
+          important: ["key", "critical", "high-value"],
+          improve: ["optimize", "strengthen", "improve"],
+          shows: ["signals", "demonstrates", "highlights"],
+          use: ["apply", "use", "deploy"],
+        },
+      };
+      const replaceEvery = Math.max(2, 5 - Math.max(1, Math.min(3, strength)));
+      Object.entries(synonymBank[tone]).forEach(([term, replacements]) => {
+        const pattern = new RegExp(`\\b${escapeRegExp(term)}\\b`, "gi");
+        let occurrence = 0;
+        working = working.replace(pattern, (match) => {
+          occurrence += 1;
+          if ((occurrence + seed) % replaceEvery !== 0) return match;
+          const replacement = replacements[(occurrence + seed) % replacements.length];
+          return preserveMatchCase(match, replacement);
+        });
+      });
+
+      if (tone === "casual") {
+        working = applyPhraseRules(working, AI_HUMANIZER_CONTRACTIONS).text;
+      } else if (tone === "formal") {
+        working = applyPhraseRules(working, AI_HUMANIZER_EXPANSIONS).text;
+      } else if (tone === "seo") {
+        working = applyConciseRewrite(working).text;
+      }
+
+      if (lengthMode === "shorter") {
+        working = applyConciseRewrite(working).text
+          .replace(/\b(really|very|quite|basically|actually)\b/gi, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+      } else if (lengthMode === "longer") {
+        const expanded = rewriteTextPreservingFormatting(working, (segment) => {
+          const sentences = splitAiSentences(segment);
+          if (!sentences.length) return { text: segment, changeCount: 0 };
+          const fillers = [
+            "This gives clearer practical context.",
+            "That helps connect the idea to real outcomes.",
+            "It also makes the message easier to apply.",
+          ];
+          const output: string[] = [];
+          let changeCount = 0;
+          sentences.forEach((sentence, index) => {
+            output.push(ensureSentenceEnding(sentence));
+            if ((seed + index) % 2 === 0 && tokenizeAiWords(sentence).length < 16) {
+              output.push(fillers[(seed + index) % fillers.length]);
+              changeCount += 1;
+            }
+          });
+          return { text: output.join(" "), changeCount };
+        });
+        working = expanded.text;
+      }
+
+      const detectorReport = buildAiDetectorReport(working, "balanced");
+      if (detectorReport) {
+        const autoRecommendations = detectorReport.recommendations.filter((entry) => entry.autoApplicable);
+        const maxFixes = Math.max(1, Math.min(3, strength));
+        const ordered =
+          seed % 2 === 0
+            ? [...autoRecommendations]
+            : [...autoRecommendations].sort((left, right) => left.id.localeCompare(right.id));
+        let applied = 0;
+        for (const recommendation of ordered) {
+          if (applied >= maxFixes) break;
+          const result = applyAiDetectorRecommendation(recommendation.id, working, detectorReport);
+          if (result.changeCount && result.text !== working) {
+            working = result.text;
+            applied += 1;
+          }
+        }
+      }
+
+      lockMap.forEach((entry) => {
+        working = working.replaceAll(entry.token, entry.value);
+      });
+      return normalizeDocumentText(working);
+    },
+    [keywordLocksInput, lengthMode, preserveKeywordLocks, preset, strength, tone],
+  );
+
+  const buildVariant = useCallback(
+    (source: string, text: string, provider: "local" | "api", label: string, explanation = ""): AiHumanizerVariant => {
+      const report = buildAiDetectorReport(text, "balanced");
+      return {
+        id: crypto.randomUUID(),
+        label,
+        text,
+        words: countWords(text),
+        riskScore: report?.riskScore ?? 50,
+        similarity: computeAiHumanizerSimilarityPercent(source, text),
+        readingEase: report?.readingEase ?? null,
+        meaningScore: computeAiHumanizerMeaningScore(source, text),
+        criticalRetention: computeAiHumanizerCriticalRetentionPercent(source, text),
+        provider,
+        explanation,
+      };
+    },
+    [],
+  );
+
+  const requestApiCandidates = useCallback(
+    async (input: string): Promise<AiHumanizerApiCandidate[]> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 24000);
+      try {
+        const response = await fetch("/api/ai-humanize", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: input,
+            style: preset,
+            tone,
+            strength,
+            variations: variationCount,
+            lengthMode,
+            keywordLocks: parseParaphraseKeywordLocks(keywordLocksInput),
+            preserveKeywords: preserveKeywordLocks,
+          }),
+          signal: controller.signal,
+        });
+        const payload = (await response.json()) as AiHumanizerApiResponse;
+        if (!response.ok || !payload.ok || !Array.isArray(payload.candidates)) {
+          throw new Error(payload.error || "Humanizer API request failed.");
+        }
+        return payload.candidates;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    [keywordLocksInput, lengthMode, preserveKeywordLocks, preset, strength, tone, variationCount],
+  );
+
+  const generateHumanizedVariants = useCallback(async () => {
+    const normalized = normalizeDocumentText(sourceText);
+    if (!normalized) {
+      setStatus("Add source text first.");
+      setVariants([]);
+      setSelectedVariantId("");
+      setRewrittenText("");
+      return;
+    }
+
+    setIsGenerating(true);
+    setStatus("Generating rewrite variants...");
+    trackEvent("tool_ai_humanizer_generate_start", {
+      words: countWords(normalized),
+      preset,
+      tone,
+      strength,
+      variations: variationCount,
+      mode: workspaceMode,
+      lengthMode,
+      cloudRewrite: useCloudRewrite ? 1 : 0,
+    });
+
+    const target = Math.max(1, Math.min(6, Math.round(variationCount)));
+    const localCandidates: Array<{ text: string; provider: "local" | "api"; explanation: string }> = [];
+    const dedupe = new Set<string>();
+    for (let index = 0; index < target + 2; index += 1) {
+      const rewritten = rewriteWithControls(normalized, index + 1);
+      if (!rewritten || dedupe.has(rewritten)) continue;
+      dedupe.add(rewritten);
+      localCandidates.push({
+        text: rewritten,
+        provider: "local",
+        explanation: "Generated by local rewrite and detector pipeline.",
+      });
+      if (localCandidates.length >= target) break;
+    }
+
+    const mergedCandidates: Array<{ text: string; provider: "local" | "api"; explanation: string }> = [...localCandidates];
+    let apiFailureMessage = "";
+
+    if (useCloudRewrite) {
+      try {
+        const apiCandidates = await requestApiCandidates(normalized);
+        apiCandidates.forEach((entry) => {
+          const candidate = normalizeDocumentText(typeof entry.text === "string" ? entry.text : "");
+          if (!candidate || dedupe.has(candidate)) return;
+          dedupe.add(candidate);
+          mergedCandidates.push({
+            text: candidate,
+            provider: entry.source === "api" ? "api" : "local",
+            explanation: typeof entry.explanation === "string" ? entry.explanation : "Generated by API orchestration.",
+          });
+        });
+      } catch (error) {
+        apiFailureMessage = error instanceof Error ? error.message : "Cloud rewrite failed.";
+        trackEvent("tool_ai_humanizer_api_fallback", {
+          reason: apiFailureMessage.slice(0, 160),
+        });
+      }
+    }
+
+    if (!mergedCandidates.length) {
+      setStatus("Could not generate rewrite variants. Try another style or text sample.");
+      setIsGenerating(false);
+      return;
+    }
+
+    const builtVariants = mergedCandidates.map((entry, index) =>
+      buildVariant(normalized, entry.text, entry.provider, `Variation ${index + 1}`, entry.explanation),
+    );
+    const ranked = rankAiHumanizerVariants(builtVariants)
+      .slice(0, target)
+      .map((entry, index) => ({ ...entry, label: `Variation ${index + 1}` }));
+
+    setVariants(ranked);
+    if (ranked.length) {
+      setSelectedVariantId(ranked[0].id);
+      setRewrittenText(ranked[0].text);
+      setStatus(
+        `Generated ${ranked.length} variant(s). Best choice: ${ranked[0].label} (${ranked[0].meaningScore}% meaning preserved, risk ${ranked[0].riskScore}).${apiFailureMessage ? " Cloud rewrite unavailable; used local fallback." : ""}`,
+      );
+      trackEvent("tool_ai_humanizer_generate", {
+        words: countWords(normalized),
+        generated: ranked.length,
+        preset,
+        tone,
+        strength,
+        selectedMeaning: ranked[0].meaningScore,
+        selectedRisk: ranked[0].riskScore,
+        selectedProvider: ranked[0].provider,
+        apiFallback: apiFailureMessage ? 1 : 0,
+      });
+    } else {
+      setStatus("No unique variants were produced from this draft.");
+    }
+
+    setIsGenerating(false);
+  }, [
+    buildVariant,
+    lengthMode,
+    preset,
+    requestApiCandidates,
+    rewriteWithControls,
+    sourceText,
+    strength,
+    tone,
+    useCloudRewrite,
+    variationCount,
+    workspaceMode,
+  ]);
 
   const handleUpload = useCallback(
     async (fileList: FileList | null) => {
@@ -9806,35 +10210,14 @@ function AiHumanizerTool() {
           filesImported: extracted.length,
           filesFailed: failed,
           uploadMode,
+          mode: workspaceMode,
         });
       } finally {
         setIsImporting(false);
       }
     },
-    [convertHtmlUploadToText, includePdfPageMarkers, maxPdfPages, pageRangeInput, sourceText, uploadMode],
+    [convertHtmlUploadToText, includePdfPageMarkers, maxPdfPages, pageRangeInput, sourceText, uploadMode, workspaceMode],
   );
-
-  const humanize = useCallback(() => {
-    const trimmed = sourceText.trim();
-    if (!trimmed) {
-      setStatus("Add source text first.");
-      return;
-    }
-    const result = humanizeTextWithPreset(trimmed, preset, strength);
-    setRewrittenText(result.text);
-    setStatus(
-      result.changeCount
-        ? `Humanized with ${formatNumericValue(result.changeCount)} automated edit(s).`
-        : "Rewrite complete. Try a stronger setting for deeper changes.",
-    );
-    trackEvent("tool_ai_humanizer_generate", {
-      preset,
-      strength,
-      words: countWords(trimmed),
-      edits: result.changeCount,
-      notes: result.notes.join(" | ").slice(0, 220),
-    });
-  }, [preset, sourceText, strength]);
 
   const applyRewriteRecommendation = useCallback(
     (recommendationId: AiDetectorRecommendationId) => {
@@ -9856,6 +10239,61 @@ function AiHumanizerTool() {
     [afterReport, rewrittenText],
   );
 
+  const applyAllRewriteRecommendations = useCallback(() => {
+    if (!afterReport || !rewrittenText.trim()) return;
+    const autoRecommendations = afterReport.recommendations.filter((entry) => entry.autoApplicable);
+    if (!autoRecommendations.length) {
+      setStatus("No auto-applicable recommendations are available.");
+      return;
+    }
+
+    let workingText = rewrittenText;
+    let workingReport = afterReport;
+    let totalChanges = 0;
+    for (const recommendation of autoRecommendations) {
+      const result = applyAiDetectorRecommendation(recommendation.id, workingText, workingReport);
+      if (!result.changeCount || result.text === workingText) continue;
+      workingText = result.text;
+      totalChanges += result.changeCount;
+      const refreshed = buildAiDetectorReport(workingText, "balanced");
+      if (refreshed) workingReport = refreshed;
+    }
+
+    if (!totalChanges || workingText === rewrittenText) {
+      setStatus("Auto-fix completed with no text changes.");
+      return;
+    }
+    setRewrittenText(workingText);
+    setStatus(
+      `Applied ${autoRecommendations.length} recommendation(s) with ${formatNumericValue(totalChanges)} edit(s).`,
+    );
+    trackEvent("tool_ai_humanizer_apply_all_fixes", {
+      recommendations: autoRecommendations.length,
+      edits: totalChanges,
+      riskAfter: workingReport.riskScore,
+    });
+  }, [afterReport, rewrittenText]);
+
+  const restoreSourceSentence = useCallback(
+    (sentenceIndex: number) => {
+      const sourceSentences = splitAiSentences(sourceText);
+      const rewrittenSentences = splitAiSentences(rewrittenText);
+      if (
+        sentenceIndex < 0 ||
+        sentenceIndex >= sourceSentences.length ||
+        sentenceIndex >= rewrittenSentences.length
+      ) {
+        return;
+      }
+      rewrittenSentences[sentenceIndex] = ensureSentenceEnding(sourceSentences[sentenceIndex]);
+      const next = normalizeDocumentText(rewrittenSentences.join(" "));
+      setRewrittenText(next);
+      setStatus(`Restored source sentence ${sentenceIndex + 1}.`);
+      trackEvent("tool_ai_humanizer_sentence_restore", { sentenceIndex: sentenceIndex + 1 });
+    },
+    [rewrittenText, sourceText],
+  );
+
   const activePreset = AI_HUMANIZER_PRESETS.find((entry) => entry.id === preset);
 
   return (
@@ -9863,9 +10301,19 @@ function AiHumanizerTool() {
       <ToolHeading
         icon={Sparkles}
         title="AI human rewrite assistant"
-        subtitle="Rewrite AI-like drafts into natural human voice with style presets, detector-based deltas, and one-click refinement actions."
+        subtitle="Flagship rewrite workspace with quality-gated variants, meaning-preservation scoring, and sentence-level refinement."
       />
       <div className="field-grid">
+        <label className="field">
+          <span>Workspace mode</span>
+          <select
+            value={workspaceMode}
+            onChange={(event) => setWorkspaceMode(event.target.value as AiHumanizerWorkspaceMode)}
+          >
+            <option value="quick">Quick</option>
+            <option value="advanced">Advanced</option>
+          </select>
+        </label>
         <label className="field">
           <span>Rewrite style</span>
           <select value={preset} onChange={(event) => setPreset(event.target.value as AiHumanizerStyle)}>
@@ -9891,62 +10339,138 @@ function AiHumanizerTool() {
           />
         </label>
         <label className="field">
-          <span>Upload behavior</span>
-          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
-            <option value="replace">Replace source text</option>
-            <option value="append">Append to source text</option>
+          <span>Tone profile</span>
+          <select value={tone} onChange={(event) => setTone(event.target.value as AiHumanizerTone)}>
+            <option value="natural">Natural</option>
+            <option value="formal">Formal</option>
+            <option value="casual">Casual</option>
+            <option value="seo">SEO-focused</option>
           </select>
         </label>
         <label className="field">
-          <span>PDF page range</span>
-          <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value)} placeholder="all or 1-3,8" />
-        </label>
-      </div>
-      <div className="field-grid">
-        <label className="field">
-          <span>Max PDF pages</span>
+          <span>Variations</span>
           <input
             type="number"
             min={1}
-            max={300}
+            max={6}
             step={1}
-            value={maxPdfPages}
+            value={variationCount}
             onChange={(event) => {
               const parsed = Number.parseInt(event.target.value, 10);
-              setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : AI_DETECTOR_DEFAULT_MAX_PDF_PAGES);
+              setVariationCount(Number.isFinite(parsed) ? Math.max(1, Math.min(6, parsed)) : 3);
             }}
           />
         </label>
         <label className="field">
-          <span>Upload documents</span>
-          <input
-            type="file"
-            accept={AI_DETECTOR_UPLOAD_ACCEPT}
-            multiple
-            onChange={(event) => {
-              void handleUpload(event.target.files);
-              event.target.value = "";
-            }}
-            disabled={isImporting}
-          />
+          <span>Length mode</span>
+          <select
+            value={lengthMode}
+            onChange={(event) => setLengthMode(event.target.value as AiHumanizerLengthMode)}
+          >
+            <option value="same">Similar length</option>
+            <option value="shorter">Shorter</option>
+            <option value="longer">Longer</option>
+          </select>
         </label>
       </div>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={convertHtmlUploadToText}
-          onChange={(event) => setConvertHtmlUploadToText(event.target.checked)}
-        />
-        Convert HTML-like files to plain text
-      </label>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={includePdfPageMarkers}
-          onChange={(event) => setIncludePdfPageMarkers(event.target.checked)}
-        />
-        Include page markers while extracting PDF content
-      </label>
+
+      {workspaceMode === "advanced" ? (
+        <>
+          <div className="field-grid">
+            <label className="field">
+              <span>Upload behavior</span>
+              <select
+                value={uploadMode}
+                onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}
+              >
+                <option value="replace">Replace source text</option>
+                <option value="append">Append to source text</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>PDF page range</span>
+              <input
+                type="text"
+                value={pageRangeInput}
+                onChange={(event) => setPageRangeInput(event.target.value)}
+                placeholder="all or 1-3,8"
+              />
+            </label>
+            <label className="field">
+              <span>Max PDF pages</span>
+              <input
+                type="number"
+                min={1}
+                max={300}
+                step={1}
+                value={maxPdfPages}
+                onChange={(event) => {
+                  const parsed = Number.parseInt(event.target.value, 10);
+                  setMaxPdfPages(
+                    Number.isFinite(parsed)
+                      ? Math.max(1, Math.min(300, parsed))
+                      : AI_DETECTOR_DEFAULT_MAX_PDF_PAGES,
+                  );
+                }}
+              />
+            </label>
+            <label className="field">
+              <span>Upload documents</span>
+              <input
+                type="file"
+                accept={AI_DETECTOR_UPLOAD_ACCEPT}
+                multiple
+                onChange={(event) => {
+                  void handleUpload(event.target.files);
+                  event.target.value = "";
+                }}
+                disabled={isImporting || isGenerating}
+              />
+            </label>
+          </div>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={preserveKeywordLocks}
+              onChange={(event) => setPreserveKeywordLocks(event.target.checked)}
+            />
+            Preserve keyword locks exactly
+          </label>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={useCloudRewrite}
+              onChange={(event) => setUseCloudRewrite(event.target.checked)}
+            />
+            Use cloud rewrite orchestration (auto-fallback to local)
+          </label>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={convertHtmlUploadToText}
+              onChange={(event) => setConvertHtmlUploadToText(event.target.checked)}
+            />
+            Convert HTML-like files to plain text
+          </label>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={includePdfPageMarkers}
+              onChange={(event) => setIncludePdfPageMarkers(event.target.checked)}
+            />
+            Include page markers while extracting PDF content
+          </label>
+          <label className="field">
+            <span>Keyword locks (comma or newline separated)</span>
+            <textarea
+              value={keywordLocksInput}
+              onChange={(event) => setKeywordLocksInput(event.target.value)}
+              rows={3}
+              placeholder="brand name, product model, legal phrase"
+            />
+          </label>
+        </>
+      ) : null}
 
       <p className="supporting-text">
         {activePreset?.description} This tool is for clarity and editorial quality improvement, not for academic dishonesty or impersonation.
@@ -9962,8 +10486,23 @@ function AiHumanizerTool() {
         />
       </label>
       <div className="button-row">
-        <button className="action-button" type="button" onClick={humanize} disabled={isImporting}>
-          Humanize draft
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => {
+            void generateHumanizedVariants();
+          }}
+          disabled={isImporting || isGenerating}
+        >
+          {isGenerating ? "Generating..." : "Generate best rewrites"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={applyAllRewriteRecommendations}
+          disabled={!afterReport?.recommendations.some((entry) => entry.autoApplicable)}
+        >
+          Apply all auto-fixes
         </button>
         <button
           className="action-button secondary"
@@ -9972,6 +10511,7 @@ function AiHumanizerTool() {
             if (!rewrittenText.trim()) return;
             setSourceText(rewrittenText);
             setStatus("Rewritten text moved to source editor.");
+            trackEvent("tool_ai_humanizer_promote_output", { words: countWords(rewrittenText) });
           }}
           disabled={!rewrittenText.trim()}
         >
@@ -9984,6 +10524,12 @@ function AiHumanizerTool() {
           onClick={async () => {
             const ok = await copyTextToClipboard(rewrittenText);
             setStatus(ok ? "Rewritten text copied." : "Nothing to copy.");
+            if (ok) {
+              trackEvent("tool_ai_humanizer_copy_output", {
+                words: countWords(rewrittenText),
+                provider: selectedVariant?.provider ?? "manual",
+              });
+            }
           }}
           disabled={!rewrittenText.trim()}
         >
@@ -9993,7 +10539,13 @@ function AiHumanizerTool() {
         <button
           className="action-button secondary"
           type="button"
-          onClick={() => downloadTextFile("ai-humanized-output.txt", rewrittenText)}
+          onClick={() => {
+            downloadTextFile("ai-humanized-output.txt", rewrittenText);
+            trackEvent("tool_ai_humanizer_download_output", {
+              words: countWords(rewrittenText),
+              provider: selectedVariant?.provider ?? "manual",
+            });
+          }}
           disabled={!rewrittenText.trim()}
         >
           <Download size={15} />
@@ -10017,6 +10569,13 @@ function AiHumanizerTool() {
         rows={[
           { label: "Source words", value: formatNumericValue(countWords(sourceText)) },
           { label: "Rewritten words", value: formatNumericValue(countWords(rewrittenText)) },
+          { label: "Generated variants", value: formatNumericValue(variants.length) },
+          {
+            label: "Selected variant source",
+            value: selectedVariant ? `${selectedVariant.provider.toUpperCase()} (${selectedVariant.label})` : "-",
+          },
+          { label: "Meaning preserved", value: meaningScore == null ? "-" : `${meaningScore}%` },
+          { label: "Critical token retention", value: criticalRetention == null ? "-" : `${criticalRetention}%` },
           {
             label: "Risk delta",
             value:
@@ -10031,6 +10590,58 @@ function AiHumanizerTool() {
           { label: "Imported docs", value: formatNumericValue(uploadSummaries.length) },
         ]}
       />
+
+      {variants.length ? (
+        <div className="mini-panel">
+          <h3>Rewrite variants</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Variant</th>
+                  <th>Provider</th>
+                  <th>Words</th>
+                  <th>Risk</th>
+                  <th>Similarity</th>
+                  <th>Meaning</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {variants.map((variant) => (
+                  <tr key={variant.id}>
+                    <td>{variant.label}</td>
+                    <td>{variant.provider.toUpperCase()}</td>
+                    <td>{formatNumericValue(variant.words)}</td>
+                    <td>{variant.riskScore}</td>
+                    <td>{variant.similarity.toFixed(1)}%</td>
+                    <td>{variant.meaningScore.toFixed(1)}%</td>
+                    <td>
+                      <button
+                        className="action-button secondary"
+                        type="button"
+                        onClick={() => {
+                          setSelectedVariantId(variant.id);
+                          setRewrittenText(variant.text);
+                          setStatus(`${variant.label} selected (${variant.provider.toUpperCase()}).`);
+                          trackEvent("tool_ai_humanizer_variant_select", {
+                            variant: variant.label,
+                            provider: variant.provider,
+                            risk: variant.riskScore,
+                            meaning: variant.meaningScore,
+                          });
+                        }}
+                      >
+                        {selectedVariantId === variant.id ? "Active" : "Use"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {beforeReport && afterReport ? (
         <div className="mini-panel">
@@ -10075,6 +10686,16 @@ function AiHumanizerTool() {
                   <td>{beforeReport.readingEase != null ? beforeReport.readingEase.toFixed(1) : "N/A"}</td>
                   <td>{afterReport.readingEase != null ? afterReport.readingEase.toFixed(1) : "N/A"}</td>
                 </tr>
+                <tr>
+                  <td>Meaning preserved</td>
+                  <td>-</td>
+                  <td>{meaningScore == null ? "N/A" : `${meaningScore.toFixed(1)}%`}</td>
+                </tr>
+                <tr>
+                  <td>Critical token retention</td>
+                  <td>-</td>
+                  <td>{criticalRetention == null ? "N/A" : `${criticalRetention.toFixed(1)}%`}</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -10113,6 +10734,53 @@ function AiHumanizerTool() {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {sentencePairs.length ? (
+        <div className="mini-panel">
+          <h3>Sentence review</h3>
+          <p className="supporting-text">
+            Review sentence-level changes and restore source lines when meaning drifts.
+          </p>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Source sentence</th>
+                  <th>Rewritten sentence</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sentencePairs.map((entry) => {
+                  const canRestore = Boolean(
+                    entry.sourceSentence &&
+                      entry.rewrittenSentence &&
+                      entry.sourceSentence.trim() !== entry.rewrittenSentence.trim(),
+                  );
+                  return (
+                    <tr key={`humanizer-sentence-${entry.index}`}>
+                      <td>{entry.index + 1}</td>
+                      <td>{entry.sourceSentence || "-"}</td>
+                      <td>{entry.rewrittenSentence || "-"}</td>
+                      <td>
+                        <button
+                          className="action-button secondary"
+                          type="button"
+                          onClick={() => restoreSourceSentence(entry.index)}
+                          disabled={!canRestore}
+                        >
+                          Restore source
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

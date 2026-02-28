@@ -156,6 +156,18 @@ export default function ToolPage({ params }: ToolPageProps) {
           controls, and accessible result panels. Use related utilities below to continue your workflow without
           switching apps.
         </p>
+        {tool.slug === "ai-humanizer" ? (
+          <>
+            <p>
+              This humanizer workspace is built for responsible editing: compare multiple rewrite variants, verify
+              meaning-retention signals, and correct sentence-level drift before publishing.
+            </p>
+            <p>
+              For SEO and professional writing, use keyword locks, readability deltas, and critical-token retention to
+              keep factual details stable while improving natural flow.
+            </p>
+          </>
+        ) : null}
       </section>
 
       <section className="faq" aria-label="Frequently asked questions">

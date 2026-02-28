@@ -626,18 +626,43 @@ const seoTools: ToolDefinition[] = [
     slug: "ai-humanizer",
     category: "seo-tools",
     title: "AI Human Rewrite Assistant",
-    summary: "Rewrite AI-like drafts into more natural human-style text with measurable before/after quality deltas.",
+    summary:
+      "Humanize AI-like drafts with ranked rewrite variants, meaning-preservation scoring, and sentence-level refinement.",
     description:
-      "Humanize drafts with style presets, readability-aware rewrites, and one-click improvement actions while preserving meaning and structure.",
+      "Generate and compare multiple humanized rewrites with style/tone controls, keyword locks, trust metrics, detector-aware auto-fixes, and optional cloud orchestration with local fallback.",
     keywords: [
       "ai humanizer",
       "human rewrite assistant",
       "humanize ai text",
       "rewrite ai content",
       "ai text rewriter",
+      "ai humanizer free",
+      "humanize ai content online",
+      "ai rewrite tool",
     ],
     engine: { kind: "text-tool", id: "ai-humanizer" },
-    faq: baseFaq("AI Human Rewrite Assistant"),
+    faq: [
+      {
+        question: "How is this AI humanizer different from a basic synonym replacer?",
+        answer:
+          "It generates multiple rewrite variants, scores meaning retention, compares detector signals before/after, and supports sentence-level manual corrections.",
+      },
+      {
+        question: "Will important numbers, links, and quoted text be preserved?",
+        answer:
+          "Yes. The workflow tracks critical tokens and surfaces a retention score so you can quickly verify sensitive details stayed intact.",
+      },
+      {
+        question: "Can I lock keywords for SEO while rewriting?",
+        answer:
+          "Yes. In advanced mode you can set keyword locks so exact terms remain unchanged across rewrite variants.",
+      },
+      {
+        question: "Is cloud rewriting required?",
+        answer:
+          "No. The tool runs with a local rewrite pipeline by default and automatically falls back to local processing if cloud orchestration is unavailable.",
+      },
+    ],
   },
   {
     slug: "paraphrasing-tool",
