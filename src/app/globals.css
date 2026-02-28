@@ -356,9 +356,12 @@ textarea {
 
 .main-nav {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.5rem;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .main-nav a {
@@ -366,16 +369,50 @@ textarea {
   align-items: center;
   gap: 0.35rem;
   border: 1px solid transparent;
-  padding: 0.45rem 0.7rem;
+  padding: 0.38rem 0.58rem;
   border-radius: 999px;
   color: var(--text-soft);
   font-weight: 500;
+  font-size: 0.88rem;
+  white-space: nowrap;
 }
 
 .main-nav a:hover {
   border-color: var(--border);
   color: var(--text);
   background: var(--surface-soft);
+}
+
+.main-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.desktop-nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.main-nav-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.main-nav-meta a {
+  color: var(--text-soft);
+  font-size: 0.86rem;
+}
+
+.main-nav-meta a:hover,
+.main-nav-meta a:focus-visible {
+  color: var(--text);
 }
 
 .pwa-banner {
@@ -1814,6 +1851,10 @@ textarea {
   }
 
   .main-nav {
+    display: none;
+  }
+
+  .desktop-nav {
     display: none;
   }
 
