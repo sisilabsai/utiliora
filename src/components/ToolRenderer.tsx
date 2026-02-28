@@ -27124,17 +27124,723 @@ function buildResumeExportHtmlDocument(resume: ResumeData): string {
 </html>`;
 }
 
+type ResumeAtsSeverity = "high" | "medium" | "low";
+
+interface ResumeAtsCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  severity: ResumeAtsSeverity;
+  details: string;
+}
+
+interface ResumeAtsReport {
+  score: number;
+  checks: ResumeAtsCheck[];
+  failedChecks: ResumeAtsCheck[];
+}
+
+interface ResumeApplicationPack {
+  company: string;
+  role: string;
+  coverLetter: string;
+  recruiterEmail: string;
+  linkedinMessage: string;
+}
+
+type ResumeApplicationStatus = "draft" | "applied" | "interview" | "offer" | "rejected";
+
+interface ResumeApplicationEntry {
+  id: string;
+  company: string;
+  role: string;
+  status: ResumeApplicationStatus;
+  notes: string;
+  appliedAt: string;
+  createdAt: number;
+  resumeScore: number;
+  keywordCoverage: number;
+}
+
+interface ResumeImportSections {
+  header: string[];
+  summary: string[];
+  skills: string[];
+  experience: string[];
+  education: string[];
+  links: string[];
+  other: string[];
+}
+
+function sanitizeResumeApplicationEntries(raw: unknown): ResumeApplicationEntry[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => Boolean(item) && typeof item === "object")
+    .map((item) => {
+      const entry = item as Partial<ResumeApplicationEntry>;
+      const status: ResumeApplicationStatus =
+        entry.status === "draft" ||
+        entry.status === "applied" ||
+        entry.status === "interview" ||
+        entry.status === "offer" ||
+        entry.status === "rejected"
+          ? entry.status
+          : "applied";
+      return {
+        id: typeof entry.id === "string" && entry.id ? entry.id : crypto.randomUUID(),
+        company: typeof entry.company === "string" ? entry.company : "",
+        role: typeof entry.role === "string" ? entry.role : "",
+        status,
+        notes: typeof entry.notes === "string" ? entry.notes : "",
+        appliedAt: typeof entry.appliedAt === "string" ? entry.appliedAt : "",
+        createdAt: Number.isFinite(entry.createdAt) ? Number(entry.createdAt) : Date.now(),
+        resumeScore: Number.isFinite(entry.resumeScore) ? Math.max(0, Math.min(100, Number(entry.resumeScore))) : 0,
+        keywordCoverage: Number.isFinite(entry.keywordCoverage)
+          ? Math.max(0, Math.min(100, Number(entry.keywordCoverage)))
+          : 0,
+      };
+    })
+    .filter((item) => item.company.trim() || item.role.trim())
+    .slice(0, 300);
+}
+
+function normalizeResumeImportLine(value: string): string {
+  return value
+    .replace(/^[\u2022*]\s*/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getResumeHeadingType(value: string): keyof Omit<ResumeImportSections, "header" | "other"> | null {
+  const normalized = value.trim().toLowerCase().replace(/[:\-]+$/g, "");
+  if (!normalized) return null;
+  if (/^(summary|profile|professional summary|career summary|objective|about)$/i.test(normalized)) return "summary";
+  if (/^(skills|technical skills|core skills|competencies|toolkit)$/i.test(normalized)) return "skills";
+  if (/^(experience|work experience|employment|work history|professional experience|career history)$/i.test(normalized))
+    return "experience";
+  if (/^(education|academic background|academics|qualifications)$/i.test(normalized)) return "education";
+  if (/^(links|profiles|portfolio|online presence)$/i.test(normalized)) return "links";
+  return null;
+}
+
+function splitResumeImportSections(text: string): ResumeImportSections {
+  const sections: ResumeImportSections = {
+    header: [],
+    summary: [],
+    skills: [],
+    experience: [],
+    education: [],
+    links: [],
+    other: [],
+  };
+  let active: keyof ResumeImportSections = "header";
+  const lines = normalizeUploadedText(text).replace(/\t/g, " ").split("\n");
+
+  for (const rawLine of lines) {
+    const cleaned = normalizeResumeImportLine(rawLine);
+    if (!cleaned) {
+      if (active === "experience" || active === "education") {
+        sections[active].push("");
+      }
+      continue;
+    }
+    if (/^page\s+\d+$/i.test(cleaned)) continue;
+    const heading = getResumeHeadingType(cleaned);
+    if (heading) {
+      active = heading;
+      continue;
+    }
+    sections[active].push(cleaned);
+  }
+  return sections;
+}
+
+function parseMonthTokenToIso(value: string): string {
+  const cleaned = value.trim().toLowerCase().replace(/[.,]/g, "");
+  const isoLike = cleaned.match(/^(\d{4})[-/](\d{1,2})$/);
+  if (isoLike) {
+    const month = Math.max(1, Math.min(12, Number.parseInt(isoLike[2], 10) || 1));
+    return `${isoLike[1]}-${String(month).padStart(2, "0")}`;
+  }
+  const yearOnly = cleaned.match(/^(\d{4})$/);
+  if (yearOnly) return `${yearOnly[1]}-01`;
+
+  const monthMap: Record<string, number> = {
+    jan: 1,
+    january: 1,
+    feb: 2,
+    february: 2,
+    mar: 3,
+    march: 3,
+    apr: 4,
+    april: 4,
+    may: 5,
+    jun: 6,
+    june: 6,
+    jul: 7,
+    july: 7,
+    aug: 8,
+    august: 8,
+    sep: 9,
+    sept: 9,
+    september: 9,
+    oct: 10,
+    october: 10,
+    nov: 11,
+    november: 11,
+    dec: 12,
+    december: 12,
+  };
+
+  const monthYear = cleaned.match(
+    /^(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+(\d{4})$/,
+  );
+  if (!monthYear) return "";
+  const month = monthMap[monthYear[1]];
+  const year = Number.parseInt(monthYear[2], 10);
+  if (!month || !Number.isFinite(year)) return "";
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function extractResumeDateRange(line: string): { startDate: string; endDate: string; current: boolean } | null {
+  const normalized = line.replace(/\u2013|\u2014/g, "-");
+  const monthPattern =
+    "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+  const monthYearPattern = new RegExp(`(${monthPattern}\\s+\\d{4}|\\d{4}[/-]\\d{1,2}|\\d{4})\\s*[-to]{1,3}\\s*(present|current|${monthPattern}\\s+\\d{4}|\\d{4}[/-]\\d{1,2}|\\d{4})`, "i");
+  const match = normalized.match(monthYearPattern);
+  if (!match) return null;
+  const startDate = parseMonthTokenToIso(match[1] ?? "");
+  const endToken = (match[2] ?? "").trim();
+  const isCurrent = /^(present|current)$/i.test(endToken);
+  const endDate = isCurrent ? "" : parseMonthTokenToIso(endToken);
+  if (!startDate && !endDate && !isCurrent) return null;
+  return {
+    startDate,
+    endDate,
+    current: isCurrent,
+  };
+}
+
+function parseRoleCompanyFromLine(line: string): { role: string; company: string } | null {
+  const stripped = line.trim();
+  if (!stripped || stripped.length > 160) return null;
+  const separators = [" | ", " at ", " @ ", " - "];
+  for (const separator of separators) {
+    const exactIndex = separator === " at " ? stripped.toLowerCase().indexOf(separator) : stripped.indexOf(separator);
+    if (exactIndex <= 1) continue;
+    const role = stripped.slice(0, exactIndex).trim();
+    const company = stripped.slice(exactIndex + separator.length).trim();
+    if (!role || !company) continue;
+    if (/\d{4}/.test(role) || /\d{4}/.test(company)) continue;
+    return { role, company };
+  }
+  return null;
+}
+
+function parseSkillsFromLines(lines: string[]): string[] {
+  const tokens = lines
+    .flatMap((line) => line.split(/[,|;/]/g))
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2 && item.length <= 40 && !/^\d+$/.test(item));
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    const normalized = token.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(token);
+    if (unique.length >= 50) break;
+  }
+  return unique;
+}
+
+function parseExperienceFromLines(lines: string[], headlineFallback: string): ResumeExperience[] {
+  const groups: string[][] = [];
+  let currentGroup: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (currentGroup.length) groups.push(currentGroup);
+      currentGroup = [];
+      continue;
+    }
+    currentGroup.push(line.trim());
+  }
+  if (currentGroup.length) groups.push(currentGroup);
+
+  const entries: ResumeExperience[] = [];
+  for (const group of groups) {
+    if (!group.length) continue;
+    let role = "";
+    let company = "";
+    const parsedHeader = parseRoleCompanyFromLine(group[0] ?? "");
+    if (parsedHeader) {
+      role = parsedHeader.role;
+      company = parsedHeader.company;
+    } else {
+      role = group[0] ?? "";
+      company = group[1] ?? "";
+    }
+    const maybeDateLine = group.find((line) => Boolean(extractResumeDateRange(line)));
+    const range = maybeDateLine ? extractResumeDateRange(maybeDateLine) : null;
+    const location =
+      (maybeDateLine?.includes("|") ? maybeDateLine.split("|").slice(1).join("|").trim() : "") ||
+      (group[1]?.includes("|") ? group[1].split("|").slice(1).join("|").trim() : "");
+    const highlights = group
+      .slice(1)
+      .filter((line) => line !== maybeDateLine)
+      .map((line) => line.replace(/^[-*]\s*/, "").trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .join("\n");
+
+    const hasMeaningful = role.trim() || company.trim() || highlights.trim();
+    if (!hasMeaningful) continue;
+    entries.push({
+      id: crypto.randomUUID(),
+      role: role.trim(),
+      company: company.trim(),
+      location,
+      startDate: range?.startDate ?? "",
+      endDate: range?.endDate ?? "",
+      current: Boolean(range?.current),
+      highlights,
+    });
+    if (entries.length >= 8) break;
+  }
+
+  if (entries.length) return entries;
+  return [
+    {
+      id: crypto.randomUUID(),
+      role: headlineFallback || "Professional Experience",
+      company: "",
+      location: "",
+      startDate: "",
+      endDate: "",
+      current: false,
+      highlights: lines.slice(0, 6).join("\n"),
+    },
+  ];
+}
+
+function parseEducationFromLines(lines: string[]): ResumeEducation[] {
+  const groups: string[][] = [];
+  let currentGroup: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (currentGroup.length) groups.push(currentGroup);
+      currentGroup = [];
+      continue;
+    }
+    currentGroup.push(line.trim());
+  }
+  if (currentGroup.length) groups.push(currentGroup);
+
+  const entries: ResumeEducation[] = [];
+  for (const group of groups) {
+    if (!group.length) continue;
+    const school = group[0] ?? "";
+    const degreeFieldLine = group[1] ?? "";
+    const [degreePart, fieldPart] = degreeFieldLine.includes(",")
+      ? degreeFieldLine.split(",", 2)
+      : [degreeFieldLine, ""];
+    const maybeDateLine = group.find((line) => Boolean(extractResumeDateRange(line)));
+    const range = maybeDateLine ? extractResumeDateRange(maybeDateLine) : null;
+    const details = group
+      .slice(2)
+      .filter((line) => line !== maybeDateLine)
+      .join(" ")
+      .trim();
+    if (!school.trim() && !degreePart.trim() && !fieldPart.trim() && !details) continue;
+    entries.push({
+      id: crypto.randomUUID(),
+      school: school.trim(),
+      degree: degreePart.trim(),
+      field: fieldPart.trim(),
+      startDate: range?.startDate ?? "",
+      endDate: range?.endDate ?? "",
+      details,
+    });
+    if (entries.length >= 6) break;
+  }
+  return entries;
+}
+
+function buildLabelFromUrl(url: string): string {
+  const normalized = url.toLowerCase();
+  if (normalized.includes("linkedin")) return "LinkedIn";
+  if (normalized.includes("github")) return "GitHub";
+  if (normalized.includes("behance")) return "Behance";
+  if (normalized.includes("dribbble")) return "Dribbble";
+  if (normalized.includes("portfolio")) return "Portfolio";
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return "Link";
+  }
+}
+
+function buildResumeFromImportedText(rawText: string, fallback: ResumeData): ResumeData {
+  const sections = splitResumeImportSections(rawText);
+  const email = rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.trim() ?? "";
+  const phone =
+    rawText.match(/(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?|\d{2,4}[\s.-])\d{3,4}[\s.-]?\d{3,4}/)?.[0]?.trim() ??
+    "";
+  const urls = Array.from(new Set(rawText.match(/https?:\/\/[^\s)]+/gi) ?? [])).slice(0, 12);
+
+  const headerCandidates = sections.header.filter(
+    (line) =>
+      !line.includes("@") &&
+      !/https?:\/\//i.test(line) &&
+      !/\+?\d[\d\s().-]{7,}/.test(line) &&
+      !getResumeHeadingType(line),
+  );
+  const likelyName =
+    headerCandidates.find((line) => {
+      const tokens = line
+        .replace(/[^A-Za-z\s'-]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+      return (
+        tokens.length >= 2 &&
+        tokens.length <= 4 &&
+        tokens.every((token) => /^[A-Z][a-zA-Z'-]+$/.test(token))
+      );
+    }) ?? "";
+  const headline =
+    headerCandidates.find((line) => line !== likelyName && line.length >= 3 && line.length <= 80) ??
+    fallback.personal.headline;
+  const summaryText =
+    sections.summary.join(" ").trim() ||
+    headerCandidates
+      .slice(2, 6)
+      .join(" ")
+      .trim() ||
+    fallback.personal.summary;
+  const skills = parseSkillsFromLines(sections.skills.length ? sections.skills : sections.other).slice(0, 50);
+  const experience = parseExperienceFromLines(sections.experience, headline);
+  const education = parseEducationFromLines(sections.education);
+  const links = (urls.length ? urls : sections.links.filter((line) => /^https?:\/\//i.test(line)))
+    .slice(0, 12)
+    .map((url) => ({
+      id: crypto.randomUUID(),
+      label: buildLabelFromUrl(url),
+      url,
+    }));
+  const website = links.find((item) => !/linkedin|github|behance|dribbble/i.test(item.url))?.url ?? fallback.personal.website;
+
+  return {
+    template: fallback.template,
+    accentColor: fallback.accentColor,
+    photoDataUrl: fallback.photoDataUrl,
+    photoFileName: fallback.photoFileName,
+    personal: {
+      fullName: likelyName || fallback.personal.fullName,
+      headline: headline || fallback.personal.headline,
+      email: email || fallback.personal.email,
+      phone: phone || fallback.personal.phone,
+      location: fallback.personal.location,
+      website,
+      summary: summaryText,
+    },
+    skills: skills.length ? skills : fallback.skills,
+    experience: experience.length ? experience : fallback.experience,
+    education: education.length ? education : fallback.education,
+    links: links.length ? links : fallback.links,
+  };
+}
+
+function buildResumeAtsReport(
+  resume: ResumeData,
+  options: {
+    coveragePercent: number;
+    hasJobDescription: boolean;
+    jobKeywordCount: number;
+  },
+): ResumeAtsReport {
+  const sectionWordCount = countWords(buildResumePlainText(resume));
+  const bulletLines = resume.experience
+    .flatMap((entry) =>
+      entry.highlights
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )
+    .slice(0, 80);
+  const metricBullets = bulletLines.filter((line) => /\d/.test(line)).length;
+  const templatedAtsSafe =
+    resume.template === "minimal" ||
+    resume.template === "modern" ||
+    resume.template === "compact" ||
+    resume.template === "executive";
+
+  const checks: ResumeAtsCheck[] = [
+    {
+      id: "contact",
+      label: "Contact details available",
+      ok: Boolean(resume.personal.fullName.trim() && (resume.personal.email.trim() || resume.personal.phone.trim())),
+      severity: "high",
+      details: "Missing name, email, or phone can cause ATS ingestion and recruiter screening drops.",
+    },
+    {
+      id: "headline",
+      label: "Clear role headline",
+      ok: resume.personal.headline.trim().length >= 4,
+      severity: "high",
+      details: "Role headline should map to the target position title.",
+    },
+    {
+      id: "bullet-depth",
+      label: "Experience bullet depth",
+      ok: bulletLines.length >= 4,
+      severity: "high",
+      details: "ATS and recruiters expect role outcomes, not only titles and company names.",
+    },
+    {
+      id: "metric-bullets",
+      label: "Quantified impact bullets",
+      ok: metricBullets >= Math.max(2, Math.round(bulletLines.length * 0.35)),
+      severity: "medium",
+      details: "Add metrics like %, $, time, or scale to increase interview conversion.",
+    },
+    {
+      id: "ats-layout",
+      label: "ATS-friendly layout",
+      ok: templatedAtsSafe,
+      severity: "medium",
+      details: "Highly decorative layouts can parse inconsistently in some ATS systems.",
+    },
+    {
+      id: "photo",
+      label: "No profile photo for ATS export",
+      ok: !resume.photoDataUrl.trim(),
+      severity: "low",
+      details: "Many ATS workflows prefer text-first resumes with no headshot.",
+    },
+    {
+      id: "length",
+      label: "One-page friendly length",
+      ok: sectionWordCount <= 900,
+      severity: "medium",
+      details: "Excessively long resumes are harder to scan and less ATS-friendly.",
+    },
+    {
+      id: "date-consistency",
+      label: "Date range coverage",
+      ok: resume.experience.some((entry) => entry.startDate.trim() || entry.endDate.trim() || entry.current),
+      severity: "medium",
+      details: "Consistent date ranges improve timeline parsing.",
+    },
+  ];
+
+  if (options.hasJobDescription && options.jobKeywordCount > 0) {
+    checks.push({
+      id: "keyword-alignment",
+      label: "Target-job keyword alignment",
+      ok: options.coveragePercent >= 60,
+      severity: "high",
+      details: "Role-specific terms from the job description should appear naturally in resume content.",
+    });
+  }
+
+  const weights: Record<ResumeAtsSeverity, number> = { high: 4, medium: 2, low: 1 };
+  const totalWeight = checks.reduce((sum, check) => sum + weights[check.severity], 0);
+  const passedWeight = checks.reduce((sum, check) => sum + (check.ok ? weights[check.severity] : 0), 0);
+  const score = totalWeight > 0 ? Math.round((passedWeight / totalWeight) * 100) : 0;
+  return {
+    score,
+    checks,
+    failedChecks: checks.filter((check) => !check.ok),
+  };
+}
+
+function guessTargetRoleFromJobDescription(jobDescription: string, fallback: string): string {
+  const cleaned = normalizeUploadedText(jobDescription).trim();
+  if (!cleaned) return fallback || "the target role";
+  const labelled = cleaned.match(/(?:role|position|title)\s*:\s*(.+)/i)?.[1]?.trim();
+  if (labelled) return labelled.slice(0, 90);
+  const firstLine = cleaned
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return fallback || "the target role";
+  if (firstLine.length <= 90) return firstLine;
+  const keywordBased =
+    extractImportantKeywords(firstLine)
+      .slice(0, 4)
+      .join(" ")
+      .trim() || fallback;
+  return keywordBased || "the target role";
+}
+
+function guessCompanyFromJobDescription(jobDescription: string): string {
+  const cleaned = normalizeUploadedText(jobDescription).trim();
+  if (!cleaned) return "your company";
+  const labeled = cleaned.match(/(?:company|organization|employer)\s*:\s*([^\n]+)/i)?.[1]?.trim();
+  if (labeled) return labeled.slice(0, 80);
+  const atMatch = cleaned.match(/\bat\s+([A-Z][A-Za-z0-9&.,' -]{1,60})/);
+  if (atMatch?.[1]) return atMatch[1].trim();
+  return "your company";
+}
+
+function tailorResumeForJobDescription(
+  resume: ResumeData,
+  jobDescription: string,
+): { resume: ResumeData; missingKeywords: string[]; addedSkills: string[]; rewrittenHighlights: number } {
+  const targetKeywords = extractImportantKeywords(jobDescription)
+    .filter((keyword) => keyword.length >= 3 && !/^\d+$/.test(keyword))
+    .slice(0, 30);
+  if (!targetKeywords.length) {
+    return { resume, missingKeywords: [], addedSkills: [], rewrittenHighlights: 0 };
+  }
+
+  const resumeKeywordSet = new Set(extractImportantKeywords(buildResumePlainText(resume)));
+  const missingKeywords = targetKeywords.filter((keyword) => !resumeKeywordSet.has(keyword));
+  const addedSkills = missingKeywords
+    .filter((keyword) => keyword.length <= 32 && !keyword.includes("."))
+    .slice(0, 8);
+
+  let rewrittenHighlights = 0;
+  const nextExperience = resume.experience.map((entry, index) => {
+    const lines = entry.highlights
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return entry;
+    const rewritten = lines.map((line, lineIndex) => {
+      if (/\d/.test(line)) return line;
+      if (rewrittenHighlights >= 6) return line;
+      const keyword = targetKeywords[(index + lineIndex) % targetKeywords.length] ?? "delivery";
+      rewrittenHighlights += 1;
+      return `${line.replace(/[.]+$/g, "")}, with measurable impact across ${keyword}.`;
+    });
+    return {
+      ...entry,
+      highlights: rewritten.join("\n"),
+    };
+  });
+
+  const topSkillText = [...new Set([...resume.skills, ...addedSkills])]
+    .slice(0, 5)
+    .join(", ");
+  const targetRole = guessTargetRoleFromJobDescription(jobDescription, resume.personal.headline);
+  const nextSummary =
+    resume.personal.summary.trim().length >= 80
+      ? resume.personal.summary
+      : `${targetRole} professional focused on measurable delivery and cross-functional execution, with strengths in ${topSkillText || "high-impact execution"}.`;
+
+  return {
+    resume: {
+      ...resume,
+      personal: {
+        ...resume.personal,
+        summary: nextSummary,
+        headline: resume.personal.headline.trim() || targetRole,
+      },
+      skills: [...new Set([...resume.skills, ...addedSkills])].slice(0, 50),
+      experience: nextExperience,
+    },
+    missingKeywords,
+    addedSkills,
+    rewrittenHighlights,
+  };
+}
+
+function buildResumeApplicationPack(resume: ResumeData, jobDescription: string): ResumeApplicationPack {
+  const role = guessTargetRoleFromJobDescription(jobDescription, resume.personal.headline || "the role");
+  const company = guessCompanyFromJobDescription(jobDescription);
+  const name = resume.personal.fullName || "Candidate";
+  const topBullets = resume.experience
+    .flatMap((entry) =>
+      entry.highlights
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )
+    .slice(0, 3);
+  const keyStrength = (resume.skills[0] || "execution").trim();
+  const supportingStrength = (resume.skills[1] || "cross-functional collaboration").trim();
+
+  const coverLetter = `Dear Hiring Team,
+
+I am applying for the ${role} position at ${company}. I bring hands-on experience delivering measurable outcomes in fast-moving teams, with a strong track record of ownership and execution.
+
+Highlights I would bring to this role:
+${topBullets.length ? topBullets.map((line) => `- ${line}`).join("\n") : "- Delivered impactful projects with measurable outcomes and strong stakeholder alignment."}
+
+My background combines ${keyStrength} and ${supportingStrength}, and I am confident I can contribute quickly to your goals. I would welcome the opportunity to discuss how my experience aligns with this role.
+
+Sincerely,
+${name}`;
+
+  const recruiterEmail = `Subject: ${role} application - ${name}
+
+Hi Hiring Team,
+
+I just applied for the ${role} role at ${company}. My background is strongest in ${keyStrength} and ${supportingStrength}, and I have delivered outcomes such as:
+${topBullets.length ? topBullets.map((line) => `- ${line}`).join("\n") : "- Impact-focused project delivery with measurable results."}
+
+Happy to share more details if useful.
+
+Thanks,
+${name}`;
+
+  const linkedinMessage = `Hi, I applied for the ${role} role at ${company}. I bring experience in ${keyStrength} and ${supportingStrength}, with a record of measurable impact. If helpful, I can share a short overview of my fit for the role.`;
+
+  return {
+    company,
+    role,
+    coverLetter,
+    recruiterEmail,
+    linkedinMessage,
+  };
+}
+
 function ResumeBuilderTool() {
   const storageKey = "utiliora-resume-builder-v1";
+  const trackerStorageKey = "utiliora-resume-builder-applications-v1";
   const importRef = useRef<HTMLInputElement | null>(null);
+  const resumeImportRef = useRef<HTMLInputElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const [resume, setResume] = useState<ResumeData>(() => createDefaultResumeData());
   const [skillDraft, setSkillDraft] = useState("");
   const [jobDescription, setJobDescription] = useState("");
+  const [isImportingResume, setIsImportingResume] = useState(false);
+  const [applicationPack, setApplicationPack] = useState<ResumeApplicationPack | null>(null);
+  const [tailoringSummary, setTailoringSummary] = useState("");
+  const [applicationEntries, setApplicationEntries] = useState<ResumeApplicationEntry[]>([]);
+  const [applicationDraft, setApplicationDraft] = useState<{
+    company: string;
+    role: string;
+    status: ResumeApplicationStatus;
+    notes: string;
+    appliedAt: string;
+  }>({
+    company: "",
+    role: "",
+    status: "applied",
+    notes: "",
+    appliedAt: "",
+  });
   const [status, setStatus] = useState("");
 
   useEffect(() => {
     try {
+      const params = new URLSearchParams(window.location.search);
+      const fromShareLink = params.get("resumeData");
+      if (fromShareLink) {
+        const decoded = decodeBase64Url(fromShareLink);
+        const fromQuery = decoded ? sanitizeResumeData(JSON.parse(decoded)) : null;
+        if (fromQuery) {
+          setResume(fromQuery);
+          setStatus("Loaded resume data from shared link.");
+          return;
+        }
+      }
+
       const stored = localStorage.getItem(storageKey);
       if (!stored) return;
       const sanitized = sanitizeResumeData(JSON.parse(stored));
@@ -27151,6 +27857,24 @@ function ResumeBuilderTool() {
       // Ignore storage failures.
     }
   }, [resume, storageKey]);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(trackerStorageKey);
+      if (!stored) return;
+      setApplicationEntries(sanitizeResumeApplicationEntries(JSON.parse(stored)));
+    } catch {
+      // Ignore malformed tracker state.
+    }
+  }, [trackerStorageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(trackerStorageKey, JSON.stringify(applicationEntries));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [applicationEntries, trackerStorageKey]);
 
   const updatePersonal = <K extends keyof ResumePersonalInfo>(field: K, value: ResumePersonalInfo[K]) => {
     setResume((current) => ({ ...current, personal: { ...current.personal, [field]: value } }));
@@ -27231,6 +27955,31 @@ function ResumeBuilderTool() {
   const needsLinks = !resume.links.some((item) => item.url.trim());
   const missingSkills = resume.skills.length < 8;
   const needsKeywordAlignment = jobKeywords.length > 0 && coveragePercent < 65 && missingKeywords.length > 0;
+  const atsReport = useMemo(
+    () =>
+      buildResumeAtsReport(resume, {
+        coveragePercent,
+        hasJobDescription: Boolean(jobDescription.trim()),
+        jobKeywordCount: jobKeywords.length,
+      }),
+    [coveragePercent, jobDescription, jobKeywords.length, resume],
+  );
+  const applicationStats = useMemo(() => {
+    const applied = applicationEntries.filter((entry) => entry.status !== "draft");
+    const interviews = applied.filter((entry) => entry.status === "interview").length;
+    const offers = applied.filter((entry) => entry.status === "offer").length;
+    const rejected = applied.filter((entry) => entry.status === "rejected").length;
+    const interviewRate = applied.length ? Math.round((interviews / applied.length) * 100) : 0;
+    const offerRate = applied.length ? Math.round((offers / applied.length) * 100) : 0;
+    return {
+      applied: applied.length,
+      interviews,
+      offers,
+      rejected,
+      interviewRate,
+      offerRate,
+    };
+  }, [applicationEntries]);
 
   const downloadResumePdf = async () => {
     setStatus("Generating PDF...");
@@ -27488,12 +28237,173 @@ function ResumeBuilderTool() {
     setStatus("Added a balanced set of core resume skills.");
   };
 
+  const importResumeFromFile = async (file: File | null) => {
+    if (!file) return;
+    setIsImportingResume(true);
+    setStatus(`Importing ${file.name}...`);
+    try {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith(".json")) {
+        const raw = await file.text();
+        const sanitized = sanitizeResumeData(JSON.parse(raw));
+        if (!sanitized) throw new Error("invalid-json");
+        setResume(sanitized);
+        setStatus("Imported resume JSON.");
+        trackEvent("resume_import_json", { source: "file" });
+        return;
+      }
+
+      let extracted = "";
+      let source = "Text";
+      const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+      if (isPdf) {
+        const parsedPdf = await extractTextFromPdfDocument(file, {
+          pageRangeInput: "all",
+          maxPages: 6,
+          includePageMarkers: false,
+        });
+        extracted = parsedPdf.text;
+        source = "PDF";
+      } else {
+        const parsedDocument = await extractTextFromDocumentFile(file, {
+          convertHtmlToText: true,
+        });
+        extracted = parsedDocument.text;
+        source = parsedDocument.source;
+      }
+
+      const normalized = normalizeUploadedText(extracted).trim();
+      if (!normalized) {
+        setStatus("No readable text was found in that file.");
+        return;
+      }
+      const imported = buildResumeFromImportedText(normalized, resume);
+      const sanitized = sanitizeResumeData(imported);
+      if (!sanitized) throw new Error("invalid-import");
+      setResume(sanitized);
+      setStatus(`Imported resume content from ${source}. Review and adjust details before exporting.`);
+      trackEvent("resume_import_document", { source, chars: normalized.length });
+    } catch {
+      setStatus("Could not import this file. Try PDF, DOCX, TXT, HTML, RTF, or JSON.");
+    } finally {
+      setIsImportingResume(false);
+    }
+  };
+
+  const applyJobTailoring = () => {
+    if (!jobDescription.trim()) {
+      setStatus("Paste a target job description first.");
+      return;
+    }
+    const tailored = tailorResumeForJobDescription(resume, jobDescription);
+    setResume(tailored.resume);
+    const summaryParts: string[] = [];
+    if (tailored.addedSkills.length) {
+      summaryParts.push(`added ${tailored.addedSkills.length} skills`);
+    }
+    if (tailored.rewrittenHighlights > 0) {
+      summaryParts.push(`rewrote ${tailored.rewrittenHighlights} bullets`);
+    }
+    setTailoringSummary(
+      summaryParts.length
+        ? `Tailoring applied: ${summaryParts.join(", ")}.`
+        : "Tailoring applied with summary/headline alignment.",
+    );
+    setStatus("Applied job-targeted tailoring to this resume.");
+    trackEvent("resume_tailor_apply", {
+      addedSkills: tailored.addedSkills.length,
+      rewrittenHighlights: tailored.rewrittenHighlights,
+      missingKeywords: tailored.missingKeywords.length,
+    });
+  };
+
+  const generateApplicationPack = () => {
+    if (!jobDescription.trim()) {
+      setStatus("Paste a job description before generating the application pack.");
+      return;
+    }
+    const pack = buildResumeApplicationPack(resume, jobDescription);
+    setApplicationPack(pack);
+    setStatus("Generated application pack (cover letter + recruiter email + LinkedIn message).");
+    trackEvent("resume_application_pack_generate", {
+      hasSummary: Boolean(resume.personal.summary.trim()),
+      hasExperience: resume.experience.some((entry) => entry.highlights.trim()),
+    });
+  };
+
+  const copyShareableResumeLink = async () => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("resumeData", encodeBase64Url(JSON.stringify(resume)));
+      const copied = await copyTextToClipboard(url.toString());
+      setStatus(copied ? "Copied shareable resume link." : "Could not copy shareable link.");
+      if (copied) {
+        trackEvent("resume_share_link_copy", { template: resume.template });
+      }
+    } catch {
+      setStatus("Could not generate shareable link.");
+    }
+  };
+
+  const addApplicationEntry = () => {
+    const company = applicationDraft.company.trim();
+    const role = applicationDraft.role.trim();
+    if (!company || !role) {
+      setStatus("Add both company and role before saving to tracker.");
+      return;
+    }
+    const entry: ResumeApplicationEntry = {
+      id: crypto.randomUUID(),
+      company,
+      role,
+      status: applicationDraft.status,
+      notes: applicationDraft.notes.trim(),
+      appliedAt: applicationDraft.appliedAt.trim(),
+      createdAt: Date.now(),
+      resumeScore: resumeQualityScore,
+      keywordCoverage: Math.round(coveragePercent),
+    };
+    setApplicationEntries((current) => [entry, ...current].slice(0, 300));
+    setApplicationDraft((current) => ({
+      ...current,
+      company: "",
+      role: "",
+      notes: "",
+      appliedAt: "",
+    }));
+    setStatus("Saved entry in application tracker.");
+    trackEvent("resume_tracker_add", { status: entry.status, score: entry.resumeScore });
+  };
+
+  const exportApplicationTracker = () => {
+    if (!applicationEntries.length) {
+      setStatus("No tracker entries to export.");
+      return;
+    }
+    const rows = applicationEntries.map((entry) => [
+      entry.company,
+      entry.role,
+      entry.status,
+      entry.appliedAt || "-",
+      String(entry.resumeScore),
+      String(entry.keywordCoverage),
+      entry.notes.replace(/\s+/g, " ").trim(),
+    ]);
+    downloadCsv(
+      `${resumeFileStem}-applications.csv`,
+      ["Company", "Role", "Status", "Applied date", "Resume score", "Keyword coverage", "Notes"],
+      rows,
+    );
+    setStatus("Exported application tracker CSV.");
+    trackEvent("resume_tracker_export", { entries: applicationEntries.length });
+  };
+
   return (
     <section className="tool-surface">
       <ToolHeading
         icon={FileText}
         title="Resume builder"
-        subtitle="Build modern resumes with profile photos, smart recommendations, ATS keyword matching, and multi-format downloads."
+        subtitle="Build modern resumes with file import, ATS simulation, job-tailored optimization, application-pack generation, and multi-format downloads."
       />
       <div className="button-row">
         <span className="supporting-text">Template:</span>
@@ -27528,6 +28438,10 @@ function ResumeBuilderTool() {
         ))}
       </div>
       <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={() => resumeImportRef.current?.click()}>
+          <Plus size={15} />
+          Import resume file
+        </button>
         <button
           className="action-button secondary"
           type="button"
@@ -27563,7 +28477,22 @@ function ResumeBuilderTool() {
           <Download size={15} />
           Download PDF
         </button>
+        <button className="action-button secondary" type="button" onClick={() => void copyShareableResumeLink()}>
+          <Share2 size={15} />
+          Copy share link
+        </button>
       </div>
+      <input
+        ref={resumeImportRef}
+        type="file"
+        hidden
+        accept=".pdf,.doc,.docx,.docm,.dotx,.dotm,.rtf,.txt,.md,.markdown,.html,.htm,.json,application/pdf,application/json"
+        onChange={async (event) => {
+          const file = event.target.files?.[0] ?? null;
+          await importResumeFromFile(file);
+          event.target.value = "";
+        }}
+      />
       <input
         ref={importRef}
         type="file"
@@ -27624,6 +28553,7 @@ function ResumeBuilderTool() {
           }
         }}
       />
+      {isImportingResume ? <p className="supporting-text">Import in progress. Large files can take a few seconds.</p> : null}
       <div className="split-panel">
         <div className="resume-editor">
           <div className="field-grid">
@@ -28161,6 +29091,202 @@ function ResumeBuilderTool() {
               <p className="supporting-text">Add a job description to benchmark keyword coverage.</p>
             )}
           </div>
+          <div className="mini-panel">
+            <h3>ATS simulator</h3>
+            <ResultList
+              rows={[
+                { label: "ATS readiness", value: `${atsReport.score}%` },
+                { label: "Checks passed", value: `${atsReport.checks.filter((check) => check.ok).length}/${atsReport.checks.length}` },
+                { label: "Critical issues", value: formatNumericValue(atsReport.failedChecks.filter((check) => check.severity === "high").length) },
+              ]}
+            />
+            <div className="chip-list">
+              {atsReport.checks.map((check) => (
+                <span
+                  key={check.id}
+                  className={`status-badge ${check.ok ? "ok" : check.severity === "high" ? "bad" : "warn"}`}
+                  title={check.details}
+                >
+                  {check.ok ? "Pass" : "Fix"} - {check.label}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="mini-panel">
+            <h3>Job targeting engine</h3>
+            <div className="button-row">
+              <button className="action-button secondary" type="button" onClick={applyJobTailoring}>
+                <Sparkles size={15} />
+                Apply targeting
+              </button>
+              <button className="action-button secondary" type="button" onClick={generateApplicationPack}>
+                <FileText size={15} />
+                Generate application pack
+              </button>
+            </div>
+            {tailoringSummary ? <p className="supporting-text">{tailoringSummary}</p> : null}
+            {applicationPack ? (
+              <div className="resume-row">
+                <p className="supporting-text">
+                  Target role: <strong>{applicationPack.role}</strong> at <strong>{applicationPack.company}</strong>
+                </p>
+                <label className="field">
+                  <span>Cover letter</span>
+                  <textarea rows={9} value={applicationPack.coverLetter} readOnly />
+                </label>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={async () => {
+                      const copied = await copyTextToClipboard(applicationPack.coverLetter);
+                      setStatus(copied ? "Copied cover letter." : "Could not copy cover letter.");
+                    }}
+                  >
+                    <Copy size={15} />
+                    Copy cover letter
+                  </button>
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => downloadTextFile(`${resumeFileStem}-cover-letter.txt`, applicationPack.coverLetter)}
+                  >
+                    <Download size={15} />
+                    Download cover letter
+                  </button>
+                </div>
+                <label className="field">
+                  <span>Recruiter email</span>
+                  <textarea rows={6} value={applicationPack.recruiterEmail} readOnly />
+                </label>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={async () => {
+                      const copied = await copyTextToClipboard(applicationPack.recruiterEmail);
+                      setStatus(copied ? "Copied recruiter email." : "Could not copy recruiter email.");
+                    }}
+                  >
+                    <Copy size={15} />
+                    Copy recruiter email
+                  </button>
+                </div>
+                <label className="field">
+                  <span>LinkedIn message</span>
+                  <textarea rows={4} value={applicationPack.linkedinMessage} readOnly />
+                </label>
+                <div className="button-row">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={async () => {
+                      const copied = await copyTextToClipboard(applicationPack.linkedinMessage);
+                      setStatus(copied ? "Copied LinkedIn message." : "Could not copy LinkedIn message.");
+                    }}
+                  >
+                    <Copy size={15} />
+                    Copy LinkedIn message
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="supporting-text">Generate a pack to get role-specific outreach copy in one click.</p>
+            )}
+          </div>
+          <div className="mini-panel">
+            <h3>Application tracker</h3>
+            <ResultList
+              rows={[
+                { label: "Applications", value: formatNumericValue(applicationStats.applied) },
+                { label: "Interviews", value: formatNumericValue(applicationStats.interviews) },
+                { label: "Offers", value: formatNumericValue(applicationStats.offers) },
+                { label: "Interview rate", value: `${applicationStats.interviewRate}%` },
+                { label: "Offer rate", value: `${applicationStats.offerRate}%` },
+              ]}
+            />
+            <div className="field-grid">
+              <label className="field">
+                <span>Company</span>
+                <input
+                  type="text"
+                  value={applicationDraft.company}
+                  onChange={(event) => setApplicationDraft((current) => ({ ...current, company: event.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>Role</span>
+                <input
+                  type="text"
+                  value={applicationDraft.role}
+                  onChange={(event) => setApplicationDraft((current) => ({ ...current, role: event.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>Status</span>
+                <select
+                  value={applicationDraft.status}
+                  onChange={(event) =>
+                    setApplicationDraft((current) => ({
+                      ...current,
+                      status: event.target.value as ResumeApplicationStatus,
+                    }))
+                  }
+                >
+                  <option value="draft">Draft</option>
+                  <option value="applied">Applied</option>
+                  <option value="interview">Interview</option>
+                  <option value="offer">Offer</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Applied date</span>
+                <input
+                  type="date"
+                  value={applicationDraft.appliedAt}
+                  onChange={(event) => setApplicationDraft((current) => ({ ...current, appliedAt: event.target.value }))}
+                />
+              </label>
+            </div>
+            <label className="field">
+              <span>Notes</span>
+              <textarea
+                rows={2}
+                value={applicationDraft.notes}
+                onChange={(event) => setApplicationDraft((current) => ({ ...current, notes: event.target.value }))}
+              />
+            </label>
+            <div className="button-row">
+              <button className="action-button secondary" type="button" onClick={addApplicationEntry}>
+                <Plus size={15} />
+                Save entry
+              </button>
+              <button className="action-button secondary" type="button" onClick={exportApplicationTracker}>
+                <Download size={15} />
+                Export tracker CSV
+              </button>
+            </div>
+            {applicationEntries.length ? (
+              <div className="chip-list">
+                {applicationEntries.slice(0, 18).map((entry) => (
+                  <button
+                    key={entry.id}
+                    className={`chip-button ${entry.status === "offer" ? "status-badge ok" : entry.status === "rejected" ? "status-badge bad" : "status-badge info"}`}
+                    type="button"
+                    title="Remove entry"
+                    onClick={() =>
+                      setApplicationEntries((current) => current.filter((candidate) => candidate.id !== entry.id))
+                    }
+                  >
+                    {entry.company} - {entry.role} ({entry.status}) x
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="supporting-text">No applications tracked yet.</p>
+            )}
+          </div>
         </div>
         <aside
           className={`resume-preview resume-template-${resume.template}`}
@@ -28283,6 +29409,7 @@ function ResumeBuilderTool() {
               },
               { label: "Skills", value: formatNumericValue(resume.skills.length) },
               { label: "Quality score", value: `${resumeQualityScore}%` },
+              { label: "ATS readiness", value: `${atsReport.score}%` },
               {
                 label: "ATS match",
                 value: jobKeywords.length ? `${coveragePercent.toFixed(1)}%` : "Add target role",
