@@ -2,7 +2,7 @@
 
 import NextImage from "next/image";
 import { Bell, Download, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -70,14 +70,15 @@ export function PwaInstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installCompleted, setInstallCompleted] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [isIosSafari, setIsIosSafari] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>("unsupported");
   const [status, setStatus] = useState("");
-  const isIosSafari = useMemo(() => isIosSafariBrowser(), []);
   const canPromptInstall = Boolean(deferredPrompt);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    setIsIosSafari(isIosSafariBrowser());
     setInstallCompleted(isStandaloneDisplayMode());
     if ("Notification" in window) {
       setNotificationPermission(Notification.permission);

@@ -18,19 +18,37 @@ const DEFAULT_AD_SLOT = "1438543745";
 
 export function AdSlot({ label = "Advertisement", slot = DEFAULT_AD_SLOT }: AdSlotProps) {
   const adRef = useRef<HTMLModElement | null>(null);
+  const requestedRef = useRef(false);
 
   useEffect(() => {
     const adElement = adRef.current;
     if (!adElement) return;
-    if (adElement.getAttribute("data-adsbygoogle-status")) return;
-
-    try {
-      (window.adsbygoogle = window.adsbygoogle || []).push({});
-    } catch (error) {
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("AdSense push failed for slot", slot, error);
-      }
+    if (requestedRef.current) return;
+    if (adElement.getAttribute("data-adsbygoogle-status")) {
+      requestedRef.current = true;
+      return;
     }
+
+    const requestAd = () => {
+      const currentElement = adRef.current;
+      if (!currentElement || !currentElement.isConnected) return;
+      if (currentElement.getAttribute("data-adsbygoogle-status")) {
+        requestedRef.current = true;
+        return;
+      }
+
+      try {
+        (window.adsbygoogle = window.adsbygoogle || []).push({});
+        requestedRef.current = true;
+      } catch (error) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("AdSense push failed for slot", slot, error);
+        }
+      }
+    };
+
+    const rafId = window.requestAnimationFrame(requestAd);
+    return () => window.cancelAnimationFrame(rafId);
   }, [slot]);
 
   return (

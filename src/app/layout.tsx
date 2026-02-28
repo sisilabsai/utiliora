@@ -1,7 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import Script from "next/script";
 import "./globals.css";
 import { AccessibilityFab } from "@/components/AccessibilityFab";
+import { AdSenseScript } from "@/components/AdSenseScript";
 import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -138,16 +140,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" data-theme="light">
+    <html lang="en" data-theme="light" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
-        <script
-          async
-          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8247984832507820"
-          crossOrigin="anonymous"
-        />
-        <script async src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} />
-        <script dangerouslySetInnerHTML={{ __html: googleAnalyticsBootScript }} />
+        <Script id="accessibility-boot" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
+        <AdSenseScript />
+        <Script id="ga-loader" src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} strategy="afterInteractive" />
+        <Script id="ga-boot" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: googleAnalyticsBootScript }} />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <a className="skip-link" href="#content">
