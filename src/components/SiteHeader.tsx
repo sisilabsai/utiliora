@@ -2,7 +2,7 @@
 
 import NextImage from "next/image";
 import { usePathname } from "next/navigation";
-import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
+import { Code2, Grid2x2, History, Home, Info, Mail, Sparkles, SquareKanban } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCategories } from "@/lib/categories";
 import { CategoryIcon } from "@/components/CategoryIcon";
@@ -189,6 +189,14 @@ export function SiteHeader() {
             <a href="/tools">
               <Grid2x2 size={14} />
               <span>All Tools</span>
+            </a>
+            <a href="/about">
+              <Info size={14} />
+              <span>About</span>
+            </a>
+            <a href="/contact">
+              <Mail size={14} />
+              <span>Contact</span>
             </a>
             {categories.map((category) => (
               <a key={category.slug} href={`/${category.slug}`}>

@@ -1,16 +1,24 @@
-import { NewsletterSignup } from "@/components/NewsletterSignup";
-
 export function SiteFooter() {
   const year = new Date().getFullYear();
 
   return (
     <footer className="site-footer">
       <div className="site-container footer-inner">
-        <NewsletterSignup />
-        <p>{`Copyright ${year} utiliora.cloud`}</p>
-        <div className="footer-links">
-          <a href="/tools">Browse all tools</a>
-          <a href="/admin">Admin</a>
+        <div className="footer-brand">
+          <strong>Utiliora</strong>
+          <p>Simple tools. Instant results.</p>
+          <small>{`Copyright ${year} utiliora.cloud`}</small>
+        </div>
+
+        <nav className="footer-links" aria-label="Footer links">
+          <a href="/tools">Tools</a>
+          <a href="/about">About</a>
+          <a href="/contact">Contact</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/terms">Terms</a>
+        </nav>
+
+        <div className="footer-socials" aria-label="Social links">
           <a href="mailto:hello@utiliora.cloud">hello@utiliora.cloud</a>
           <a href="https://x.com/utilioracloud" target="_blank" rel="noreferrer">
             X/Twitter
@@ -22,21 +30,6 @@ export function SiteFooter() {
             YouTube
           </a>
         </div>
-        <a
-          className="footer-badge"
-          href="https://www.producthunt.com/products/utiliora?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-utiliora"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Utiliora on Product Hunt"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            alt="Utiliora - Simple tools. Instant results. NO login. NO privacy worries. | Product Hunt"
-            width="250"
-            height="54"
-            src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1086978&theme=light&t=1772200395562"
-          />
-        </a>
       </div>
     </footer>
   );

@@ -102,6 +102,25 @@ export default function Home() {
         </div>
       </section>
 
+      <section className="content-block info-card">
+        <h2>Company and support</h2>
+        <p>Learn how Utiliora works, contact our team, and review platform policies.</p>
+        <div className="button-row">
+          <a className="action-button secondary" href="/about">
+            About
+          </a>
+          <a className="action-button secondary" href="/contact">
+            Contact
+          </a>
+          <a className="action-button secondary" href="/privacy">
+            Privacy
+          </a>
+          <a className="action-button secondary" href="/terms">
+            Terms
+          </a>
+        </div>
+      </section>
+
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify([websiteSchema, organizationSchema]) }}
