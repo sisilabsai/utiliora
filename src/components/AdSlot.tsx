@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 
 declare global {
   interface Window {
@@ -17,8 +18,10 @@ const ADSENSE_CLIENT = "ca-pub-8247984832507820";
 const DEFAULT_AD_SLOT = "1438543745";
 
 export function AdSlot({ label = "Advertisement", slot = DEFAULT_AD_SLOT }: AdSlotProps) {
+  const { t } = useLocale();
   const adRef = useRef<HTMLModElement | null>(null);
   const requestedRef = useRef(false);
+  const resolvedLabel = label === "Advertisement" ? t("ad.label", undefined, label) : label;
 
   useEffect(() => {
     const adElement = adRef.current;
@@ -52,8 +55,8 @@ export function AdSlot({ label = "Advertisement", slot = DEFAULT_AD_SLOT }: AdSl
   }, [slot]);
 
   return (
-    <aside className="ad-slot" aria-label={label}>
-      <p>{label}</p>
+    <aside className="ad-slot" aria-label={resolvedLabel}>
+      <p>{resolvedLabel}</p>
       <ins
         ref={adRef}
         className="adsbygoogle"

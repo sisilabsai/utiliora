@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import type { ToolDefinition } from "@/lib/types";
 
 interface ToolSearchProps {
@@ -8,6 +9,7 @@ interface ToolSearchProps {
 }
 
 export function ToolSearch({ tools }: ToolSearchProps) {
+  const { t } = useLocale();
   const [query, setQuery] = useState("");
 
   const results = useMemo(() => {
@@ -24,7 +26,7 @@ export function ToolSearch({ tools }: ToolSearchProps) {
   return (
     <section className="search-panel" aria-label="Tool search">
       <label className="field-label" htmlFor="tool-search-input">
-        Search tools
+        {t("tool_search.label", undefined, "Search tools")}
       </label>
       <input
         id="tool-search-input"
@@ -32,10 +34,12 @@ export function ToolSearch({ tools }: ToolSearchProps) {
         type="search"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="Try: EMI, JSON, QR code, BMI..."
+        placeholder={t("tool_search.placeholder", undefined, "Try: EMI, JSON, QR code, BMI...")}
       />
       <p className="supporting-text">
-        {query ? `${results.length} result${results.length === 1 ? "" : "s"} found.` : "Popular tools:"}
+        {query
+          ? t("tool_search.results_found", { count: results.length }, `${results.length} result(s) found.`)
+          : t("tool_search.popular_tools", undefined, "Popular tools:")}
       </p>
       <ul className="search-results" role="list">
         {results.map((tool) => (

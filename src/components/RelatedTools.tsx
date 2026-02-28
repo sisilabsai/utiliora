@@ -1,15 +1,19 @@
+"use client";
+
 import type { ToolDefinition } from "@/lib/types";
+import { useLocale } from "@/components/LocaleProvider";
 
 interface RelatedToolsProps {
   tools: ToolDefinition[];
 }
 
 export function RelatedTools({ tools }: RelatedToolsProps) {
+  const { t } = useLocale();
   if (!tools.length) return null;
 
   return (
     <section className="related-tools">
-      <h2>Related tools</h2>
+      <h2>{t("related_tools.title", undefined, "Related tools")}</h2>
       <ul>
         {tools.map((tool) => (
           <li key={`${tool.category}-${tool.slug}`}>

@@ -1,10 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { AdSlot } from "@/components/AdSlot";
-import { AffiliateCard } from "@/components/AffiliateCard";
-import { RelatedTools } from "@/components/RelatedTools";
-import { SocialSharePrompt } from "@/components/SocialSharePrompt";
-import { ToolRenderer } from "@/components/ToolRenderer";
+import { ToolPageContent } from "@/components/pages/ToolPageContent";
 import { getAffiliateOfferForTool } from "@/lib/affiliates";
 import { getCategory } from "@/lib/categories";
 import { getAllTools, getRelatedTools, getToolByCategoryAndSlug } from "@/lib/tools";
@@ -127,65 +123,17 @@ export default function ToolPage({ params }: ToolPageProps) {
   const jsonLd = buildJsonLd(tool.title, tool.description, categoryTitle, tool.category, tool.slug, tool.faq);
 
   return (
-    <div className="site-container page-stack">
-      <nav className="breadcrumbs" aria-label="Breadcrumb">
-        <a href="/">Home</a>
-        <span>/</span>
-        <a href={`/${tool.category}`}>{category?.title ?? tool.category}</a>
-        <span>/</span>
-        <span aria-current="page">{tool.title}</span>
-      </nav>
-
-      <section className="tool-hero">
-        <p className="eyebrow">{category?.shortTitle ?? "Tool"}</p>
-        <h1>{tool.title}</h1>
-        <p>{tool.summary}</p>
-      </section>
-
-      <ToolRenderer tool={tool} />
-      {affiliateOffer ? <AffiliateCard offer={affiliateOffer} /> : null}
-      <SocialSharePrompt toolTitle={tool.title} toolSlug={tool.slug} toolPath={`/${tool.category}/${tool.slug}`} />
-
-      <AdSlot />
-
-      <section className="content-block">
-        <h2>How this tool helps</h2>
-        <p>{tool.description}</p>
-        <p>
-          Utiliora tools are designed to work directly in modern browsers with clear input labels, mobile-friendly
-          controls, and accessible result panels. Use related utilities below to continue your workflow without
-          switching apps.
-        </p>
-        {tool.slug === "ai-humanizer" ? (
-          <>
-            <p>
-              This humanizer workspace is built for responsible editing: compare multiple rewrite variants, verify
-              meaning-retention signals, and correct sentence-level drift before publishing.
-            </p>
-            <p>
-              For SEO and professional writing, use keyword locks, readability deltas, and critical-token retention to
-              keep factual details stable while improving natural flow.
-            </p>
-          </>
-        ) : null}
-      </section>
-
-      <section className="faq" aria-label="Frequently asked questions">
-        <h2>FAQ</h2>
-        {tool.faq.map((item) => (
-          <details key={item.question}>
-            <summary>{item.question}</summary>
-            <p>{item.answer}</p>
-          </details>
-        ))}
-      </section>
-
-      <RelatedTools tools={relatedTools} />
-
+    <>
+      <ToolPageContent
+        tool={tool}
+        categoryTitle={categoryTitle}
+        relatedTools={relatedTools}
+        affiliateOffer={affiliateOffer}
+      />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-    </div>
+    </>
   );
 }

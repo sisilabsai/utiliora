@@ -1,21 +1,26 @@
+"use client";
+
+import { useLocale } from "@/components/LocaleProvider";
+
 export function SiteFooter() {
+  const { t } = useLocale();
   const year = new Date().getFullYear();
 
   return (
     <footer className="site-footer">
       <div className="site-container footer-inner">
         <div className="footer-brand">
-          <strong>Utiliora</strong>
-          <p>Simple tools. Instant results.</p>
-          <small>{`Copyright ${year} utiliora.cloud`}</small>
+          <strong>{t("brand.name", undefined, "Utiliora")}</strong>
+          <p>{t("brand.tagline", undefined, "Simple tools. Instant results.")}</p>
+          <small>{t("footer.copyright", { year }, `Copyright ${year} utiliora.cloud`)}</small>
         </div>
 
         <nav className="footer-links" aria-label="Footer links">
-          <a href="/tools">Tools</a>
-          <a href="/about">About</a>
-          <a href="/contact">Contact</a>
-          <a href="/privacy">Privacy</a>
-          <a href="/terms">Terms</a>
+          <a href="/tools">{t("footer.tools", undefined, "Tools")}</a>
+          <a href="/about">{t("footer.about", undefined, "About")}</a>
+          <a href="/contact">{t("footer.contact", undefined, "Contact")}</a>
+          <a href="/privacy">{t("footer.privacy", undefined, "Privacy")}</a>
+          <a href="/terms">{t("footer.terms", undefined, "Terms")}</a>
         </nav>
 
         <div className="footer-socials" aria-label="Social links">

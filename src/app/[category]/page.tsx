@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ToolCard } from "@/components/ToolCard";
-import { AdSlot } from "@/components/AdSlot";
-import { AffiliateCard } from "@/components/AffiliateCard";
+import { CategoryPageContent } from "@/components/pages/CategoryPageContent";
 import { getAffiliateOfferForCategory } from "@/lib/affiliates";
 import { getCategory, orderedCategorySlugs } from "@/lib/categories";
 import { getToolsByCategory } from "@/lib/tools";
@@ -97,27 +95,12 @@ export default function CategoryPage({ params }: CategoryPageProps) {
   };
 
   return (
-    <div className="site-container page-stack">
-      <section>
-        <p className="eyebrow">{category.shortTitle} collection</p>
-        <h1>{category.title}</h1>
-        <p>{category.description}</p>
-      </section>
-
-      {categoryAffiliateOffer ? <AffiliateCard offer={categoryAffiliateOffer} /> : null}
-
-      <AdSlot label="Sponsored placement" />
-
-      <section className="tool-grid">
-        {tools.map((tool) => (
-          <ToolCard key={`${tool.category}-${tool.slug}`} tool={tool} />
-        ))}
-      </section>
-
+    <>
+      <CategoryPageContent category={category} tools={tools} categoryAffiliateOffer={categoryAffiliateOffer} />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify([categorySchema, breadcrumbSchema]) }}
       />
-    </div>
+    </>
   );
 }

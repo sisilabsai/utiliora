@@ -4,6 +4,8 @@ import NextImage from "next/image";
 import { usePathname } from "next/navigation";
 import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LocaleSelector } from "@/components/LocaleSelector";
+import { useLocale } from "@/components/LocaleProvider";
 import { getCategories } from "@/lib/categories";
 import { CategoryIcon } from "@/components/CategoryIcon";
 
@@ -61,6 +63,7 @@ function buildRecentDockEntry(pathname: string, categories: ReturnType<typeof ge
 export function SiteHeader() {
   const categories = getCategories();
   const pathname = usePathname();
+  const { t } = useLocale();
   const [recentDockEntry, setRecentDockEntry] = useState<RecentDockEntry | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [mobileNavHidden, setMobileNavHidden] = useState(false);
@@ -163,7 +166,7 @@ export function SiteHeader() {
   );
 
   const recentHref = recentDockEntry?.href ?? "/tools";
-  const recentLabel = recentDockEntry?.label ?? "Recent";
+  const recentLabel = recentDockEntry?.label ?? t("nav.recent", undefined, "Recent");
   const recentActive = recentDockEntry ? isActive(recentDockEntry.href) : false;
   const quickPanelId = "mobile-quick-panel";
 
@@ -180,8 +183,8 @@ export function SiteHeader() {
               <NextImage src="/branding/utiliora-mark-96.png" alt="" width={32} height={32} priority />
             </span>
             <span className="brand-text">
-              <strong>Utiliora</strong>
-              <small>Simple tools. Instant results.</small>
+              <strong>{t("brand.name", undefined, "Utiliora")}</strong>
+              <small>{t("brand.tagline", undefined, "Simple tools. Instant results.")}</small>
             </span>
           </a>
 
@@ -189,17 +192,18 @@ export function SiteHeader() {
             <nav aria-label="Primary navigation" className="main-nav">
               <a href="/tools">
                 <Grid2x2 size={14} />
-                <span>All Tools</span>
+                <span>{t("nav.all_tools", undefined, "All Tools")}</span>
               </a>
               {categories.map((category) => (
                 <a key={category.slug} href={`/${category.slug}`}>
-                  <span>{category.title}</span>
+                  <span>{t(`category.${category.slug}.title`, undefined, category.title)}</span>
                 </a>
               ))}
             </nav>
             <nav className="main-nav-meta" aria-label="Company links">
-              <a href="/about">About</a>
-              <a href="/contact">Contact</a>
+              <a href="/about">{t("nav.about", undefined, "About")}</a>
+              <a href="/contact">{t("nav.contact", undefined, "Contact")}</a>
+              <LocaleSelector />
             </nav>
           </div>
         </div>
@@ -215,7 +219,7 @@ export function SiteHeader() {
           aria-current={isActive("/") ? "page" : undefined}
         >
           <Home size={17} />
-          <span>Home</span>
+          <span>{t("nav.home", undefined, "Home")}</span>
         </a>
 
         <a
@@ -224,7 +228,7 @@ export function SiteHeader() {
           aria-current={isActive("/tools") ? "page" : undefined}
         >
           <Grid2x2 size={17} />
-          <span>Tools</span>
+          <span>{t("nav.tools", undefined, "Tools")}</span>
         </a>
 
         <a
@@ -245,15 +249,16 @@ export function SiteHeader() {
             onClick={toggleQuickPanel}
           >
             <Sparkles size={18} />
-            <span>Quick</span>
+            <span>{t("nav.quick", undefined, "Quick")}</span>
           </button>
           {quickOpen ? (
             <div className="mobile-quick-panel-wrap" id={quickPanelId}>
               <div className="mobile-quick-panel">
                 <div className="mobile-quick-panel-head">
-                  <strong>Quick access</strong>
-                  <small>Jump directly into a tool category.</small>
+                  <strong>{t("nav.quick_access", undefined, "Quick access")}</strong>
+                  <small>{t("nav.quick_access_desc", undefined, "Jump directly into a tool category.")}</small>
                 </div>
+                <LocaleSelector compact />
                 <div className="mobile-quick-grid">
                   {categories.map((category) => (
                     <a
@@ -269,7 +274,7 @@ export function SiteHeader() {
                       }
                     >
                       <CategoryIcon category={category.slug} size={14} />
-                      <span>{category.title}</span>
+                      <span>{t(`category.${category.slug}.title`, undefined, category.title)}</span>
                     </a>
                   ))}
                 </div>
@@ -277,7 +282,7 @@ export function SiteHeader() {
                   className="mobile-quick-all-link"
                   href="/tools"
                 >
-                  Browse all tools
+                  {t("nav.browse_all_tools", undefined, "Browse all tools")}
                 </a>
               </div>
             </div>
@@ -290,7 +295,7 @@ export function SiteHeader() {
           aria-current={isActive("/developer-tools") ? "page" : undefined}
         >
           <Code2 size={17} />
-          <span>Dev</span>
+          <span>{t("nav.dev", undefined, "Dev")}</span>
         </a>
 
         <a
@@ -299,7 +304,7 @@ export function SiteHeader() {
           aria-current={isActive("/productivity-tools") ? "page" : undefined}
         >
           <SquareKanban size={17} />
-          <span>Focus</span>
+          <span>{t("nav.focus", undefined, "Focus")}</span>
         </a>
       </nav>
     </>

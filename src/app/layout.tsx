@@ -4,9 +4,11 @@ import Script from "next/script";
 import "./globals.css";
 import { AccessibilityFab } from "@/components/AccessibilityFab";
 import { AdSenseScript } from "@/components/AdSenseScript";
+import { LocaleProvider } from "@/components/LocaleProvider";
 import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
+import { DEFAULT_LOCALE, LOCALE_COOKIE_KEY, LOCALE_STORAGE_KEY, SUPPORTED_LOCALES } from "@/lib/i18n";
 
 const GA_MEASUREMENT_ID = "G-1KYZN51H12";
 
@@ -60,6 +62,48 @@ window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
 gtag('config', '${GA_MEASUREMENT_ID}');
+`;
+
+const localeBootScript = `
+(() => {
+  try {
+    const supported = ${JSON.stringify([...SUPPORTED_LOCALES])};
+    const storageKey = '${LOCALE_STORAGE_KEY}';
+    const cookieKey = '${LOCALE_COOKIE_KEY}';
+    const fallback = '${DEFAULT_LOCALE}';
+
+    const normalize = (value) => {
+      if (!value || typeof value !== 'string') return null;
+      const lowered = value.toLowerCase().replace(/_/g, '-');
+      if (supported.includes(lowered)) return lowered;
+      const base = lowered.split('-')[0];
+      return supported.includes(base) ? base : null;
+    };
+
+    let fromStorage = null;
+    try {
+      fromStorage = window.localStorage.getItem(storageKey);
+    } catch {}
+
+    const cookieMatch = document.cookie.match(new RegExp('(?:^|; )' + cookieKey + '=([^;]+)'));
+    const fromCookie = cookieMatch && cookieMatch[1] ? decodeURIComponent(cookieMatch[1]) : null;
+
+    const locale =
+      normalize(fromStorage) ||
+      normalize(fromCookie) ||
+      normalize(navigator.language) ||
+      (Array.isArray(navigator.languages) ? navigator.languages.map(normalize).find(Boolean) : null) ||
+      fallback;
+
+    document.documentElement.lang = locale;
+    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr';
+    window.__UTILIORA_LOCALE__ = locale;
+  } catch {
+    document.documentElement.lang = '${DEFAULT_LOCALE}';
+    document.documentElement.dir = 'ltr';
+    window.__UTILIORA_LOCALE__ = '${DEFAULT_LOCALE}';
+  }
+})();
 `;
 
 export const metadata: Metadata = {
@@ -142,22 +186,25 @@ export default function RootLayout({
   return (
     <html lang="en" data-theme="light" suppressHydrationWarning>
       <head>
+        <Script id="locale-boot" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: localeBootScript }} />
         <Script id="accessibility-boot" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
         <AdSenseScript />
         <Script id="ga-loader" src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} strategy="afterInteractive" />
         <Script id="ga-boot" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: googleAnalyticsBootScript }} />
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <a className="skip-link" href="#content">
-          Skip to content
-        </a>
-        <SiteHeader />
-        <main id="content" className="site-main">
-          {children}
-        </main>
-        <PwaInstallPrompt />
-        <AccessibilityFab />
-        <SiteFooter />
+        <LocaleProvider>
+          <a className="skip-link" href="#content">
+            Skip to content
+          </a>
+          <SiteHeader />
+          <main id="content" className="site-main">
+            {children}
+          </main>
+          <PwaInstallPrompt />
+          <AccessibilityFab />
+          <SiteFooter />
+        </LocaleProvider>
       </body>
     </html>
   );

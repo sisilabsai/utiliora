@@ -2,6 +2,7 @@
 
 import { Copy, ExternalLink, Share2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import { trackEvent } from "@/lib/analytics";
 import {
   DEFAULT_SOCIAL_SHARE_PROFILE,
@@ -65,6 +66,7 @@ function shouldShowPrompt(profile: SocialShareProfile, now: number): boolean {
 }
 
 export function SocialSharePrompt({ toolTitle, toolSlug, toolPath }: SocialSharePromptProps) {
+  const { t } = useLocale();
   const [visible, setVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -130,12 +132,12 @@ export function SocialSharePrompt({ toolTitle, toolSlug, toolPath }: SocialShare
     const payload = `${shareText} ${url}`;
     try {
       await navigator.clipboard.writeText(payload);
-      setCopyStatus("Share text copied.");
+      setCopyStatus(t("share_prompt.copy_success", undefined, "Share text copied."));
       markShared("copy_link");
     } catch {
-      setCopyStatus("Could not copy. Use the share links below.");
+      setCopyStatus(t("share_prompt.copy_failed", undefined, "Could not copy. Use the share links below."));
     }
-  }, [buildShareUrl, markShared, shareText]);
+  }, [buildShareUrl, markShared, shareText, t]);
 
   const tryNativeShare = useCallback(async () => {
     const url = buildShareUrl("native_share");
@@ -198,19 +200,25 @@ export function SocialSharePrompt({ toolTitle, toolSlug, toolPath }: SocialShare
 
   return (
     <aside className="share-toast" aria-live="polite">
-      <p className="share-toast-title">{acknowledged ? "Thanks for sharing Utiliora." : "Was this useful?"}</p>
+      <p className="share-toast-title">
+        {acknowledged
+          ? t("share_prompt.thanks_title", undefined, "Thanks for sharing Utiliora.")
+          : t("share_prompt.useful_title", undefined, "Was this useful?")}
+      </p>
       <p className="supporting-text">
-        {acknowledged ? "You helped more people discover these tools." : "If this helped, share it with your friends and team."}
+        {acknowledged
+          ? t("share_prompt.thanks_desc", undefined, "You helped more people discover these tools.")
+          : t("share_prompt.useful_desc", undefined, "If this helped, share it with your friends and team.")}
       </p>
 
       {acknowledged ? null : (
         <div className="button-row">
           <button className="action-button" type="button" onClick={() => void tryNativeShare()}>
             <Share2 size={15} />
-            Share
+            {t("share_prompt.share", undefined, "Share")}
           </button>
           <button className="action-button secondary" type="button" onClick={dismissPrompt}>
-            Not now
+            {t("share_prompt.not_now", undefined, "Not now")}
           </button>
         </div>
       )}
@@ -219,7 +227,7 @@ export function SocialSharePrompt({ toolTitle, toolSlug, toolPath }: SocialShare
         <div className="share-channel-grid">
           <button className="action-button secondary" type="button" onClick={() => void copyShareLink()}>
             <Copy size={15} />
-            Copy message
+            {t("share_prompt.copy_message", undefined, "Copy message")}
           </button>
           <a className="action-button secondary" href={xUrl} target="_blank" rel="noreferrer" onClick={() => markShared("x")}>
             <ExternalLink size={15} />

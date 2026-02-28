@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import { ToolCard } from "@/components/ToolCard";
-import { ToolSearch } from "@/components/ToolSearch";
+import { ToolsDirectoryContent } from "@/components/pages/ToolsDirectoryContent";
 import { getAllTools } from "@/lib/tools";
 
 export const metadata: Metadata = {
@@ -53,23 +52,12 @@ export default function AllToolsPage() {
   };
 
   return (
-    <div className="site-container page-stack">
-      <section>
-        <p className="eyebrow">Tool directory</p>
-        <h1>All Utiliora tools</h1>
-        <p>Use search to jump directly to the utility you need.</p>
-      </section>
-      <ToolSearch tools={tools} />
-      <section className="tool-grid">
-        {tools.map((tool) => (
-          <ToolCard key={`${tool.category}-${tool.slug}`} tool={tool} />
-        ))}
-      </section>
-
+    <>
+      <ToolsDirectoryContent tools={tools} />
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(directorySchema) }}
       />
-    </div>
+    </>
   );
 }
