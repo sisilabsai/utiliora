@@ -5,6 +5,7 @@ import { AffiliateCard } from "@/components/AffiliateCard";
 import { RelatedTools } from "@/components/RelatedTools";
 import { SocialSharePrompt } from "@/components/SocialSharePrompt";
 import { ToolRenderer } from "@/components/ToolRenderer";
+import { getAffiliateOfferForTool } from "@/lib/affiliates";
 import { getCategory } from "@/lib/categories";
 import { getAllTools, getRelatedTools, getToolByCategoryAndSlug } from "@/lib/tools";
 
@@ -121,6 +122,7 @@ export default function ToolPage({ params }: ToolPageProps) {
 
   const category = getCategory(tool.category);
   const relatedTools = getRelatedTools(tool);
+  const affiliateOffer = getAffiliateOfferForTool(tool);
   const categoryTitle = category?.title ?? "Utility Tool";
   const jsonLd = buildJsonLd(tool.title, tool.description, categoryTitle, tool.category, tool.slug, tool.faq);
 
@@ -141,11 +143,10 @@ export default function ToolPage({ params }: ToolPageProps) {
       </section>
 
       <ToolRenderer tool={tool} />
+      {affiliateOffer ? <AffiliateCard offer={affiliateOffer} /> : null}
       <SocialSharePrompt toolTitle={tool.title} toolSlug={tool.slug} toolPath={`/${tool.category}/${tool.slug}`} />
 
       <AdSlot />
-
-      {tool.affiliate ? <AffiliateCard offer={tool.affiliate} /> : null}
 
       <section className="content-block">
         <h2>How this tool helps</h2>

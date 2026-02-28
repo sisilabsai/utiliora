@@ -23,7 +23,9 @@ export interface ToolFaq {
 
 export interface AffiliateOffer {
   label: string;
+  headline?: string;
   description: string;
+  ctaLabel?: string;
   url: string;
 }
 

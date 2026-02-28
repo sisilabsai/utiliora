@@ -1608,6 +1608,25 @@ textarea {
   min-height: 90px;
 }
 
+.affiliate-card {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.affiliate-kicker {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.affiliate-card p:not(.affiliate-kicker) {
+  margin: 0;
+  color: var(--text-soft);
+}
+
 .affiliate-card a {
   color: #fff;
   background: var(--accent);
@@ -1616,6 +1635,13 @@ textarea {
   display: inline-flex;
   padding: 0.52rem 0.9rem;
   font-weight: 600;
+  width: fit-content;
+}
+
+.affiliate-card a:hover,
+.affiliate-card a:focus-visible {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .breadcrumbs {

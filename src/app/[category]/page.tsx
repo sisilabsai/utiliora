@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ToolCard } from "@/components/ToolCard";
 import { AdSlot } from "@/components/AdSlot";
+import { AffiliateCard } from "@/components/AffiliateCard";
+import { getAffiliateOfferForCategory } from "@/lib/affiliates";
 import { getCategory, orderedCategorySlugs } from "@/lib/categories";
 import { getToolsByCategory } from "@/lib/tools";
 
@@ -53,6 +55,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
   if (!category) notFound();
 
   const tools = getToolsByCategory(category.slug);
+  const categoryAffiliateOffer = getAffiliateOfferForCategory(category.slug);
   const categorySchema = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
@@ -100,6 +103,8 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         <h1>{category.title}</h1>
         <p>{category.description}</p>
       </section>
+
+      {categoryAffiliateOffer ? <AffiliateCard offer={categoryAffiliateOffer} /> : null}
 
       <AdSlot label="Sponsored placement" />
 
