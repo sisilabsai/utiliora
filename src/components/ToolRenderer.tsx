@@ -11738,6 +11738,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <MinifierTool mode="js" />;
     case "base64-encoder-decoder":
       return <Base64Tool />;
+    case "resume-checker":
+      return <ResumeCheckerTool />;
     case "ai-detector":
       return <AiDetectorTool />;
     case "ai-humanizer":
@@ -27797,6 +27799,413 @@ ${name}`;
     recruiterEmail,
     linkedinMessage,
   };
+}
+
+const RESUME_CHECKER_UPLOAD_ACCEPT =
+  ".pdf,.doc,.docx,.docm,.dotx,.dotm,.rtf,.txt,.md,.markdown,.html,.htm,.json,application/pdf,application/json";
+const RESUME_CHECKER_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
+
+function ResumeCheckerTool() {
+  const storageKey = "utiliora-resume-checker-v1";
+  const importRef = useRef<HTMLInputElement | null>(null);
+  const [resumeText, setResumeText] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [structuredResume, setStructuredResume] = useState<ResumeData | null>(null);
+  const [tailoredResume, setTailoredResume] = useState<ResumeData | null>(null);
+  const [applicationPack, setApplicationPack] = useState<ResumeApplicationPack | null>(null);
+  const [status, setStatus] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+
+  const fallbackResume = useMemo(() => createDefaultResumeData(), []);
+  const activeResume = useMemo(() => {
+    if (tailoredResume) return tailoredResume;
+    if (structuredResume) return structuredResume;
+    const normalized = normalizeUploadedText(resumeText).trim();
+    if (!normalized) return fallbackResume;
+    return buildResumeFromImportedText(normalized, fallbackResume);
+  }, [fallbackResume, resumeText, structuredResume, tailoredResume]);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const sharedResume = params.get("resumeData");
+      const sharedJobDescription = params.get("jd");
+      if (sharedResume) {
+        const decoded = decodeBase64Url(sharedResume);
+        if (decoded) {
+          const sanitized = sanitizeResumeData(JSON.parse(decoded));
+          if (sanitized) {
+            setStructuredResume(sanitized);
+            setResumeText(buildResumePlainText(sanitized));
+            if (sharedJobDescription) setJobDescription(decodeURIComponent(sharedJobDescription));
+            setStatus("Loaded shared resume checker state.");
+            return;
+          }
+        }
+      }
+
+      const stored = localStorage.getItem(storageKey);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as Partial<{
+        resumeText: string;
+        jobDescription: string;
+      }>;
+      if (typeof parsed.resumeText === "string") setResumeText(parsed.resumeText);
+      if (typeof parsed.jobDescription === "string") setJobDescription(parsed.jobDescription);
+    } catch {
+      // Ignore malformed checker state.
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          resumeText,
+          jobDescription,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [jobDescription, resumeText, storageKey]);
+
+  const resumeKeywords = useMemo(() => extractImportantKeywords(buildResumePlainText(activeResume)), [activeResume]);
+  const jobKeywords = useMemo(() => extractImportantKeywords(jobDescription).slice(0, 35), [jobDescription]);
+  const matchedKeywords = useMemo(() => {
+    const resumeSet = new Set(resumeKeywords);
+    return jobKeywords.filter((item) => resumeSet.has(item));
+  }, [jobKeywords, resumeKeywords]);
+  const coveragePercent = jobKeywords.length ? (matchedKeywords.length / jobKeywords.length) * 100 : 0;
+  const missingKeywords = useMemo(() => {
+    const matched = new Set(matchedKeywords);
+    return jobKeywords.filter((keyword) => !matched.has(keyword));
+  }, [jobKeywords, matchedKeywords]);
+  const atsReport = useMemo(
+    () =>
+      buildResumeAtsReport(activeResume, {
+        coveragePercent,
+        hasJobDescription: Boolean(jobDescription.trim()),
+        jobKeywordCount: jobKeywords.length,
+      }),
+    [activeResume, coveragePercent, jobDescription, jobKeywords.length],
+  );
+
+  const handleFileImport = async (file: File | null) => {
+    if (!file) return;
+    if (file.size > RESUME_CHECKER_UPLOAD_MAX_BYTES) {
+      setStatus(`File is too large. Limit is ${formatBytes(RESUME_CHECKER_UPLOAD_MAX_BYTES)}.`);
+      return;
+    }
+    setIsImporting(true);
+    setStatus(`Importing ${file.name}...`);
+    try {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith(".json")) {
+        const raw = await file.text();
+        const sanitized = sanitizeResumeData(JSON.parse(raw));
+        if (!sanitized) throw new Error("invalid-json");
+        setStructuredResume(sanitized);
+        setTailoredResume(null);
+        setApplicationPack(null);
+        setResumeText(buildResumePlainText(sanitized));
+        setStatus("Imported structured resume JSON.");
+        trackEvent("resume_checker_import_json", { source: "file" });
+        return;
+      }
+
+      let importedText = "";
+      let source = "Text";
+      const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
+      if (isPdf) {
+        const parsedPdf = await extractTextFromPdfDocument(file, {
+          pageRangeInput: "all",
+          maxPages: 6,
+          includePageMarkers: false,
+        });
+        importedText = parsedPdf.text;
+        source = "PDF";
+      } else {
+        const parsedDocument = await extractTextFromDocumentFile(file, {
+          convertHtmlToText: true,
+        });
+        importedText = parsedDocument.text;
+        source = parsedDocument.source;
+      }
+
+      const normalized = normalizeUploadedText(importedText).trim();
+      if (!normalized) {
+        setStatus("No readable text was extracted from this file.");
+        return;
+      }
+      setResumeText(normalized);
+      setStructuredResume(null);
+      setTailoredResume(null);
+      setApplicationPack(null);
+      setStatus(`Imported ${source} content. ATS analysis updated.`);
+      trackEvent("resume_checker_import_document", { source, chars: normalized.length });
+    } catch {
+      setStatus("Could not import this file. Try PDF, DOCX, TXT, HTML, RTF, or JSON.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const applyTargeting = () => {
+    if (!jobDescription.trim()) {
+      setStatus("Paste a target job description first.");
+      return;
+    }
+    const tailored = tailorResumeForJobDescription(activeResume, jobDescription);
+    setTailoredResume(tailored.resume);
+    setApplicationPack(null);
+    setStatus(
+      `Applied targeting: added ${tailored.addedSkills.length} skills and rewrote ${tailored.rewrittenHighlights} bullets.`,
+    );
+    trackEvent("resume_checker_targeting_apply", {
+      addedSkills: tailored.addedSkills.length,
+      rewrittenHighlights: tailored.rewrittenHighlights,
+      missingKeywords: tailored.missingKeywords.length,
+    });
+  };
+
+  const generatePack = () => {
+    if (!jobDescription.trim()) {
+      setStatus("Paste a job description before generating the application pack.");
+      return;
+    }
+    const pack = buildResumeApplicationPack(activeResume, jobDescription);
+    setApplicationPack(pack);
+    setStatus("Generated role-specific application pack.");
+    trackEvent("resume_checker_application_pack", {
+      hasSummary: Boolean(activeResume.personal.summary.trim()),
+      hasExperience: activeResume.experience.some((entry) => entry.highlights.trim()),
+    });
+  };
+
+  const handoffToResumeBuilder = () => {
+    try {
+      const payload = tailoredResume ?? structuredResume ?? activeResume;
+      const url = new URL("/productivity-tools/resume-builder", window.location.origin);
+      url.searchParams.set("resumeData", encodeBase64Url(JSON.stringify(payload)));
+      window.location.href = url.toString();
+    } catch {
+      setStatus("Could not open Resume Builder handoff.");
+    }
+  };
+
+  const copyShareLink = async () => {
+    try {
+      const payload = tailoredResume ?? structuredResume ?? activeResume;
+      const url = new URL(window.location.href);
+      url.searchParams.set("resumeData", encodeBase64Url(JSON.stringify(payload)));
+      if (jobDescription.trim()) {
+        url.searchParams.set("jd", encodeURIComponent(jobDescription.trim()));
+      } else {
+        url.searchParams.delete("jd");
+      }
+      const copied = await copyTextToClipboard(url.toString());
+      setStatus(copied ? "Copied shareable checker link." : "Could not copy checker link.");
+      if (copied) trackEvent("resume_checker_share_link", { hasJobDescription: Boolean(jobDescription.trim()) });
+    } catch {
+      setStatus("Could not generate checker link.");
+    }
+  };
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Resume checker"
+        subtitle="Run ATS checks, benchmark keyword fit for a target role, and generate job-ready application copy."
+      />
+      <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
+          <Plus size={15} />
+          Import resume file
+        </button>
+        <button className="action-button secondary" type="button" onClick={copyShareLink}>
+          <Share2 size={15} />
+          Copy checker link
+        </button>
+        <button className="action-button secondary" type="button" onClick={handoffToResumeBuilder}>
+          <MonitorUp size={15} />
+          Open in resume builder
+        </button>
+      </div>
+      <input
+        ref={importRef}
+        type="file"
+        accept={RESUME_CHECKER_UPLOAD_ACCEPT}
+        hidden
+        onChange={async (event) => {
+          const file = event.target.files?.[0] ?? null;
+          await handleFileImport(file);
+          event.target.value = "";
+        }}
+      />
+      {isImporting ? <p className="supporting-text">Import in progress. Large files may take a few seconds.</p> : null}
+      <div className="split-panel">
+        <div className="mini-panel">
+          <label className="field">
+            <span>Resume content</span>
+            <textarea
+              rows={12}
+              value={resumeText}
+              onChange={(event) => {
+                setResumeText(event.target.value);
+                setStructuredResume(null);
+                setTailoredResume(null);
+                setApplicationPack(null);
+              }}
+              placeholder="Paste your resume text here, or import PDF/DOCX."
+            />
+          </label>
+          <label className="field">
+            <span>Target job description (optional but recommended)</span>
+            <textarea
+              rows={8}
+              value={jobDescription}
+              onChange={(event) => setJobDescription(event.target.value)}
+              placeholder="Paste the job description to benchmark keyword alignment and generate tailored content."
+            />
+          </label>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setStatus("Resume checks refreshed.");
+                trackEvent("resume_checker_analyze", {
+                  hasResumeText: Boolean(resumeText.trim()),
+                  hasJobDescription: Boolean(jobDescription.trim()),
+                });
+              }}
+            >
+              <RefreshCw size={15} />
+              Analyze now
+            </button>
+            <button className="action-button secondary" type="button" onClick={applyTargeting}>
+              <Sparkles size={15} />
+              Apply job targeting
+            </button>
+            <button className="action-button secondary" type="button" onClick={generatePack}>
+              <FileText size={15} />
+              Generate pack
+            </button>
+          </div>
+        </div>
+        <aside className="resume-preview">
+          <h3>Resume checker report</h3>
+          <ResultList
+            rows={[
+              { label: "ATS readiness", value: `${atsReport.score}%` },
+              { label: "Checks passed", value: `${atsReport.checks.filter((check) => check.ok).length}/${atsReport.checks.length}` },
+              { label: "Critical issues", value: formatNumericValue(atsReport.failedChecks.filter((check) => check.severity === "high").length) },
+              { label: "Target keywords", value: formatNumericValue(jobKeywords.length) },
+              { label: "Keyword coverage", value: jobKeywords.length ? `${coveragePercent.toFixed(1)}%` : "Add job description" },
+            ]}
+          />
+          <section className="resume-section">
+            <h5>Failing checks</h5>
+            {atsReport.failedChecks.length ? (
+              <div className="chip-list">
+                {atsReport.failedChecks.map((check) => (
+                  <span
+                    key={check.id}
+                    className={`status-badge ${check.severity === "high" ? "bad" : check.severity === "medium" ? "warn" : "info"}`}
+                    title={check.details}
+                  >
+                    {check.label}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="supporting-text">No failing checks. This resume is in strong ATS shape.</p>
+            )}
+          </section>
+          <section className="resume-section">
+            <h5>Missing keywords</h5>
+            {missingKeywords.length ? (
+              <div className="chip-list">
+                {missingKeywords.slice(0, 20).map((keyword) => (
+                  <span key={keyword} className="status-badge warn">
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="supporting-text">No major missing keywords detected.</p>
+            )}
+          </section>
+          <section className="resume-section">
+            <h5>Parsed snapshot</h5>
+            <ResultList
+              rows={[
+                { label: "Name", value: activeResume.personal.fullName || "Not detected" },
+                { label: "Headline", value: activeResume.personal.headline || "Not detected" },
+                { label: "Skills", value: formatNumericValue(activeResume.skills.length) },
+                { label: "Experience entries", value: formatNumericValue(activeResume.experience.filter((entry) => entry.role || entry.company || entry.highlights).length) },
+                { label: "Education entries", value: formatNumericValue(activeResume.education.filter((entry) => entry.school || entry.degree || entry.field || entry.details).length) },
+              ]}
+            />
+          </section>
+        </aside>
+      </div>
+      {applicationPack ? (
+        <div className="mini-panel">
+          <h3>Application pack</h3>
+          <p className="supporting-text">
+            Target role: <strong>{applicationPack.role}</strong> at <strong>{applicationPack.company}</strong>
+          </p>
+          <label className="field">
+            <span>Cover letter</span>
+            <textarea rows={10} value={applicationPack.coverLetter} readOnly />
+          </label>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={async () => {
+                const copied = await copyTextToClipboard(applicationPack.coverLetter);
+                setStatus(copied ? "Copied cover letter." : "Could not copy cover letter.");
+              }}
+            >
+              <Copy size={15} />
+              Copy cover letter
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => downloadTextFile("resume-checker-cover-letter.txt", applicationPack.coverLetter)}
+            >
+              <Download size={15} />
+              Download cover letter
+            </button>
+          </div>
+          <label className="field">
+            <span>Recruiter email</span>
+            <textarea rows={6} value={applicationPack.recruiterEmail} readOnly />
+          </label>
+          <label className="field">
+            <span>LinkedIn message</span>
+            <textarea rows={4} value={applicationPack.linkedinMessage} readOnly />
+          </label>
+        </div>
+      ) : null}
+      <div className="mini-panel">
+        <h3>How scoring works</h3>
+        <p className="supporting-text">
+          This checker evaluates contact completeness, role clarity, bullet depth, measurable impact, structure and date consistency, and optional job-keyword coverage.
+        </p>
+        <p className="supporting-text">
+          For best results, keep bullets outcome-based, include role-specific terms naturally, and use ATS-safe formatting before exporting.
+        </p>
+      </div>
+      {status ? <p className="supporting-text">{status}</p> : null}
+    </section>
+  );
 }
 
 function ResumeBuilderTool() {

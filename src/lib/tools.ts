@@ -612,6 +612,40 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Base64 Encoder/Decoder"),
   },
   {
+    slug: "resume-checker",
+    category: "seo-tools",
+    title: "Resume Checker",
+    summary: "Score resume ATS readiness, identify weak sections, and get job-targeted improvements.",
+    description:
+      "Upload or paste your resume to run ATS-focused checks, benchmark keyword alignment against a target job description, and generate stronger role-specific application copy.",
+    keywords: [
+      "resume checker",
+      "ats resume checker",
+      "resume score",
+      "resume keyword match",
+      "resume analyzer",
+      "cv checker",
+    ],
+    engine: { kind: "text-tool", id: "resume-checker" },
+    faq: [
+      {
+        question: "How does the resume checker score ATS readiness?",
+        answer:
+          "The score combines critical checks like contact completeness, experience bullet quality, keyword alignment, and structure consistency.",
+      },
+      {
+        question: "Can I compare my resume against a specific job description?",
+        answer:
+          "Yes. Paste a target job description to see matched keywords, missing terms, and improvement opportunities.",
+      },
+      {
+        question: "Can I move the checked resume into the builder for editing?",
+        answer:
+          "Yes. Use the handoff action to open your analyzed or tailored resume directly in the Resume Builder.",
+      },
+    ],
+  },
+  {
     slug: "ai-detector",
     category: "seo-tools",
     title: "AI Detector",

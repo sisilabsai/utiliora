@@ -92,6 +92,7 @@ export type TextToolId =
   | "css-minifier"
   | "js-minifier"
   | "base64-encoder-decoder"
+  | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"
   | "paraphrasing-tool"
