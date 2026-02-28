@@ -1,12 +1,16 @@
+import { NewsletterSignup } from "@/components/NewsletterSignup";
+
 export function SiteFooter() {
   const year = new Date().getFullYear();
 
   return (
     <footer className="site-footer">
       <div className="site-container footer-inner">
+        <NewsletterSignup />
         <p>{`Copyright ${year} utiliora.cloud`}</p>
         <div className="footer-links">
           <a href="/tools">Browse all tools</a>
+          <a href="/admin">Admin</a>
           <a href="mailto:hello@utiliora.cloud">hello@utiliora.cloud</a>
           <a href="https://x.com/utilioracloud" target="_blank" rel="noreferrer">
             X/Twitter

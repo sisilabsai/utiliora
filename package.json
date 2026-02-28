@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "admin:seed": "node scripts/seed-admin.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
     "jsbarcode": "^3.12.3",
     "jspdf": "^4.2.0",
     "jszip": "^3.10.1",

@@ -464,6 +464,44 @@ textarea {
   flex-wrap: wrap;
 }
 
+.newsletter-card {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: var(--shadow-sm);
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.newsletter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.newsletter-card h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.newsletter-form {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.newsletter-form .field {
+  margin: 0;
+}
+
+.newsletter-form .action-button {
+  min-height: 2.5rem;
+}
+
 .footer-inner p {
   color: var(--text-soft);
   margin: 0;
@@ -485,6 +523,32 @@ textarea {
 .footer-links a:hover,
 .footer-links a:focus-visible {
   color: var(--text);
+}
+
+.admin-auth-shell {
+  min-height: min(72vh, 560px);
+  display: grid;
+  place-items: center;
+}
+
+.admin-auth-card {
+  width: min(100%, 480px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-auth-card h1 {
+  margin: 0;
+}
+
+.admin-auth-form {
+  display: grid;
+  gap: 0.75rem;
 }
 
 .footer-badge {
@@ -2188,6 +2252,15 @@ textarea {
 
   .timer-value {
     font-size: 1.7rem;
+  }
+
+  .newsletter-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .newsletter-form .action-button {
+    width: 100%;
+    justify-content: center;
   }
 
   .related-tool-link strong {

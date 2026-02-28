@@ -48,6 +48,23 @@ npm run build
 The repository is set up for Vercel.  
 Push to the connected branch and Vercel will build/deploy automatically.
 
+## Newsletter + Admin Setup
+
+1. Copy `.env.example` to `.env.local`.
+2. Add your `SUPABASE_SERVICE_ROLE_KEY` and `ADMIN_SESSION_SECRET`.
+3. Run SQL in `supabase/setup.sql` inside Supabase SQL editor.
+4. Seed admin once:
+
+```bash
+npm run admin:seed
+```
+
+5. Open `/admin` and sign in.
+
+Default seed credentials:
+- Username: `admin@utiliora.cloud`
+- Password: `Admin@Cloud2026`
+
 ## Project Strategy
 
 The go-to execution strategy and roadmap lives in:
