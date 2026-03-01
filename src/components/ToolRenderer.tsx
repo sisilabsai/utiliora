@@ -79,6 +79,7 @@ import {
   TRANSLATION_AUTO_LANGUAGE_CODE,
   TRANSLATION_LANGUAGE_OPTIONS,
 } from "@/lib/translation";
+import { useLocale } from "@/components/LocaleProvider";
 import type {
   CalculatorId,
   DeveloperToolId,
@@ -2027,6 +2028,7 @@ function ToolSessionControls({
   onCreateSession,
   onRenameSession,
 }: ToolSessionControlsProps) {
+  const { t } = useLocale();
   const [labelDraft, setLabelDraft] = useState(sessionLabel);
 
   useEffect(() => {
@@ -2036,15 +2038,15 @@ function ToolSessionControls({
   return (
     <div className="mini-panel session-panel">
       <div className="panel-head">
-        <h3>Workspace session</h3>
+        <h3>{t("tool.session.title", undefined, "Workspace session")}</h3>
         <button className="action-button secondary" type="button" onClick={onCreateSession}>
           <Plus size={15} />
-          New session
+          {t("tool.session.new", undefined, "New session")}
         </button>
       </div>
       <div className="field-grid">
         <label className="field">
-          <span>Session</span>
+          <span>{t("tool.session.select_label", undefined, "Session")}</span>
           <select value={sessionId} onChange={(event) => onSelectSession(event.target.value)}>
             {sessions.map((entry) => (
               <option key={entry.id} value={entry.id}>
@@ -2054,7 +2056,7 @@ function ToolSessionControls({
           </select>
         </label>
         <label className="field">
-          <span>Session name</span>
+          <span>{t("tool.session.name_label", undefined, "Session name")}</span>
           <input
             type="text"
             value={labelDraft}
@@ -23491,6 +23493,7 @@ function sanitizeTranslatorHistoryEntry(candidate: unknown): TranslatorHistoryEn
 }
 
 function TextTranslatorTool() {
+  const { locale, t } = useLocale();
   const toolSession = useToolSession({
     toolKey: "text-translator",
     defaultSessionLabel: "Translator workspace",
@@ -23688,7 +23691,7 @@ function TextTranslatorTool() {
         setDetectedSourceLanguage("");
         setProvider("");
         if (trigger === "manual") {
-          setStatus("Enter text to translate.");
+          setStatus(t("text_translator.status.enter_text", undefined, "Enter text to translate."));
         }
         return;
       }
@@ -23697,7 +23700,13 @@ function TextTranslatorTool() {
         setTranslatedText(text);
         setDetectedSourceLanguage(sourceLanguage);
         setProvider("identity");
-        setStatus("Source and target are the same; text was kept unchanged.");
+        setStatus(
+          t(
+            "text_translator.status.same_language",
+            undefined,
+            "Source and target are the same; text was kept unchanged.",
+          ),
+        );
         pushHistoryEntry({
           sourceLanguage,
           targetLanguage,
@@ -23713,7 +23722,11 @@ function TextTranslatorTool() {
       const controller = new AbortController();
       abortRef.current = controller;
       setIsTranslating(true);
-      setStatus(trigger === "auto" ? "Translating..." : "Translating text...");
+      setStatus(
+        trigger === "auto"
+          ? t("text_translator.status.translating", undefined, "Translating...")
+          : t("text_translator.status.translating_text", undefined, "Translating text..."),
+      );
 
       try {
         const response = await fetch("/api/text-translate", {
@@ -23731,7 +23744,7 @@ function TextTranslatorTool() {
         if (!response.ok || !payload || payload.ok !== true) {
           const message = payload && payload.ok === false && typeof payload.error === "string"
             ? payload.error
-            : "Translation failed. Please try again.";
+            : t("text_translator.status.failed_retry", undefined, "Translation failed. Please try again.");
           throw new Error(message);
         }
 
@@ -23746,7 +23759,13 @@ function TextTranslatorTool() {
         setTranslatedText(payload.translatedText);
         setDetectedSourceLanguage(normalizedDetected);
         setProvider(normalizedProvider);
-        setStatus(`Translated via ${normalizedProvider}.`);
+        setStatus(
+          t(
+            "text_translator.status.translated_via",
+            { provider: normalizedProvider },
+            `Translated via ${normalizedProvider}.`,
+          ),
+        );
         setCopyStatus("");
         trackEvent("text_translator_translate", {
           provider: normalizedProvider,
@@ -23781,7 +23800,7 @@ function TextTranslatorTool() {
         setIsTranslating(false);
       }
     },
-    [inputText, pushHistoryEntry, sourceLanguage, targetLanguage],
+    [inputText, pushHistoryEntry, sourceLanguage, t, targetLanguage],
   );
 
   useEffect(() => {
@@ -23805,31 +23824,39 @@ function TextTranslatorTool() {
     <section className="tool-surface">
       <ToolHeading
         icon={Languages}
-        title="Text translator"
-        subtitle="Translate text with auto-detect, multi-provider fallback, session workspaces, and persistent local history."
+        title={t("text_translator.heading.title", undefined, "Text translator")}
+        subtitle={t(
+          "text_translator.heading.subtitle",
+          undefined,
+          "Translate text with auto-detect, multi-provider fallback, session workspaces, and persistent local history.",
+        )}
       />
       <ToolSessionControls
         sessionId={toolSession.sessionId}
         sessionLabel={toolSession.sessionLabel}
         sessions={toolSession.sessions}
-        description="Each translator session is saved locally and linked to this /productivity-tools URL."
+        description={t(
+          "text_translator.session.description",
+          undefined,
+          "Each translator session is saved locally and linked to this /productivity-tools URL.",
+        )}
         onSelectSession={(nextSessionId) => {
           abortRef.current?.abort();
           abortRef.current = null;
           toolSession.selectSession(nextSessionId);
-          setStatus("Switched translator session.");
+          setStatus(t("text_translator.status.switched_session", undefined, "Switched translator session."));
         }}
         onCreateSession={() => {
           abortRef.current?.abort();
           abortRef.current = null;
           toolSession.createSession();
-          setStatus("Created a new translator session.");
+          setStatus(t("text_translator.status.created_session", undefined, "Created a new translator session."));
         }}
         onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
       />
       <div className="field-grid">
         <label className="field">
-          <span>Source language</span>
+          <span>{t("text_translator.field.source_language", undefined, "Source language")}</span>
           <select
             value={sourceLanguage}
             onChange={(event) =>
@@ -23841,7 +23868,9 @@ function TextTranslatorTool() {
               )
             }
           >
-            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>Auto detect</option>
+            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>
+              {t("text_translator.option.auto_detect", undefined, "Auto detect")}
+            </option>
             {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
               <option key={`source-${entry.code}`} value={entry.code}>
                 {entry.label}
@@ -23850,7 +23879,7 @@ function TextTranslatorTool() {
           </select>
         </label>
         <label className="field">
-          <span>Target language</span>
+          <span>{t("text_translator.field.target_language", undefined, "Target language")}</span>
           <select
             value={targetLanguage}
             onChange={(event) =>
@@ -23870,29 +23899,39 @@ function TextTranslatorTool() {
           </select>
         </label>
         <label className="field">
-          <span>Auto translate</span>
+          <span>{t("text_translator.field.auto_translate", undefined, "Auto translate")}</span>
           <select value={autoTranslate ? "on" : "off"} onChange={(event) => setAutoTranslate(event.target.value === "on")}>
-            <option value="on">On</option>
-            <option value="off">Off</option>
+            <option value="on">{t("text_translator.option.on", undefined, "On")}</option>
+            <option value="off">{t("text_translator.option.off", undefined, "Off")}</option>
           </select>
         </label>
         <label className="field">
-          <span>Detected source</span>
-          <input type="text" readOnly value={effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Waiting for translation"} />
+          <span>{t("text_translator.field.detected_source", undefined, "Detected source")}</span>
+          <input
+            type="text"
+            readOnly
+            value={
+              effectiveDetectedSource
+                ? getTranslationLanguageLabel(effectiveDetectedSource)
+                : t("text_translator.detected.waiting", undefined, "Waiting for translation")
+            }
+          />
         </label>
       </div>
       <label className="field">
-        <span>Source text</span>
+        <span>{t("text_translator.field.source_text", undefined, "Source text")}</span>
         <textarea
           rows={8}
           value={inputText}
-          placeholder="Enter text to translate..."
+          placeholder={t("text_translator.placeholder.source_text", undefined, "Enter text to translate...")}
           onChange={(event) => setInputText(event.target.value.slice(0, TRANSLATOR_MAX_INPUT_LENGTH))}
         />
       </label>
       <div className="button-row">
         <button className="action-button" type="button" onClick={() => void translateText("manual")} disabled={isTranslating}>
-          {isTranslating ? "Translating..." : "Translate"}
+          {isTranslating
+            ? t("text_translator.button.translating", undefined, "Translating...")
+            : t("text_translator.button.translate", undefined, "Translate")}
         </button>
         <button
           className="action-button secondary"
@@ -23902,7 +23941,13 @@ function TextTranslatorTool() {
               ? resolveTranslationLanguage(effectiveDetectedSource, "en", { allowAuto: false, supportedOnly: true })
               : sourceLanguage;
             if (nextTarget === targetLanguage) {
-              setStatus("Source and target are currently the same. Choose a different language before swapping.");
+              setStatus(
+                t(
+                  "text_translator.status.same_before_swap",
+                  undefined,
+                  "Source and target are currently the same. Choose a different language before swapping.",
+                ),
+              );
               return;
             }
             setSourceLanguage(targetLanguage);
@@ -23911,10 +23956,10 @@ function TextTranslatorTool() {
               setInputText(translatedText);
               setTranslatedText(inputText);
             }
-            setStatus("Swapped source and target languages.");
+            setStatus(t("text_translator.status.swapped", undefined, "Swapped source and target languages."));
           }}
         >
-          Swap languages
+          {t("text_translator.button.swap_languages", undefined, "Swap languages")}
         </button>
         <button
           className="action-button secondary"
@@ -23924,23 +23969,27 @@ function TextTranslatorTool() {
             setTranslatedText("");
             setDetectedSourceLanguage("");
             setProvider("");
-            setStatus("Cleared translator content.");
+            setStatus(t("text_translator.status.cleared_content", undefined, "Cleared translator content."));
             setCopyStatus("");
           }}
         >
-          Clear text
+          {t("text_translator.button.clear_text", undefined, "Clear text")}
         </button>
         <button
           className="action-button secondary"
           type="button"
           onClick={async () => {
             const copied = await copyTextToClipboard(translatedText);
-            setCopyStatus(copied ? "Copied translated text." : "Could not copy translated text.");
+            setCopyStatus(
+              copied
+                ? t("text_translator.copy.copied_translated", undefined, "Copied translated text.")
+                : t("text_translator.copy.could_not_copy_translated", undefined, "Could not copy translated text."),
+            );
           }}
           disabled={!translatedText.trim()}
         >
           <Copy size={15} />
-          Copy output
+          {t("text_translator.button.copy_output", undefined, "Copy output")}
         </button>
         <button
           className="action-button secondary"
@@ -23979,49 +24028,62 @@ function TextTranslatorTool() {
           disabled={history.length === 0}
         >
           <Download size={15} />
-          History JSON
+          {t("text_translator.button.history_json", undefined, "History JSON")}
         </button>
       </div>
       <label className="field">
-        <span>Translated text</span>
-        <textarea rows={8} value={translatedText} readOnly placeholder="Translation appears here..." />
+        <span>{t("text_translator.field.translated_text", undefined, "Translated text")}</span>
+        <textarea
+          rows={8}
+          value={translatedText}
+          readOnly
+          placeholder={t("text_translator.placeholder.translated_text", undefined, "Translation appears here...")}
+        />
       </label>
       {status ? <p className="supporting-text">{status}</p> : null}
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
       <ResultList
         rows={[
-          { label: "Session", value: toolSession.sessionLabel },
-          { label: "Source language", value: getTranslationLanguageLabel(sourceLanguage) },
-          { label: "Target language", value: getTranslationLanguageLabel(targetLanguage) },
+          { label: t("tool.session.select_label", undefined, "Session"), value: toolSession.sessionLabel },
+          { label: t("text_translator.result.source_language", undefined, "Source language"), value: getTranslationLanguageLabel(sourceLanguage) },
+          { label: t("text_translator.result.target_language", undefined, "Target language"), value: getTranslationLanguageLabel(targetLanguage) },
           {
-            label: "Detected source",
-            value: effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Unknown",
+            label: t("text_translator.result.detected_source", undefined, "Detected source"),
+            value: effectiveDetectedSource
+              ? getTranslationLanguageLabel(effectiveDetectedSource)
+              : t("text_translator.value.unknown", undefined, "Unknown"),
           },
-          { label: "Source characters", value: formatNumericValue(sourceCharacterCount) },
-          { label: "Source words", value: formatNumericValue(sourceWordCount) },
-          { label: "Output characters", value: formatNumericValue(translatedCharacterCount) },
-          { label: "Output words", value: formatNumericValue(translatedWordCount) },
-          { label: "Provider", value: provider || "Not run yet" },
-          { label: "Saved history", value: formatNumericValue(history.length) },
+          { label: t("text_translator.result.source_characters", undefined, "Source characters"), value: formatNumericValue(sourceCharacterCount) },
+          { label: t("text_translator.result.source_words", undefined, "Source words"), value: formatNumericValue(sourceWordCount) },
+          { label: t("text_translator.result.output_characters", undefined, "Output characters"), value: formatNumericValue(translatedCharacterCount) },
+          { label: t("text_translator.result.output_words", undefined, "Output words"), value: formatNumericValue(translatedWordCount) },
+          { label: t("text_translator.result.provider", undefined, "Provider"), value: provider || t("text_translator.value.not_run", undefined, "Not run yet") },
+          { label: t("text_translator.result.saved_history", undefined, "Saved history"), value: formatNumericValue(history.length) },
         ]}
       />
       <div className="mini-panel">
         <div className="panel-head">
-          <h3>Saved translations</h3>
+          <h3>{t("text_translator.saved.title", undefined, "Saved translations")}</h3>
           <button
             className="action-button secondary"
             type="button"
             onClick={() => {
               setHistory([]);
-              setStatus("Cleared saved translation history.");
+              setStatus(t("text_translator.status.cleared_history", undefined, "Cleared saved translation history."));
             }}
             disabled={history.length === 0}
           >
-            Clear history
+            {t("text_translator.button.clear_history", undefined, "Clear history")}
           </button>
         </div>
         {history.length === 0 ? (
-          <p className="supporting-text">No saved translations yet. Run a translation to populate this workspace history.</p>
+          <p className="supporting-text">
+            {t(
+              "text_translator.saved.empty",
+              undefined,
+              "No saved translations yet. Run a translation to populate this workspace history.",
+            )}
+          </p>
         ) : (
           <ul className="plain-list">
             {history.map((entry) => {
@@ -24029,19 +24091,24 @@ function TextTranslatorTool() {
               const targetLabel = getTranslationLanguageLabel(entry.targetLanguage);
               const detectedLabel = entry.detectedSourceLanguage
                 ? getTranslationLanguageLabel(entry.detectedSourceLanguage)
-                : "Unknown";
+                : t("text_translator.value.unknown", undefined, "Unknown");
               return (
                 <li key={entry.id}>
                   <div className="history-line">
                     <strong>
                       {sourceLabel} {"->"} {targetLabel}
                     </strong>
-                    <span className="supporting-text">{new Date(entry.createdAt).toLocaleString("en-US")}</span>
+                    <span className="supporting-text">{new Date(entry.createdAt).toLocaleString(locale)}</span>
                   </div>
-                  <p className="supporting-text">Input: {buildTranslationPreview(entry.inputText, 150)}</p>
-                  <p className="supporting-text">Output: {buildTranslationPreview(entry.translatedText, 150)}</p>
                   <p className="supporting-text">
-                    Provider: {entry.provider} | Detected source: {detectedLabel}
+                    {t("text_translator.saved.input", undefined, "Input")}: {buildTranslationPreview(entry.inputText, 150)}
+                  </p>
+                  <p className="supporting-text">
+                    {t("text_translator.saved.output", undefined, "Output")}: {buildTranslationPreview(entry.translatedText, 150)}
+                  </p>
+                  <p className="supporting-text">
+                    {t("text_translator.saved.provider", undefined, "Provider")}: {entry.provider} |{" "}
+                    {t("text_translator.saved.detected_source", undefined, "Detected source")}: {detectedLabel}
                   </p>
                   <div className="button-row">
                     <button
@@ -24054,31 +24121,35 @@ function TextTranslatorTool() {
                         setTranslatedText(entry.translatedText);
                         setDetectedSourceLanguage(entry.detectedSourceLanguage);
                         setProvider(entry.provider);
-                        setStatus("Loaded translation from history.");
+                        setStatus(t("text_translator.status.loaded_history", undefined, "Loaded translation from history."));
                       }}
                     >
-                      Load
+                      {t("text_translator.button.load", undefined, "Load")}
                     </button>
                     <button
                       className="action-button secondary"
                       type="button"
                       onClick={async () => {
                         const copied = await copyTextToClipboard(entry.translatedText);
-                        setCopyStatus(copied ? "Copied history translation output." : "Could not copy history translation.");
+                        setCopyStatus(
+                          copied
+                            ? t("text_translator.copy.copied_history_output", undefined, "Copied history translation output.")
+                            : t("text_translator.copy.could_not_copy_history", undefined, "Could not copy history translation."),
+                        );
                       }}
                     >
                       <Copy size={15} />
-                      Copy
+                      {t("text_translator.button.copy", undefined, "Copy")}
                     </button>
                     <button
                       className="action-button secondary"
                       type="button"
                       onClick={() => {
                         setHistory((current) => current.filter((candidate) => candidate.id !== entry.id));
-                        setStatus("Deleted translation from history.");
+                        setStatus(t("text_translator.status.deleted_history", undefined, "Deleted translation from history."));
                       }}
                     >
-                      Delete
+                      {t("text_translator.button.delete", undefined, "Delete")}
                     </button>
                   </div>
                 </li>
@@ -24250,6 +24321,7 @@ function sanitizeDocumentTranslatorWorkspaceSnapshot(candidate: unknown): Docume
 }
 
 function DocumentTranslatorTool() {
+  const { t } = useLocale();
   const toolSession = useToolSession({
     toolKey: "document-translator",
     defaultSessionLabel: "Document translation workspace",
@@ -24452,7 +24524,7 @@ function DocumentTranslatorTool() {
   const parseFile = useCallback(async (file: File) => {
     setIsParsing(true);
     setProgress(5);
-    setStatus("Extracting readable text...");
+    setStatus(t("document_translator.status.extracting", undefined, "Extracting readable text..."));
     const lowerName = file.name.toLowerCase();
     const isPdf = lowerName.endsWith(".pdf") || file.type === "application/pdf";
     try {
@@ -24497,25 +24569,46 @@ function DocumentTranslatorTool() {
       setLastDurationMs(0);
       setProgress(100);
       if (!bounded) {
-        setStatus("No readable text found in this document.");
+        setStatus(t("document_translator.status.no_text_found", undefined, "No readable text found in this document."));
       } else if (wasTrimmed) {
-        setStatus(`Loaded ${sourceLabel}. Input was trimmed to ${formatNumericValue(DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH)} characters.`);
+        setStatus(
+          t(
+            "document_translator.status.loaded_trimmed",
+            { source: sourceLabel, count: formatNumericValue(DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH) },
+            `Loaded ${sourceLabel}. Input was trimmed to ${formatNumericValue(DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH)} characters.`,
+          ),
+        );
       } else {
-        setStatus(`Loaded ${sourceLabel} with ${formatNumericValue(countWords(bounded))} words.`);
+        setStatus(
+          t(
+            "document_translator.status.loaded_words",
+            { source: sourceLabel, words: formatNumericValue(countWords(bounded)) },
+            `Loaded ${sourceLabel} with ${formatNumericValue(countWords(bounded))} words.`,
+          ),
+        );
       }
     } catch (error) {
-      const message = error instanceof Error && error.message ? error.message : "Could not read this document.";
-      setStatus(isPdf ? `Could not read this PDF. ${message}` : "Could not read this document.");
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : t("document_translator.status.read_failed", undefined, "Could not read this document.");
+      setStatus(
+        isPdf
+          ? t("document_translator.status.read_pdf_failed", { message }, `Could not read this PDF. ${message}`)
+          : t("document_translator.status.read_failed", undefined, "Could not read this document."),
+      );
       setProgress(0);
     } finally {
       setIsParsing(false);
     }
-  }, [includePdfPageMarkers, maxPdfPages, pageRangeInput]);
+  }, [includePdfPageMarkers, maxPdfPages, pageRangeInput, t]);
 
   const translateDocument = useCallback(async () => {
     const normalizedSource = sanitizeDocumentTranslationText(sourceText).slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH);
     if (!normalizedSource) {
-      setStatus("Load or paste document text before translating.");
+      setStatus(
+        t("document_translator.status.load_before_translate", undefined, "Load or paste document text before translating."),
+      );
       return;
     }
 
@@ -24524,7 +24617,7 @@ function DocumentTranslatorTool() {
     abortRef.current = controller;
     setIsTranslating(true);
     setProgress(2);
-    setStatus("Preparing translation chunks...");
+    setStatus(t("document_translator.status.preparing_chunks", undefined, "Preparing translation chunks..."));
     setCopyStatus("");
     const startedAt = Date.now();
 
@@ -24532,7 +24625,7 @@ function DocumentTranslatorTool() {
       const protectedText = protectGlossaryTerms(normalizedSource, glossaryTerms);
       const chunks = splitDocumentIntoTranslationChunks(protectedText.text, chunkSize);
       if (!chunks.length) {
-        setStatus("Source text is empty after normalization.");
+        setStatus(t("document_translator.status.empty_after_normalization", undefined, "Source text is empty after normalization."));
         setProgress(0);
         return;
       }
@@ -24552,7 +24645,11 @@ function DocumentTranslatorTool() {
         if (!response.ok || !payload || payload.ok !== true) {
           const message = payload && payload.ok === false && typeof payload.error === "string"
             ? payload.error
-            : `Translation failed on chunk ${index + 1}.`;
+            : t(
+              "document_translator.status.chunk_failed",
+              { chunk: index + 1 },
+              `Translation failed on chunk ${index + 1}.`,
+            );
           throw new Error(message);
         }
         translatedChunks.push(payload.translatedText);
@@ -24565,7 +24662,13 @@ function DocumentTranslatorTool() {
         }
         const ratio = (index + 1) / Math.max(1, chunks.length);
         setProgress(Math.max(4, Math.min(94, Math.round(ratio * 90) + 4)));
-        setStatus(`Translating chunk ${index + 1}/${chunks.length}...`);
+        setStatus(
+          t(
+            "document_translator.status.translating_chunk",
+            { current: index + 1, total: chunks.length },
+            `Translating chunk ${index + 1}/${chunks.length}...`,
+          ),
+        );
       }
 
       const normalizedTranslated = sanitizeDocumentTranslationText(
@@ -24581,7 +24684,13 @@ function DocumentTranslatorTool() {
       setLastChunkCount(chunks.length);
       setLastDurationMs(durationMs);
       setProgress(100);
-      setStatus(`Translated ${formatNumericValue(chunks.length)} chunks via ${summary} in ${(durationMs / 1000).toFixed(1)}s.`);
+      setStatus(
+        t(
+          "document_translator.status.translated_summary",
+          { chunks: formatNumericValue(chunks.length), provider: summary, seconds: (durationMs / 1000).toFixed(1) },
+          `Translated ${formatNumericValue(chunks.length)} chunks via ${summary} in ${(durationMs / 1000).toFixed(1)}s.`,
+        ),
+      );
       pushHistoryEntry({
         documentName,
         documentSource,
@@ -24600,9 +24709,12 @@ function DocumentTranslatorTool() {
       });
     } catch (error) {
       if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "AbortError") {
-        setStatus("Translation stopped.");
+        setStatus(t("document_translator.status.stopped", undefined, "Translation stopped."));
       } else {
-        const message = error instanceof Error && error.message ? error.message : "Translation failed.";
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : t("document_translator.status.failed", undefined, "Translation failed.");
         setStatus(message);
       }
     } finally {
@@ -24611,36 +24723,48 @@ function DocumentTranslatorTool() {
       }
       setIsTranslating(false);
     }
-  }, [chunkSize, documentName, documentSource, glossaryTerms, pushHistoryEntry, sourceLanguage, sourceText, targetLanguage]);
+  }, [chunkSize, documentName, documentSource, glossaryTerms, pushHistoryEntry, sourceLanguage, sourceText, t, targetLanguage]);
 
   return (
     <section className="tool-surface">
       <ToolHeading
         icon={FileText}
-        title="Document translator"
-        subtitle="Translate PDF, DOCX, HTML, and text files with glossary locking and chunk-level progress."
+        title={t("document_translator.heading.title", undefined, "Document translator")}
+        subtitle={t(
+          "document_translator.heading.subtitle",
+          undefined,
+          "Translate PDF, DOCX, HTML, and text files with glossary locking and chunk-level progress.",
+        )}
       />
       <ToolSessionControls
         sessionId={toolSession.sessionId}
         sessionLabel={toolSession.sessionLabel}
         sessions={toolSession.sessions}
-        description="Each document translator session is saved locally and linked to this /productivity-tools URL."
+        description={t(
+          "document_translator.session.description",
+          undefined,
+          "Each document translator session is saved locally and linked to this /productivity-tools URL.",
+        )}
         onSelectSession={(nextSessionId) => {
           abortRef.current?.abort();
           abortRef.current = null;
           toolSession.selectSession(nextSessionId);
-          setStatus("Switched document translator session.");
+          setStatus(
+            t("document_translator.status.switched_session", undefined, "Switched document translator session."),
+          );
         }}
         onCreateSession={() => {
           abortRef.current?.abort();
           abortRef.current = null;
           toolSession.createSession();
-          setStatus("Created a new document translator session.");
+          setStatus(
+            t("document_translator.status.created_session", undefined, "Created a new document translator session."),
+          );
         }}
         onRenameSession={(nextLabel) => toolSession.renameSession(nextLabel)}
       />
       <label className="field">
-        <span>Upload document</span>
+        <span>{t("document_translator.field.upload_document", undefined, "Upload document")}</span>
         <input
           type="file"
           accept=".pdf,.doc,.docx,.txt,.md,.html,.htm,text/plain,text/markdown,text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
@@ -24656,20 +24780,22 @@ function DocumentTranslatorTool() {
       </label>
       <div className="field-grid">
         <label className="field">
-          <span>Document title</span>
+          <span>{t("document_translator.field.document_title", undefined, "Document title")}</span>
           <input type="text" value={documentName} onChange={(event) => setDocumentName(event.target.value.slice(0, 140))} />
         </label>
         <label className="field">
-          <span>Source language</span>
+          <span>{t("document_translator.field.source_language", undefined, "Source language")}</span>
           <select value={sourceLanguage} onChange={(event) => setSourceLanguage(resolveTranslationLanguage(event.target.value, TRANSLATION_AUTO_LANGUAGE_CODE, { allowAuto: true, supportedOnly: true }))}>
-            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>Auto detect</option>
+            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>
+              {t("document_translator.option.auto_detect", undefined, "Auto detect")}
+            </option>
             {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
               <option key={`doc-source-${entry.code}`} value={entry.code}>{entry.label}</option>
             ))}
           </select>
         </label>
         <label className="field">
-          <span>Target language</span>
+          <span>{t("document_translator.field.target_language", undefined, "Target language")}</span>
           <select value={targetLanguage} onChange={(event) => setTargetLanguage(resolveTranslationLanguage(event.target.value, "en", { allowAuto: false, supportedOnly: true }))}>
             {TRANSLATION_LANGUAGE_OPTIONS.map((entry) => (
               <option key={`doc-target-${entry.code}`} value={entry.code}>{entry.label}</option>
@@ -24677,18 +24803,18 @@ function DocumentTranslatorTool() {
           </select>
         </label>
         <label className="field">
-          <span>Chunk size</span>
+          <span>{t("document_translator.field.chunk_size", undefined, "Chunk size")}</span>
           <input type="number" min={600} max={4000} step={50} value={chunkSize} onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             setChunkSize(Number.isFinite(parsed) ? Math.max(600, Math.min(4000, parsed)) : DOCUMENT_TRANSLATOR_DEFAULT_CHUNK_SIZE);
           }} />
         </label>
         <label className="field">
-          <span>PDF page range</span>
+          <span>{t("document_translator.field.pdf_page_range", undefined, "PDF page range")}</span>
           <input type="text" value={pageRangeInput} onChange={(event) => setPageRangeInput(event.target.value.slice(0, 80))} />
         </label>
         <label className="field">
-          <span>Max PDF pages</span>
+          <span>{t("document_translator.field.max_pdf_pages", undefined, "Max PDF pages")}</span>
           <input type="number" min={1} max={300} step={1} value={maxPdfPages} onChange={(event) => {
             const parsed = Number.parseInt(event.target.value, 10);
             setMaxPdfPages(Number.isFinite(parsed) ? Math.max(1, Math.min(300, parsed)) : 80);
@@ -24696,27 +24822,37 @@ function DocumentTranslatorTool() {
         </label>
       </div>
       <label className="field">
-        <span>Source document text</span>
+        <span>{t("document_translator.field.source_document_text", undefined, "Source document text")}</span>
         <textarea rows={8} value={sourceText} onChange={(event) => setSourceText(event.target.value.slice(0, DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH))} />
       </label>
       <label className="field">
-        <span>Glossary lock terms (one per line)</span>
+        <span>{t("document_translator.field.glossary_terms", undefined, "Glossary lock terms (one per line)")}</span>
         <textarea rows={3} value={glossaryInput} onChange={(event) => setGlossaryInput(event.target.value.slice(0, 10000))} />
       </label>
       <div className="button-row">
         <button className="action-button" type="button" onClick={() => void translateDocument()} disabled={isBusy || !sourceText.trim()}>
-          {isTranslating ? "Translating..." : "Translate document"}
+          {isTranslating
+            ? t("document_translator.button.translating", undefined, "Translating...")
+            : t("document_translator.button.translate_document", undefined, "Translate document")}
         </button>
         <button className="action-button secondary" type="button" onClick={() => activeFile && void parseFile(activeFile)} disabled={!activeFile || isBusy}>
-          {isParsing ? "Re-reading..." : "Re-read upload"}
+          {isParsing
+            ? t("document_translator.button.rereading", undefined, "Re-reading...")
+            : t("document_translator.button.reread_upload", undefined, "Re-read upload")}
         </button>
-        <button className="action-button secondary" type="button" onClick={() => abortRef.current?.abort()} disabled={!isBusy}>Stop</button>
+        <button className="action-button secondary" type="button" onClick={() => abortRef.current?.abort()} disabled={!isBusy}>
+          {t("document_translator.button.stop", undefined, "Stop")}
+        </button>
         <button className="action-button secondary" type="button" onClick={async () => {
           const copied = await copyTextToClipboard(translatedText);
-          setCopyStatus(copied ? "Copied translated text." : "Could not copy translated text.");
+          setCopyStatus(
+            copied
+              ? t("document_translator.copy.copied_translated", undefined, "Copied translated text.")
+              : t("document_translator.copy.could_not_copy_translated", undefined, "Could not copy translated text."),
+          );
         }} disabled={!translatedText.trim()}>
           <Copy size={15} />
-          Copy
+          {t("document_translator.button.copy", undefined, "Copy")}
         </button>
         <button className="action-button secondary" type="button" onClick={() => downloadTextFile(`${stripFileExtension(documentName.trim()) || "translated-document"}-${targetLanguage}.txt`, translatedText, "text/plain;charset=utf-8;")} disabled={!translatedText.trim()}>
           <Download size={15} />
@@ -24736,11 +24872,11 @@ function DocumentTranslatorTool() {
         </button>
         <button className="action-button secondary" type="button" onClick={() => downloadTextFile(`document-translator-${toolSession.sessionId}.json`, JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), sessionId: toolSession.sessionId, workspace: { documentName, documentSource, sourceText, translatedText, sourceLanguage, targetLanguage, detectedSourceLanguage, providerSummary, glossaryInput, chunkSize, pageRangeInput, maxPdfPages, includePdfPageMarkers, includeSourceOnDocExport, sourceTotalPages, sourceSelectedPages, lastChunkCount, lastDurationMs }, history }, null, 2), "application/json;charset=utf-8;")}>
           <Download size={15} />
-          Export JSON
+          {t("document_translator.button.export_json", undefined, "Export JSON")}
         </button>
         <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
           <Plus size={15} />
-          Import JSON
+          {t("document_translator.button.import_json", undefined, "Import JSON")}
         </button>
         <input
           ref={importRef}
@@ -24763,12 +24899,18 @@ function DocumentTranslatorTool() {
                 .slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT);
               if (importedHistory.length) {
                 setHistory((current) => [...importedHistory, ...current].slice(0, DOCUMENT_TRANSLATOR_HISTORY_LIMIT));
-                setStatus(`Imported ${importedHistory.length} history entries.`);
+                setStatus(
+                  t(
+                    "document_translator.status.imported_history",
+                    { count: importedHistory.length },
+                    `Imported ${importedHistory.length} history entries.`,
+                  ),
+                );
               } else {
-                setStatus("Could not import this JSON file.");
+                setStatus(t("document_translator.status.import_failed", undefined, "Could not import this JSON file."));
               }
             } catch {
-              setStatus("Could not import this JSON file.");
+              setStatus(t("document_translator.status.import_failed", undefined, "Could not import this JSON file."));
             } finally {
               event.target.value = "";
             }
@@ -24777,42 +24919,59 @@ function DocumentTranslatorTool() {
       </div>
       <div className="field-grid">
         <label className="field">
-          <span>Include source text in DOC export</span>
+          <span>{t("document_translator.field.include_source_doc", undefined, "Include source text in DOC export")}</span>
           <select value={includeSourceOnDocExport ? "yes" : "no"} onChange={(event) => setIncludeSourceOnDocExport(event.target.value === "yes")}>
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
+            <option value="yes">{t("document_translator.option.yes", undefined, "Yes")}</option>
+            <option value="no">{t("document_translator.option.no", undefined, "No")}</option>
           </select>
         </label>
         <label className="field">
-          <span>Detected source</span>
-          <input type="text" readOnly value={effectiveDetectedSource ? getTranslationLanguageLabel(effectiveDetectedSource) : "Unknown"} />
+          <span>{t("document_translator.field.detected_source", undefined, "Detected source")}</span>
+          <input
+            type="text"
+            readOnly
+            value={
+              effectiveDetectedSource
+                ? getTranslationLanguageLabel(effectiveDetectedSource)
+                : t("document_translator.value.unknown", undefined, "Unknown")
+            }
+          />
         </label>
       </div>
       <label className="field">
-        <span>Translated text</span>
-        <textarea rows={8} value={translatedText} readOnly placeholder="Translation output appears here..." />
+        <span>{t("document_translator.field.translated_text", undefined, "Translated text")}</span>
+        <textarea
+          rows={8}
+          value={translatedText}
+          readOnly
+          placeholder={t("document_translator.placeholder.translated_text", undefined, "Translation output appears here...")}
+        />
       </label>
       <div className="progress-panel" aria-live="polite">
-        <p className="supporting-text">{status || "Load a document and run translation."}</p>
+        <p className="supporting-text">
+          {status || t("document_translator.status.default", undefined, "Load a document and run translation.")}
+        </p>
         <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
           <div className="progress-fill" style={{ width: `${progress}%` }} />
         </div>
-        <small className="supporting-text">{progress}% complete</small>
+        <small className="supporting-text">
+          {t("document_translator.progress.complete", { progress }, `${progress}% complete`)}
+        </small>
       </div>
       {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
       <ResultList
         rows={[
-          { label: "Session", value: toolSession.sessionLabel },
-          { label: "Document source", value: documentSource },
-          { label: "Source words", value: formatNumericValue(sourceStats.words) },
-          { label: "Source characters", value: formatNumericValue(sourceStats.chars) },
-          { label: "Translated words", value: formatNumericValue(translatedStats.words) },
-          { label: "Translated characters", value: formatNumericValue(translatedStats.chars) },
-          { label: "Glossary terms", value: formatNumericValue(glossaryTerms.length) },
-          { label: "Provider summary", value: providerSummary || "Not run yet" },
-          { label: "Chunks last run", value: formatNumericValue(lastChunkCount) },
-          { label: "Last run", value: lastDurationMs ? `${(lastDurationMs / 1000).toFixed(1)}s` : "-" },
-          { label: "Saved history", value: formatNumericValue(history.length) },
+          { label: t("tool.session.select_label", undefined, "Session"), value: toolSession.sessionLabel },
+          { label: t("document_translator.result.document_source", undefined, "Document source"), value: documentSource },
+          { label: t("document_translator.result.source_words", undefined, "Source words"), value: formatNumericValue(sourceStats.words) },
+          { label: t("document_translator.result.source_characters", undefined, "Source characters"), value: formatNumericValue(sourceStats.chars) },
+          { label: t("document_translator.result.translated_words", undefined, "Translated words"), value: formatNumericValue(translatedStats.words) },
+          { label: t("document_translator.result.translated_characters", undefined, "Translated characters"), value: formatNumericValue(translatedStats.chars) },
+          { label: t("document_translator.result.glossary_terms", undefined, "Glossary terms"), value: formatNumericValue(glossaryTerms.length) },
+          { label: t("document_translator.result.provider_summary", undefined, "Provider summary"), value: providerSummary || t("document_translator.value.not_run", undefined, "Not run yet") },
+          { label: t("document_translator.result.chunks_last_run", undefined, "Chunks last run"), value: formatNumericValue(lastChunkCount) },
+          { label: t("document_translator.result.last_run", undefined, "Last run"), value: lastDurationMs ? `${(lastDurationMs / 1000).toFixed(1)}s` : "-" },
+          { label: t("document_translator.result.saved_history", undefined, "Saved history"), value: formatNumericValue(history.length) },
         ]}
       />
     </section>
