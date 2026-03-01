@@ -97,6 +97,7 @@ export type TextToolId =
   | "keyword-clustering-tool"
   | "utm-link-builder"
   | "readability-grade-checker"
+  | "keyword-cannibalization-checker"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

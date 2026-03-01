@@ -13236,6 +13236,506 @@ function ReadabilityGradeCheckerTool() {
   );
 }
 
+interface CannibalPageEntry {
+  id: string;
+  url: string;
+  primaryKeyword: string;
+  primaryNormalized: string;
+  primaryTokens: string[];
+  secondaryKeywords: string[];
+  secondaryNormalized: string[];
+}
+
+type CannibalConflictKind = "Exact Keyword" | "Intent Overlap";
+type CannibalSeverity = "High" | "Medium" | "Low";
+
+interface CannibalConflict {
+  id: string;
+  kind: CannibalConflictKind;
+  severity: CannibalSeverity;
+  keyword: string;
+  similarity: number;
+  pages: CannibalPageEntry[];
+  recommendedUrl: string;
+  recommendedReason: string;
+}
+
+function normalizeCannibalUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = /^[a-zA-Z][\w+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeCannibalKeyword(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s+#.-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeCannibalKeyword(value: string): string[] {
+  return tokenizeKeywordClusterInput(value);
+}
+
+function parseCannibalizationRows(raw: string): CannibalPageEntry[] {
+  const dedupe = new Set<string>();
+  const entries: CannibalPageEntry[] = [];
+
+  raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .forEach((line, index) => {
+      const columns = line.includes("\t") ? line.split("\t") : line.split(",");
+      if (columns.length < 2) return;
+
+      const rawUrl = columns[0]?.trim() ?? "";
+      const rawPrimary = columns[1]?.trim() ?? "";
+      const rawSecondary = columns.slice(2).join(",").trim();
+      const url = normalizeCannibalUrl(rawUrl);
+      const primaryNormalized = normalizeCannibalKeyword(rawPrimary);
+      if (!url || !primaryNormalized) return;
+
+      const key = `${url}::${primaryNormalized}`;
+      if (dedupe.has(key)) return;
+      dedupe.add(key);
+
+      const secondaryKeywords = rawSecondary
+        .split(/[|;]/)
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+      const secondaryNormalized = secondaryKeywords.map((keyword) => normalizeCannibalKeyword(keyword)).filter(Boolean);
+
+      entries.push({
+        id: `${index}-${key}`,
+        url,
+        primaryKeyword: rawPrimary,
+        primaryNormalized,
+        primaryTokens: tokenizeCannibalKeyword(rawPrimary),
+        secondaryKeywords,
+        secondaryNormalized,
+      });
+    });
+
+  return entries;
+}
+
+function jaccardCannibalSimilarity(left: string[], right: string[]): number {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const union = new Set([...leftSet, ...rightSet]);
+  if (!union.size) return 0;
+  let intersection = 0;
+  leftSet.forEach((token) => {
+    if (rightSet.has(token)) intersection += 1;
+  });
+  return intersection / union.size;
+}
+
+function getCannibalSeverity(kind: CannibalConflictKind, pagesCount: number, similarity: number): CannibalSeverity {
+  if (kind === "Exact Keyword") {
+    if (pagesCount >= 3) return "High";
+    if (pagesCount === 2) return "Medium";
+    return "Low";
+  }
+  if (similarity >= 0.75) return "High";
+  if (similarity >= 0.6) return "Medium";
+  return "Low";
+}
+
+function urlDepth(url: string): number {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return parts.length;
+  } catch {
+    return 10;
+  }
+}
+
+function recommendCanonicalUrl(pages: CannibalPageEntry[], normalizedKeyword: string): { url: string; reason: string } {
+  const scored = pages.map((page) => {
+    const keywordTokenCount = page.primaryTokens.length || normalizeCannibalKeyword(page.primaryKeyword).split(" ").length;
+    const broadnessScore = Math.max(0, 8 - keywordTokenCount);
+    const depthScore = Math.max(0, 8 - urlDepth(page.url));
+    const exactPrimaryScore = page.primaryNormalized === normalizedKeyword ? 15 : 0;
+    const secondaryScore = page.secondaryNormalized.includes(normalizedKeyword) ? 3 : 0;
+    const total = broadnessScore + depthScore + exactPrimaryScore + secondaryScore;
+    return {
+      page,
+      total,
+      reason: `broad keyword (${broadnessScore}), shallow URL depth (${depthScore}), exact match bonus (${exactPrimaryScore})`,
+    };
+  });
+
+  scored.sort((left, right) => right.total - left.total || left.page.url.localeCompare(right.page.url));
+  const winner = scored[0];
+  return {
+    url: winner.page.url,
+    reason: winner.reason,
+  };
+}
+
+function buildCannibalizationConflicts(entries: CannibalPageEntry[], overlapThreshold: number): CannibalConflict[] {
+  const conflicts: CannibalConflict[] = [];
+  const normalizedThreshold = Math.max(0.3, Math.min(0.9, overlapThreshold));
+
+  const exactMap = new Map<string, CannibalPageEntry[]>();
+  entries.forEach((entry) => {
+    const bucket = exactMap.get(entry.primaryNormalized) ?? [];
+    bucket.push(entry);
+    exactMap.set(entry.primaryNormalized, bucket);
+  });
+
+  exactMap.forEach((pages, keyword) => {
+    if (pages.length < 2) return;
+    const recommendation = recommendCanonicalUrl(pages, keyword);
+    conflicts.push({
+      id: `exact-${keyword}`,
+      kind: "Exact Keyword",
+      severity: getCannibalSeverity("Exact Keyword", pages.length, 1),
+      keyword,
+      similarity: 1,
+      pages,
+      recommendedUrl: recommendation.url,
+      recommendedReason: recommendation.reason,
+    });
+  });
+
+  const pairSet = new Set<string>();
+  for (let index = 0; index < entries.length; index += 1) {
+    for (let inner = index + 1; inner < entries.length; inner += 1) {
+      const left = entries[index];
+      const right = entries[inner];
+      if (left.url === right.url) continue;
+      if (left.primaryNormalized === right.primaryNormalized) continue;
+      const similarity = jaccardCannibalSimilarity(left.primaryTokens, right.primaryTokens);
+      if (similarity < normalizedThreshold) continue;
+
+      const key = [left.url, right.url].sort().join("::");
+      if (pairSet.has(key)) continue;
+      pairSet.add(key);
+
+      const pages = [left, right];
+      const recommendation = recommendCanonicalUrl(pages, left.primaryNormalized);
+      conflicts.push({
+        id: `overlap-${key}`,
+        kind: "Intent Overlap",
+        severity: getCannibalSeverity("Intent Overlap", pages.length, similarity),
+        keyword: `${left.primaryKeyword} <> ${right.primaryKeyword}`,
+        similarity,
+        pages,
+        recommendedUrl: recommendation.url,
+        recommendedReason: recommendation.reason,
+      });
+    }
+  }
+
+  const severityWeight: Record<CannibalSeverity, number> = { High: 0, Medium: 1, Low: 2 };
+  return conflicts.sort((left, right) => {
+    if (severityWeight[left.severity] !== severityWeight[right.severity]) {
+      return severityWeight[left.severity] - severityWeight[right.severity];
+    }
+    return right.similarity - left.similarity;
+  });
+}
+
+function buildCannibalizationMarkdown(entries: CannibalPageEntry[], conflicts: CannibalConflict[], threshold: number): string {
+  const lines: string[] = [
+    "# Keyword Cannibalization Report",
+    "",
+    `- Pages analyzed: ${entries.length}`,
+    `- Conflicts found: ${conflicts.length}`,
+    `- Overlap threshold: ${threshold.toFixed(2)}`,
+    "",
+    "## Priority Fix List",
+  ];
+
+  if (!conflicts.length) {
+    lines.push("1. No keyword cannibalization conflicts detected.");
+  } else {
+    conflicts.forEach((conflict, index) => {
+      lines.push(
+        `${index + 1}. [${conflict.severity}] ${conflict.kind}: ${conflict.keyword} | Recommended canonical: ${
+          conflict.recommendedUrl
+        }`,
+      );
+    });
+  }
+
+  lines.push("", "## Conflict Details");
+  conflicts.forEach((conflict, index) => {
+    lines.push(``, `### Conflict ${index + 1}: ${conflict.kind}`, `- Severity: ${conflict.severity}`);
+    lines.push(`- Keyword signal: ${conflict.keyword}`);
+    lines.push(`- Similarity: ${(conflict.similarity * 100).toFixed(1)}%`);
+    lines.push(`- Recommended canonical URL: ${conflict.recommendedUrl}`);
+    lines.push(`- Recommendation basis: ${conflict.recommendedReason}`);
+    lines.push(`- Affected URLs:`);
+    conflict.pages.forEach((page) => {
+      lines.push(`  - ${page.url} | Primary: ${page.primaryKeyword}`);
+    });
+  });
+
+  return lines.join("\n");
+}
+
+function KeywordCannibalizationCheckerTool() {
+  const [input, setInput] = useState("");
+  const [threshold, setThreshold] = useState(0.58);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("append");
+  const [entries, setEntries] = useState<CannibalPageEntry[]>([]);
+  const [conflicts, setConflicts] = useState<CannibalConflict[]>([]);
+  const [status, setStatus] = useState(
+    "Paste URL-keyword mappings to detect pages competing for the same search intent.",
+  );
+
+  const markdownReport = useMemo(
+    () => (entries.length ? buildCannibalizationMarkdown(entries, conflicts, threshold) : ""),
+    [entries, conflicts, threshold],
+  );
+
+  const runAudit = useCallback(() => {
+    const parsed = parseCannibalizationRows(input);
+    if (parsed.length < 2) {
+      setEntries(parsed);
+      setConflicts([]);
+      setStatus("Add at least two valid rows: url, primary keyword, optional secondary keywords.");
+      return;
+    }
+    const nextConflicts = buildCannibalizationConflicts(parsed, threshold);
+    setEntries(parsed);
+    setConflicts(nextConflicts);
+    setStatus(
+      nextConflicts.length
+        ? `Detected ${nextConflicts.length} cannibalization conflict(s).`
+        : "No cannibalization conflicts detected at current threshold.",
+    );
+    trackEvent("tool_keyword_cannibalization_run", {
+      pages: parsed.length,
+      conflicts: nextConflicts.length,
+      threshold: Number(threshold.toFixed(2)),
+    });
+  }, [input, threshold]);
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const nextInput =
+          uploadMode === "replace" || !input.trim() ? normalized : `${input.trimEnd()}\n${normalized.trimStart()}`;
+        setInput(nextInput);
+        setStatus(`Loaded mapping rows from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load mapping file.");
+      }
+    },
+    [input, uploadMode],
+  );
+
+  const csvRows = useMemo(
+    () =>
+      conflicts.map((conflict) => [
+        conflict.kind,
+        conflict.severity,
+        conflict.keyword,
+        (conflict.similarity * 100).toFixed(1),
+        conflict.pages.map((page) => page.url).join(" | "),
+        conflict.recommendedUrl,
+        conflict.recommendedReason,
+      ]),
+    [conflicts],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="Keyword cannibalization checker"
+        subtitle="Find pages competing for the same keywords and prioritize canonical targets."
+      />
+
+      <label className="field">
+        <span>URL-keyword map (format: url, primary keyword, optional secondary keywords)</span>
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          rows={12}
+          placeholder={
+            "https://example.com/seo-audit, seo audit checklist, technical seo audit|on-page seo audit\nhttps://example.com/seo-audit-guide, seo audit checklist, seo audit template"
+          }
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Intent overlap threshold ({threshold.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.3}
+            max={0.9}
+            step={0.01}
+            value={threshold}
+            onChange={(event) => setThreshold(Math.max(0.3, Math.min(0.9, Number(event.target.value))))}
+          />
+        </label>
+        <label className="field">
+          <span>Import map file</span>
+          <input type="file" accept=".txt,.csv,.tsv,.md" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append rows</option>
+            <option value="replace">Replace rows</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={runAudit}>
+          Analyze cannibalization
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(markdownReport);
+            setStatus(ok ? "Cannibalization report copied." : "No report available yet.");
+          }}
+          disabled={!entries.length}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("keyword-cannibalization-report.md", markdownReport, "text/markdown;charset=utf-8;")}
+          disabled={!entries.length}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "keyword-cannibalization-conflicts.csv",
+              ["Conflict Type", "Severity", "Keyword Signal", "Similarity %", "Affected URLs", "Recommended Canonical", "Reason"],
+              csvRows,
+            )
+          }
+          disabled={!conflicts.length}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+      <ResultList
+        rows={[
+          { label: "Pages analyzed", value: formatNumericValue(entries.length) },
+          { label: "Conflicts found", value: formatNumericValue(conflicts.length) },
+          {
+            label: "High-severity conflicts",
+            value: formatNumericValue(conflicts.filter((entry) => entry.severity === "High").length),
+          },
+          {
+            label: "Exact keyword conflicts",
+            value: formatNumericValue(conflicts.filter((entry) => entry.kind === "Exact Keyword").length),
+          },
+        ]}
+      />
+
+      {conflicts.length ? (
+        <div className="mini-panel">
+          <h3>Conflict summary</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Severity</th>
+                  <th>Keyword signal</th>
+                  <th>Similarity</th>
+                  <th>Affected pages</th>
+                  <th>Recommended canonical</th>
+                </tr>
+              </thead>
+              <tbody>
+                {conflicts.map((conflict) => (
+                  <tr key={conflict.id}>
+                    <td>{conflict.kind}</td>
+                    <td>
+                      <span
+                        className={`status-badge ${
+                          conflict.severity === "High" ? "bad" : conflict.severity === "Medium" ? "warn" : "info"
+                        }`}
+                      >
+                        {conflict.severity}
+                      </span>
+                    </td>
+                    <td>{conflict.keyword}</td>
+                    <td>{(conflict.similarity * 100).toFixed(1)}%</td>
+                    <td>{formatNumericValue(conflict.pages.length)}</td>
+                    <td>{conflict.recommendedUrl}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {conflicts.map((conflict, index) => (
+        <div key={conflict.id} className="mini-panel">
+          <div className="panel-head">
+            <h3>
+              Conflict {index + 1}: {conflict.kind}
+            </h3>
+            <span
+              className={`status-badge ${
+                conflict.severity === "High" ? "bad" : conflict.severity === "Medium" ? "warn" : "info"
+              }`}
+            >
+              {conflict.severity}
+            </span>
+          </div>
+          <p className="supporting-text">
+            Signal: {conflict.keyword} | Similarity: {(conflict.similarity * 100).toFixed(1)}% | Canonical target:{" "}
+            {conflict.recommendedUrl}
+          </p>
+          <ul className="plain-list">
+            {conflict.pages.map((page) => (
+              <li key={page.id}>
+                <strong>{page.url}</strong>
+                <small className="supporting-text">
+                  Primary: {page.primaryKeyword}
+                  {page.secondaryKeywords.length ? ` | Secondary: ${page.secondaryKeywords.join(", ")}` : ""}
+                </small>
+              </li>
+            ))}
+          </ul>
+          <small className="supporting-text">Recommendation basis: {conflict.recommendedReason}</small>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
@@ -14278,6 +14778,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <UtmLinkBuilderTool />;
     case "readability-grade-checker":
       return <ReadabilityGradeCheckerTool />;
+    case "keyword-cannibalization-checker":
+      return <KeywordCannibalizationCheckerTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":

@@ -697,6 +697,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Readability & Grade Checker"),
   },
   {
+    slug: "keyword-cannibalization-checker",
+    category: "seo-tools",
+    title: "Keyword Cannibalization Checker",
+    summary: "Detect competing pages targeting the same or overlapping keywords and fix ranking conflicts.",
+    description:
+      "Analyze URL-keyword maps to surface cannibalization risk, identify overlapping search intent, and prioritize canonical pages with export-ready remediation plans.",
+    keywords: [
+      "keyword cannibalization checker",
+      "seo cannibalization tool",
+      "keyword overlap checker",
+      "page intent conflict analysis",
+      "url keyword mapping audit",
+    ],
+    engine: { kind: "text-tool", id: "keyword-cannibalization-checker" },
+    faq: baseFaq("Keyword Cannibalization Checker"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",
