@@ -28368,6 +28368,7 @@ function ResumeCheckerTool() {
 }
 
 function ResumeBuilderTool() {
+  const { t } = useLocale();
   const storageKey = "utiliora-resume-builder-v1";
   const trackerStorageKey = "utiliora-resume-builder-applications-v1";
   const importRef = useRef<HTMLInputElement | null>(null);
@@ -28404,7 +28405,7 @@ function ResumeBuilderTool() {
         const fromQuery = decoded ? sanitizeResumeData(JSON.parse(decoded)) : null;
         if (fromQuery) {
           setResume(fromQuery);
-          setStatus("Loaded resume data from shared link.");
+          setStatus(t("resume_builder.status.loaded_from_share", undefined, "Loaded resume data from shared link."));
           return;
         }
       }
@@ -28416,7 +28417,7 @@ function ResumeBuilderTool() {
     } catch {
       // Ignore malformed resume data.
     }
-  }, [storageKey]);
+  }, [storageKey, t]);
 
   useEffect(() => {
     try {
@@ -28740,35 +28741,35 @@ function ResumeBuilderTool() {
       const filename = `${resumeFileStem}.pdf`;
       const blob = pdf.output("blob");
       downloadBlobFile(filename, blob);
-      setStatus(`Downloaded ${filename}.`);
+      setStatus(t("resume_builder.status.downloaded_file", { filename }, `Downloaded ${filename}.`));
       trackEvent("resume_pdf_download", {
         template: resume.template,
         pages: pdf.getNumberOfPages(),
         hasPhoto: Boolean(resume.photoDataUrl.trim()),
       });
     } catch {
-      setStatus("PDF download failed. Try again or export DOC/HTML.");
+      setStatus(t("resume_builder.status.pdf_failed", undefined, "PDF download failed. Try again or export DOC/HTML."));
     }
   };
 
   const downloadResumeMarkdown = () => {
     downloadTextFile(`${resumeFileStem}.md`, buildResumeMarkdown(resume), "text/markdown;charset=utf-8;");
-    setStatus("Resume exported as Markdown.");
+    setStatus(t("resume_builder.status.exported_markdown", undefined, "Resume exported as Markdown."));
   };
 
   const downloadResumeText = () => {
     downloadTextFile(`${resumeFileStem}.txt`, buildResumePlainText(resume), "text/plain;charset=utf-8;");
-    setStatus("Resume exported as plain text.");
+    setStatus(t("resume_builder.status.exported_text", undefined, "Resume exported as plain text."));
   };
 
   const downloadResumeHtml = () => {
     downloadTextFile(`${resumeFileStem}.html`, buildResumeExportHtmlDocument(resume), "text/html;charset=utf-8;");
-    setStatus("Resume exported as HTML.");
+    setStatus(t("resume_builder.status.exported_html", undefined, "Resume exported as HTML."));
   };
 
   const downloadResumeDoc = () => {
     downloadTextFile(`${resumeFileStem}.doc`, buildResumeExportHtmlDocument(resume), "application/msword;charset=utf-8;");
-    setStatus("Resume exported as Word-compatible DOC.");
+    setStatus(t("resume_builder.status.exported_doc", undefined, "Resume exported as Word-compatible DOC."));
   };
 
   const autoAddKeywordSkills = () => {
@@ -28816,7 +28817,7 @@ function ResumeBuilderTool() {
         const sanitized = sanitizeResumeData(JSON.parse(raw));
         if (!sanitized) throw new Error("invalid-json");
         setResume(sanitized);
-        setStatus("Imported resume JSON.");
+        setStatus(t("resume_builder.status.imported_resume_json", undefined, "Imported resume JSON."));
         trackEvent("resume_import_json", { source: "file" });
         return;
       }
@@ -28852,7 +28853,13 @@ function ResumeBuilderTool() {
       setStatus(`Imported resume content from ${source}. Review and adjust details before exporting.`);
       trackEvent("resume_import_document", { source, chars: normalized.length });
     } catch {
-      setStatus("Could not import this file. Try PDF, DOCX, TXT, HTML, RTF, or JSON.");
+      setStatus(
+        t(
+          "resume_builder.status.import_file_failed",
+          undefined,
+          "Could not import this file. Try PDF, DOCX, TXT, HTML, RTF, or JSON.",
+        ),
+      );
     } finally {
       setIsImportingResume(false);
     }
@@ -28904,12 +28911,16 @@ function ResumeBuilderTool() {
       const url = new URL(window.location.href);
       url.searchParams.set("resumeData", encodeBase64Url(JSON.stringify(resume)));
       const copied = await copyTextToClipboard(url.toString());
-      setStatus(copied ? "Copied shareable resume link." : "Could not copy shareable link.");
+      setStatus(
+        copied
+          ? t("resume_builder.status.copied_share_link", undefined, "Copied shareable resume link.")
+          : t("resume_builder.status.could_not_copy_share_link", undefined, "Could not copy shareable link."),
+      );
       if (copied) {
         trackEvent("resume_share_link_copy", { template: resume.template });
       }
     } catch {
-      setStatus("Could not generate shareable link.");
+      setStatus(t("resume_builder.status.could_not_generate_share_link", undefined, "Could not generate shareable link."));
     }
   };
 
@@ -28939,13 +28950,13 @@ function ResumeBuilderTool() {
       notes: "",
       appliedAt: "",
     }));
-    setStatus("Saved entry in application tracker.");
+    setStatus(t("resume_builder.status.saved_tracker_entry", undefined, "Saved entry in application tracker."));
     trackEvent("resume_tracker_add", { status: entry.status, score: entry.resumeScore });
   };
 
   const exportApplicationTracker = () => {
     if (!applicationEntries.length) {
-      setStatus("No tracker entries to export.");
+      setStatus(t("resume_builder.status.no_tracker_entries", undefined, "No tracker entries to export."));
       return;
     }
     const rows = applicationEntries.map((entry) => [
@@ -28962,7 +28973,7 @@ function ResumeBuilderTool() {
       ["Company", "Role", "Status", "Applied date", "Resume score", "Keyword coverage", "Notes"],
       rows,
     );
-    setStatus("Exported application tracker CSV.");
+    setStatus(t("resume_builder.status.exported_tracker_csv", undefined, "Exported application tracker CSV."));
     trackEvent("resume_tracker_export", { entries: applicationEntries.length });
   };
 
@@ -28970,11 +28981,15 @@ function ResumeBuilderTool() {
     <section className="tool-surface">
       <ToolHeading
         icon={FileText}
-        title="Resume builder"
-        subtitle="Build modern resumes with file import, ATS simulation, job-tailored optimization, application-pack generation, and multi-format downloads."
+        title={t("resume_builder.heading.title", undefined, "Resume builder")}
+        subtitle={t(
+          "resume_builder.heading.subtitle",
+          undefined,
+          "Build modern resumes with file import, ATS simulation, job-tailored optimization, application-pack generation, and multi-format downloads.",
+        )}
       />
       <div className="button-row">
-        <span className="supporting-text">Template:</span>
+        <span className="supporting-text">{t("resume_builder.template", undefined, "Template:")}</span>
         {RESUME_TEMPLATE_OPTIONS.map((option) => (
           <button
             key={option.id}
@@ -28989,7 +29004,7 @@ function ResumeBuilderTool() {
         ))}
       </div>
       <div className="preset-row">
-        <span className="supporting-text">Starter profiles:</span>
+        <span className="supporting-text">{t("resume_builder.starter_profiles", undefined, "Starter profiles:")}</span>
         {RESUME_STARTER_PROFILES.map((starter) => (
           <button
             key={starter.id}
@@ -28997,7 +29012,13 @@ function ResumeBuilderTool() {
             type="button"
             onClick={() => {
               setResume(createResumeFromStarter(starter));
-              setStatus(`Loaded ${starter.label} starter profile.`);
+              setStatus(
+                t(
+                  "resume_builder.status.loaded_starter_profile",
+                  { label: starter.label },
+                  `Loaded ${starter.label} starter profile.`,
+                ),
+              );
             }}
             title={starter.description}
           >
@@ -29008,22 +29029,22 @@ function ResumeBuilderTool() {
       <div className="button-row">
         <button className="action-button secondary" type="button" onClick={() => resumeImportRef.current?.click()}>
           <Plus size={15} />
-          Import resume file
+          {t("resume_builder.button.import_resume_file", undefined, "Import resume file")}
         </button>
         <button
           className="action-button secondary"
           type="button"
           onClick={() => {
             downloadTextFile(`${resumeFileStem}-data.json`, JSON.stringify(resume, null, 2), "application/json;charset=utf-8;");
-            setStatus("Resume JSON exported.");
+            setStatus(t("resume_builder.status.resume_json_exported", undefined, "Resume JSON exported."));
           }}
         >
           <Download size={15} />
-          Export JSON
+          {t("resume_builder.button.export_json", undefined, "Export JSON")}
         </button>
         <button className="action-button secondary" type="button" onClick={() => importRef.current?.click()}>
           <Plus size={15} />
-          Import JSON
+          {t("resume_builder.button.import_json", undefined, "Import JSON")}
         </button>
         <button className="action-button secondary" type="button" onClick={downloadResumeMarkdown}>
           <Download size={15} />
@@ -29043,11 +29064,11 @@ function ResumeBuilderTool() {
         </button>
         <button className="action-button" type="button" onClick={() => void downloadResumePdf()}>
           <Download size={15} />
-          Download PDF
+          {t("resume_builder.button.download_pdf", undefined, "Download PDF")}
         </button>
         <button className="action-button secondary" type="button" onClick={() => void copyShareableResumeLink()}>
           <Share2 size={15} />
-          Copy share link
+          {t("resume_builder.button.copy_share_link", undefined, "Copy share link")}
         </button>
       </div>
       <input
@@ -29074,9 +29095,9 @@ function ResumeBuilderTool() {
             const sanitized = sanitizeResumeData(JSON.parse(raw));
             if (!sanitized) throw new Error("Invalid format");
             setResume(sanitized);
-            setStatus("Imported resume JSON.");
+            setStatus(t("resume_builder.status.imported_resume_json", undefined, "Imported resume JSON."));
           } catch {
-            setStatus("Could not import this JSON file.");
+            setStatus(t("resume_builder.status.could_not_import_json", undefined, "Could not import this JSON file."));
           } finally {
             event.target.value = "";
           }
@@ -29121,7 +29142,11 @@ function ResumeBuilderTool() {
           }
         }}
       />
-      {isImportingResume ? <p className="supporting-text">Import in progress. Large files can take a few seconds.</p> : null}
+      {isImportingResume ? (
+        <p className="supporting-text">
+          {t("resume_builder.status.import_in_progress", undefined, "Import in progress. Large files can take a few seconds.")}
+        </p>
+      ) : null}
       <div className="split-panel">
         <div className="resume-editor">
           <div className="field-grid">
@@ -29637,15 +29662,15 @@ function ResumeBuilderTool() {
             </label>
             <ResultList
               rows={[
-                { label: "Target keywords", value: formatNumericValue(jobKeywords.length) },
-                { label: "Matched keywords", value: formatNumericValue(matchedKeywords.length) },
-                { label: "Coverage", value: `${coveragePercent.toFixed(1)}%` },
+                { label: t("resume_builder.ats.target_keywords", undefined, "Target keywords"), value: formatNumericValue(jobKeywords.length) },
+                { label: t("resume_builder.ats.matched_keywords", undefined, "Matched keywords"), value: formatNumericValue(matchedKeywords.length) },
+                { label: t("resume_builder.ats.coverage", undefined, "Coverage"), value: `${coveragePercent.toFixed(1)}%` },
               ]}
             />
             {jobKeywords.length > 0 ? (
               <>
                 <p className="supporting-text">
-                  Missing keywords to consider: {missingKeywords.length ? missingKeywords.length : 0}
+                  {t("resume_builder.ats.missing_keywords", undefined, "Missing keywords to consider")}: {missingKeywords.length ? missingKeywords.length : 0}
                 </p>
                 <div className="chip-list">
                   {missingKeywords.slice(0, 15).map((keyword) => (
@@ -29656,16 +29681,18 @@ function ResumeBuilderTool() {
                 </div>
               </>
             ) : (
-              <p className="supporting-text">Add a job description to benchmark keyword coverage.</p>
+              <p className="supporting-text">
+                {t("resume_builder.ats.add_job_description", undefined, "Add a job description to benchmark keyword coverage.")}
+              </p>
             )}
           </div>
           <div className="mini-panel">
-            <h3>ATS simulator</h3>
+            <h3>{t("resume_builder.ats_simulator.title", undefined, "ATS simulator")}</h3>
             <ResultList
               rows={[
-                { label: "ATS readiness", value: `${atsReport.score}%` },
-                { label: "Checks passed", value: `${atsReport.checks.filter((check) => check.ok).length}/${atsReport.checks.length}` },
-                { label: "Critical issues", value: formatNumericValue(atsReport.failedChecks.filter((check) => check.severity === "high").length) },
+                { label: t("resume_builder.ats_simulator.readiness", undefined, "ATS readiness"), value: `${atsReport.score}%` },
+                { label: t("resume_builder.ats_simulator.checks_passed", undefined, "Checks passed"), value: `${atsReport.checks.filter((check) => check.ok).length}/${atsReport.checks.length}` },
+                { label: t("resume_builder.ats_simulator.critical_issues", undefined, "Critical issues"), value: formatNumericValue(atsReport.failedChecks.filter((check) => check.severity === "high").length) },
               ]}
             />
             <div className="chip-list">
@@ -29675,31 +29702,35 @@ function ResumeBuilderTool() {
                   className={`status-badge ${check.ok ? "ok" : check.severity === "high" ? "bad" : "warn"}`}
                   title={check.details}
                 >
-                  {check.ok ? "Pass" : "Fix"} - {check.label}
+                  {check.ok
+                    ? t("resume_builder.ats_simulator.pass", undefined, "Pass")
+                    : t("resume_builder.ats_simulator.fix", undefined, "Fix")}{" "}
+                  - {check.label}
                 </span>
               ))}
             </div>
           </div>
           <div className="mini-panel">
-            <h3>Job targeting engine</h3>
+            <h3>{t("resume_builder.targeting.title", undefined, "Job targeting engine")}</h3>
             <div className="button-row">
               <button className="action-button secondary" type="button" onClick={applyJobTailoring}>
                 <Sparkles size={15} />
-                Apply targeting
+                {t("resume_builder.targeting.apply", undefined, "Apply targeting")}
               </button>
               <button className="action-button secondary" type="button" onClick={generateApplicationPack}>
                 <FileText size={15} />
-                Generate application pack
+                {t("resume_builder.targeting.generate_pack", undefined, "Generate application pack")}
               </button>
             </div>
             {tailoringSummary ? <p className="supporting-text">{tailoringSummary}</p> : null}
             {applicationPack ? (
               <div className="resume-row">
                 <p className="supporting-text">
-                  Target role: <strong>{applicationPack.role}</strong> at <strong>{applicationPack.company}</strong>
+                  {t("resume_builder.targeting.target_role", undefined, "Target role")}: <strong>{applicationPack.role}</strong>{" "}
+                  {t("resume_builder.targeting.at", undefined, "at")} <strong>{applicationPack.company}</strong>
                 </p>
                 <label className="field">
-                  <span>Cover letter</span>
+                  <span>{t("resume_builder.targeting.cover_letter", undefined, "Cover letter")}</span>
                   <textarea rows={9} value={applicationPack.coverLetter} readOnly />
                 </label>
                 <div className="button-row">
@@ -29708,11 +29739,15 @@ function ResumeBuilderTool() {
                     type="button"
                     onClick={async () => {
                       const copied = await copyTextToClipboard(applicationPack.coverLetter);
-                      setStatus(copied ? "Copied cover letter." : "Could not copy cover letter.");
+                      setStatus(
+                        copied
+                          ? t("resume_builder.status.copied_cover_letter", undefined, "Copied cover letter.")
+                          : t("resume_builder.status.could_not_copy_cover_letter", undefined, "Could not copy cover letter."),
+                      );
                     }}
                   >
                     <Copy size={15} />
-                    Copy cover letter
+                    {t("resume_builder.targeting.copy_cover_letter", undefined, "Copy cover letter")}
                   </button>
                   <button
                     className="action-button secondary"
@@ -29720,11 +29755,11 @@ function ResumeBuilderTool() {
                     onClick={() => downloadTextFile(`${resumeFileStem}-cover-letter.txt`, applicationPack.coverLetter)}
                   >
                     <Download size={15} />
-                    Download cover letter
+                    {t("resume_builder.targeting.download_cover_letter", undefined, "Download cover letter")}
                   </button>
                 </div>
                 <label className="field">
-                  <span>Recruiter email</span>
+                  <span>{t("resume_builder.targeting.recruiter_email", undefined, "Recruiter email")}</span>
                   <textarea rows={6} value={applicationPack.recruiterEmail} readOnly />
                 </label>
                 <div className="button-row">
@@ -29733,15 +29768,19 @@ function ResumeBuilderTool() {
                     type="button"
                     onClick={async () => {
                       const copied = await copyTextToClipboard(applicationPack.recruiterEmail);
-                      setStatus(copied ? "Copied recruiter email." : "Could not copy recruiter email.");
+                      setStatus(
+                        copied
+                          ? t("resume_builder.status.copied_recruiter_email", undefined, "Copied recruiter email.")
+                          : t("resume_builder.status.could_not_copy_recruiter_email", undefined, "Could not copy recruiter email."),
+                      );
                     }}
                   >
                     <Copy size={15} />
-                    Copy recruiter email
+                    {t("resume_builder.targeting.copy_recruiter_email", undefined, "Copy recruiter email")}
                   </button>
                 </div>
                 <label className="field">
-                  <span>LinkedIn message</span>
+                  <span>{t("resume_builder.targeting.linkedin_message", undefined, "LinkedIn message")}</span>
                   <textarea rows={4} value={applicationPack.linkedinMessage} readOnly />
                 </label>
                 <div className="button-row">
@@ -29750,20 +29789,26 @@ function ResumeBuilderTool() {
                     type="button"
                     onClick={async () => {
                       const copied = await copyTextToClipboard(applicationPack.linkedinMessage);
-                      setStatus(copied ? "Copied LinkedIn message." : "Could not copy LinkedIn message.");
+                      setStatus(
+                        copied
+                          ? t("resume_builder.status.copied_linkedin_message", undefined, "Copied LinkedIn message.")
+                          : t("resume_builder.status.could_not_copy_linkedin_message", undefined, "Could not copy LinkedIn message."),
+                      );
                     }}
                   >
                     <Copy size={15} />
-                    Copy LinkedIn message
+                    {t("resume_builder.targeting.copy_linkedin_message", undefined, "Copy LinkedIn message")}
                   </button>
                 </div>
               </div>
             ) : (
-              <p className="supporting-text">Generate a pack to get role-specific outreach copy in one click.</p>
+              <p className="supporting-text">
+                {t("resume_builder.targeting.generate_pack_help", undefined, "Generate a pack to get role-specific outreach copy in one click.")}
+              </p>
             )}
           </div>
           <div className="mini-panel">
-            <h3>Application tracker</h3>
+            <h3>{t("resume_builder.application_tracker.title", undefined, "Application tracker")}</h3>
             <ResultList
               rows={[
                 { label: "Applications", value: formatNumericValue(applicationStats.applied) },
@@ -29860,7 +29905,7 @@ function ResumeBuilderTool() {
           className={`resume-preview resume-template-${resume.template}`}
           style={{ "--resume-accent": sanitizeResumeAccentColor(resume.accentColor) } as CSSProperties}
         >
-          <h3>Live preview</h3>
+          <h3>{t("resume_builder.preview.title", undefined, "Live preview")}</h3>
           <header className="resume-header">
             <div className="resume-header-main">
               <div>
@@ -30211,6 +30256,7 @@ function sanitizeInvoiceData(raw: unknown): InvoiceData | null {
 }
 
 function InvoiceGeneratorTool() {
+  const { t } = useLocale();
   const storageKey = "utiliora-invoice-workspaces-v1";
   const legacyStorageKey = "utiliora-invoice-generator-v1";
   const logoInputRef = useRef<HTMLInputElement | null>(null);
@@ -30362,9 +30408,9 @@ function InvoiceGeneratorTool() {
       if (!target) return;
       setActiveWorkspaceId(target.id);
       setInvoice(target.invoice);
-      setStatus(`Opened ${target.label}.`);
+      setStatus(t("invoice_generator.status.opened_workspace", { label: target.label }, `Opened ${target.label}.`));
     },
-    [workspaces],
+    [t, workspaces],
   );
 
   const createWorkspaceFromCurrent = useCallback(
@@ -30381,9 +30427,13 @@ function InvoiceGeneratorTool() {
       setWorkspaces((current) => [...current, nextWorkspace]);
       setActiveWorkspaceId(nextWorkspace.id);
       setInvoice(nextWorkspace.invoice);
-      setStatus(mode === "new" ? "Created a new invoice workspace." : "Duplicated invoice workspace.");
+      setStatus(
+        mode === "new"
+          ? t("invoice_generator.status.created_workspace", undefined, "Created a new invoice workspace.")
+          : t("invoice_generator.status.duplicated_workspace", undefined, "Duplicated invoice workspace."),
+      );
     },
-    [invoice],
+    [invoice, t],
   );
 
   const removeActiveWorkspace = useCallback(() => {
@@ -30393,7 +30443,7 @@ function InvoiceGeneratorTool() {
       setWorkspaces([replacement]);
       setActiveWorkspaceId(replacement.id);
       setInvoice(replacement.invoice);
-      setStatus("Reset to a fresh invoice workspace.");
+      setStatus(t("invoice_generator.status.reset_workspace", undefined, "Reset to a fresh invoice workspace."));
       return;
     }
     const currentIndex = workspaces.findIndex((workspace) => workspace.id === activeWorkspaceId);
@@ -30403,9 +30453,9 @@ function InvoiceGeneratorTool() {
     if (nextWorkspace) {
       setActiveWorkspaceId(nextWorkspace.id);
       setInvoice(nextWorkspace.invoice);
-      setStatus("Removed current workspace.");
+      setStatus(t("invoice_generator.status.removed_workspace", undefined, "Removed current workspace."));
     }
-  }, [activeWorkspaceId, workspaces]);
+  }, [activeWorkspaceId, t, workspaces]);
 
   const financials = useMemo(() => {
     const subtotal = invoice.items.reduce((sum, item) => {
@@ -30518,10 +30568,10 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
       `,
     );
     if (!opened) {
-      setStatus("Enable popups to print or save PDF.");
+      setStatus(t("invoice_generator.status.enable_popups", undefined, "Enable popups to print or save PDF."));
       return;
     }
-    setStatus("Opened print view. Choose Save as PDF.");
+    setStatus(t("invoice_generator.status.opened_print_view", undefined, "Opened print view. Choose Save as PDF."));
     trackEvent("invoice_print_open", { currency: invoice.currency, items: invoice.items.length });
   };
 
@@ -30529,28 +30579,32 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
     <section className="tool-surface">
       <ToolHeading
         icon={Receipt}
-        title="Invoice generator"
-        subtitle="Create client-ready invoices with taxes, discounts, due tracking, and print-to-PDF."
+        title={t("invoice_generator.heading.title", undefined, "Invoice generator")}
+        subtitle={t(
+          "invoice_generator.heading.subtitle",
+          undefined,
+          "Create client-ready invoices with taxes, discounts, due tracking, and print-to-PDF.",
+        )}
       />
       <div className="mini-panel">
         <div className="panel-head">
-          <h3>Invoice workspaces</h3>
+          <h3>{t("invoice_generator.workspaces.title", undefined, "Invoice workspaces")}</h3>
           <span className="supporting-text">
-            {formatNumericValue(workspaces.length)} saved
+            {t("invoice_generator.workspaces.saved_count", { count: formatNumericValue(workspaces.length) }, `${formatNumericValue(workspaces.length)} saved`)}
           </span>
         </div>
         <div className="button-row">
           <button className="action-button secondary" type="button" onClick={() => createWorkspaceFromCurrent("new")}>
             <Plus size={15} />
-            New invoice
+            {t("invoice_generator.button.new_invoice", undefined, "New invoice")}
           </button>
           <button className="action-button secondary" type="button" onClick={() => createWorkspaceFromCurrent("duplicate")}>
             <Copy size={15} />
-            Duplicate
+            {t("invoice_generator.button.duplicate", undefined, "Duplicate")}
           </button>
           <button className="action-button secondary" type="button" onClick={removeActiveWorkspace}>
             <Trash2 size={15} />
-            Delete current
+            {t("invoice_generator.button.delete_current", undefined, "Delete current")}
           </button>
           <button
             className="action-button secondary"
@@ -30562,7 +30616,7 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
             }}
             disabled={workspaces.length < 2}
           >
-            Prev
+            {t("invoice_generator.button.prev", undefined, "Prev")}
           </button>
           <button
             className="action-button secondary"
@@ -30574,7 +30628,7 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
             }}
             disabled={workspaces.length < 2}
           >
-            Next
+            {t("invoice_generator.button.next", undefined, "Next")}
           </button>
         </div>
         <div className="chip-list">
@@ -30594,18 +30648,18 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
       <div className="button-row">
         <button className="action-button" type="button" onClick={printInvoice}>
           <Printer size={15} />
-          Print / PDF
+          {t("invoice_generator.button.print_pdf", undefined, "Print / PDF")}
         </button>
         <button
           className="action-button secondary"
           type="button"
           onClick={() => {
             downloadTextFile("invoice-data.json", JSON.stringify(invoice, null, 2), "application/json;charset=utf-8;");
-            setStatus("Invoice JSON exported.");
+            setStatus(t("invoice_generator.status.exported_json", undefined, "Invoice JSON exported."));
           }}
         >
           <Download size={15} />
-          Export JSON
+          {t("invoice_generator.button.export_json", undefined, "Export JSON")}
         </button>
         <button
           className="action-button secondary"
@@ -30620,7 +30674,7 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
                 return [item.description, String(quantity), String(unitPrice), String(quantity * unitPrice)];
               }),
             );
-            setStatus("Line items CSV exported.");
+            setStatus(t("invoice_generator.status.exported_csv", undefined, "Line items CSV exported."));
           }}
         >
           <Download size={15} />
@@ -30631,45 +30685,49 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
           type="button"
           onClick={async () => {
             const copied = await copyTextToClipboard(reminderMessage);
-            setStatus(copied ? "Payment reminder copied." : "Unable to copy payment reminder.");
+            setStatus(
+              copied
+                ? t("invoice_generator.status.copied_reminder", undefined, "Payment reminder copied.")
+                : t("invoice_generator.status.could_not_copy_reminder", undefined, "Unable to copy payment reminder."),
+            );
           }}
         >
           <Copy size={15} />
-          Copy reminder
+          {t("invoice_generator.button.copy_reminder", undefined, "Copy reminder")}
         </button>
         <button
           className="action-button secondary"
           type="button"
           onClick={() => {
             updateInvoice("invoiceNumber", buildInvoiceNumber());
-            setStatus("Generated a new invoice number.");
+            setStatus(t("invoice_generator.status.generated_number", undefined, "Generated a new invoice number."));
           }}
         >
           <RefreshCw size={15} />
-          New number
+          {t("invoice_generator.button.new_number", undefined, "New number")}
         </button>
       </div>
       <div className="split-panel">
         <div className="invoice-editor">
           <div className="field-grid">
             <label className="field">
-              <span>Invoice number</span>
+              <span>{t("invoice_generator.field.invoice_number", undefined, "Invoice number")}</span>
               <input type="text" value={invoice.invoiceNumber} onChange={(event) => updateInvoice("invoiceNumber", event.target.value)} />
             </label>
             <label className="field">
-              <span>Issue date</span>
+              <span>{t("invoice_generator.field.issue_date", undefined, "Issue date")}</span>
               <input type="date" value={invoice.issueDate} onChange={(event) => updateInvoice("issueDate", event.target.value)} />
             </label>
             <label className="field">
-              <span>Due date</span>
+              <span>{t("invoice_generator.field.due_date", undefined, "Due date")}</span>
               <input type="date" value={invoice.dueDate} onChange={(event) => updateInvoice("dueDate", event.target.value)} />
             </label>
             <label className="field">
-              <span>Currency</span>
+              <span>{t("invoice_generator.field.currency", undefined, "Currency")}</span>
               <input
                 type="text"
                 value={currencySearch}
-                placeholder="Search currency by code or name"
+                placeholder={t("invoice_generator.field.currency_search", undefined, "Search currency by code or name")}
                 onChange={(event) => setCurrencySearch(event.target.value)}
               />
               <select value={invoice.currency} onChange={(event) => updateInvoice("currency", event.target.value)}>
@@ -30684,41 +30742,45 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
                 )}
               </select>
               <small className="supporting-text">
-                Source: {currencySource}. Loaded {formatNumericValue(currencyOptions.length)} currencies.
+                {t(
+                  "invoice_generator.field.currency_source",
+                  { source: currencySource, count: formatNumericValue(currencyOptions.length) },
+                  `Source: ${currencySource}. Loaded ${formatNumericValue(currencyOptions.length)} currencies.`,
+                )}
               </small>
             </label>
           </div>
           <div className="field-grid">
             <label className="field">
-              <span>From (business name)</span>
+              <span>{t("invoice_generator.field.from_business", undefined, "From (business name)")}</span>
               <input type="text" value={invoice.businessName} onChange={(event) => updateInvoice("businessName", event.target.value)} />
             </label>
             <label className="field">
-              <span>Business email</span>
+              <span>{t("invoice_generator.field.business_email", undefined, "Business email")}</span>
               <input type="email" value={invoice.businessEmail} onChange={(event) => updateInvoice("businessEmail", event.target.value)} />
             </label>
             <label className="field">
-              <span>Bill to (client)</span>
+              <span>{t("invoice_generator.field.bill_to", undefined, "Bill to (client)")}</span>
               <input type="text" value={invoice.clientName} onChange={(event) => updateInvoice("clientName", event.target.value)} />
             </label>
             <label className="field">
-              <span>Client email</span>
+              <span>{t("invoice_generator.field.client_email", undefined, "Client email")}</span>
               <input type="email" value={invoice.clientEmail} onChange={(event) => updateInvoice("clientEmail", event.target.value)} />
             </label>
           </div>
           <div className="field-grid">
             <label className="field">
-              <span>Business address</span>
+              <span>{t("invoice_generator.field.business_address", undefined, "Business address")}</span>
               <textarea rows={3} value={invoice.businessAddress} onChange={(event) => updateInvoice("businessAddress", event.target.value)} />
             </label>
             <label className="field">
-              <span>Client address</span>
+              <span>{t("invoice_generator.field.client_address", undefined, "Client address")}</span>
               <textarea rows={3} value={invoice.clientAddress} onChange={(event) => updateInvoice("clientAddress", event.target.value)} />
             </label>
           </div>
           <div className="mini-panel">
             <div className="panel-head">
-              <h3>Branding</h3>
+              <h3>{t("invoice_generator.branding.title", undefined, "Branding")}</h3>
             </div>
             <div className="button-row">
               <button
@@ -30727,7 +30789,7 @@ ${invoice.notes ? `<p><strong>Notes:</strong> ${escapeHtml(invoice.notes)}</p>` 
                 onClick={() => logoInputRef.current?.click()}
               >
                 <Plus size={15} />
-                Upload logo
+                {t("invoice_generator.branding.upload_logo", undefined, "Upload logo")}
               </button>
               <button
                 className="action-button secondary"
@@ -31413,6 +31475,7 @@ function MeetingTimePlannerTool() {
 }
 
 function ProductivityTool({ id }: { id: ProductivityToolId }) {
+  const { t } = useLocale();
   switch (id) {
     case "pomodoro-timer":
       return <PomodoroTool />;
@@ -31431,11 +31494,12 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
     case "invoice-generator":
       return <InvoiceGeneratorTool />;
     default:
-      return <p>Productivity tool unavailable.</p>;
+      return <p>{t("tool.productivity_unavailable", undefined, "Productivity tool unavailable.")}</p>;
   }
 }
 
 export function ToolRenderer({ tool }: ToolRendererProps) {
+  const { t } = useLocale();
   const engine = tool.engine;
   switch (engine.kind) {
     case "calculator":
@@ -31453,7 +31517,7 @@ export function ToolRenderer({ tool }: ToolRendererProps) {
     case "productivity-tool":
       return <ProductivityTool id={engine.id} />;
     default:
-      return <p>Tool renderer unavailable.</p>;
+      return <p>{t("tool.renderer_unavailable", undefined, "Tool renderer unavailable.")}</p>;
   }
 }
 
