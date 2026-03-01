@@ -1257,6 +1257,23 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Job Application Kit Builder"),
   },
   {
+    slug: "ocr-workbench",
+    category: "productivity-tools",
+    title: "OCR Workbench",
+    summary: "Extract text from images and PDFs with confidence insights and export-ready output.",
+    description:
+      "Run browser-based OCR on screenshots, scanned docs, and PDF pages, then clean text, inspect confidence, extract table-like rows, and export results instantly.",
+    keywords: [
+      "ocr online free",
+      "image to text converter",
+      "pdf scan to text",
+      "extract text from screenshot",
+      "ocr workbench",
+    ],
+    engine: { kind: "productivity-tool", id: "ocr-workbench" },
+    faq: baseFaq("OCR Workbench"),
+  },
+  {
     slug: "invoice-generator",
     category: "productivity-tools",
     title: "Invoice Generator",

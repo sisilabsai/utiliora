@@ -147,6 +147,7 @@ export type ProductivityToolId =
   | "document-translator"
   | "resume-builder"
   | "job-application-kit-builder"
+  | "ocr-workbench"
   | "invoice-generator";
 
 export type ToolEngine =

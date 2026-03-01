@@ -33917,6 +33917,411 @@ function JobApplicationKitBuilderTool() {
   );
 }
 
+type OcrLanguageOption = {
+  label: string;
+  value: string;
+};
+
+interface OcrPageResult {
+  label: string;
+  text: string;
+  confidence: number;
+  lowConfidenceWords: string[];
+}
+
+interface OcrRecognitionWord {
+  text?: string;
+  confidence?: number;
+}
+
+interface OcrRecognitionData {
+  text?: string;
+  confidence?: number;
+  words?: OcrRecognitionWord[];
+}
+
+interface OcrWorkerLike {
+  recognize: (input: File | HTMLCanvasElement) => Promise<{ data?: OcrRecognitionData }>;
+  terminate: () => Promise<void>;
+}
+
+interface OcrModuleLike {
+  createWorker: (
+    language: string,
+    oem?: number,
+    options?: { logger?: (message: { status: string; progress: number }) => void },
+  ) => Promise<OcrWorkerLike>;
+}
+
+const OCR_LANGUAGE_OPTIONS: OcrLanguageOption[] = [
+  { value: "eng", label: "English" },
+  { value: "spa", label: "Spanish" },
+  { value: "fra", label: "French" },
+  { value: "deu", label: "German" },
+  { value: "por", label: "Portuguese" },
+  { value: "ita", label: "Italian" },
+  { value: "nld", label: "Dutch" },
+  { value: "tur", label: "Turkish" },
+  { value: "rus", label: "Russian" },
+  { value: "ara", label: "Arabic" },
+  { value: "hin", label: "Hindi" },
+  { value: "swa", label: "Swahili" },
+];
+
+function normalizeOcrText(value: string, preserveLineBreaks: boolean): string {
+  if (preserveLineBreaks) {
+    return value
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  return value.replace(/\r\n?/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractTableLikeRows(value: string): string[][] {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      if (line.includes("\t")) {
+        return line.split("\t").map((segment) => segment.trim()).filter(Boolean);
+      }
+      if (/ {2,}/.test(line)) {
+        return line.split(/ {2,}/).map((segment) => segment.trim()).filter(Boolean);
+      }
+      return [line];
+    })
+    .filter((row) => row.length >= 2);
+}
+
+function OcrWorkbenchTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
+  const [language, setLanguage] = useState("eng");
+  const [maxPdfPages, setMaxPdfPages] = useState(6);
+  const [preserveLineBreaks, setPreserveLineBreaks] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload an image or PDF to extract text.");
+  const [ocrText, setOcrText] = useState("");
+  const [pageResults, setPageResults] = useState<OcrPageResult[]>([]);
+  const progressBaseRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (sourcePreviewUrl) {
+        URL.revokeObjectURL(sourcePreviewUrl);
+      }
+    };
+  }, [sourcePreviewUrl]);
+
+  const tableRows = useMemo(() => extractTableLikeRows(ocrText), [ocrText]);
+  const averageConfidence = useMemo(() => {
+    if (!pageResults.length) return 0;
+    const total = pageResults.reduce((sum, entry) => sum + entry.confidence, 0);
+    return Math.round((total / pageResults.length) * 10) / 10;
+  }, [pageResults]);
+
+  const pickSourceFile = useCallback((nextFile: File | null) => {
+    if (sourcePreviewUrl) {
+      URL.revokeObjectURL(sourcePreviewUrl);
+      setSourcePreviewUrl("");
+    }
+    setFile(nextFile);
+    setOcrText("");
+    setPageResults([]);
+    setProgress(0);
+
+    if (!nextFile) {
+      setStatus("Upload an image or PDF to extract text.");
+      return;
+    }
+
+    if (nextFile.type.startsWith("image/")) {
+      setSourcePreviewUrl(URL.createObjectURL(nextFile));
+    }
+    setStatus(`Loaded ${nextFile.name}. Ready for OCR.`);
+  }, [sourcePreviewUrl]);
+
+  const runOcr = useCallback(async () => {
+    if (!file) {
+      setStatus("Select a file first.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(0);
+    setStatus("Preparing OCR engine...");
+    setOcrText("");
+    setPageResults([]);
+
+    let worker: OcrWorkerLike | null = null;
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+
+    try {
+      const tesseractModule = (await import("tesseract.js")) as unknown as OcrModuleLike;
+      const createWorker = tesseractModule.createWorker;
+      worker = await createWorker(language, 1, {
+        logger: (message) => {
+          if (message.status === "recognizing text") {
+            const boundedProgress = Math.max(0, Math.min(1, message.progress || 0));
+            setProgress(Math.round(progressBaseRef.current + boundedProgress * (100 - progressBaseRef.current)));
+          }
+        },
+      });
+
+      const results: OcrPageResult[] = [];
+
+      if (file.type.startsWith("image/")) {
+        setStatus("Running OCR on image...");
+        progressBaseRef.current = 0;
+        const recognition = await worker.recognize(file);
+        const data = recognition?.data as OcrRecognitionData | undefined;
+        const words = Array.isArray(data?.words) ? data.words : [];
+        const confidence = Number.isFinite(data?.confidence ?? Number.NaN) ? Number(data?.confidence) : 0;
+        results.push({
+          label: file.name,
+          text: data?.text ?? "",
+          confidence,
+          lowConfidenceWords: words
+            .filter((word) => (word.confidence ?? 0) > 0 && (word.confidence ?? 0) < 65)
+            .map((word) => word.text?.trim() ?? "")
+            .filter(Boolean)
+            .slice(0, 12),
+        });
+        setProgress(100);
+      } else if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Opening PDF pages for OCR...");
+        const pdfjs = await loadPdfJsModule();
+        const bytes = await readPdfFileBytes(file);
+        const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+        loadingTask = opened.loadingTask;
+        pdfDocument = opened.pdfDocument;
+        const totalPages = Math.max(1, Math.min(pdfDocument.numPages, maxPdfPages));
+        const stepSize = 100 / totalPages;
+
+        for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
+          const pageNumber = pageIndex + 1;
+          setStatus(`Running OCR on PDF page ${pageNumber}/${totalPages}...`);
+          const page = await pdfDocument.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 2 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(viewport.width));
+          canvas.height = Math.max(1, Math.floor(viewport.height));
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error("Canvas unavailable for OCR.");
+          }
+          await page.render({ canvasContext: context, viewport }).promise;
+          progressBaseRef.current = pageIndex * stepSize;
+
+          const recognition = await worker.recognize(canvas);
+          const data = recognition?.data as OcrRecognitionData | undefined;
+          const words = Array.isArray(data?.words) ? data.words : [];
+          const confidence = Number.isFinite(data?.confidence ?? Number.NaN) ? Number(data?.confidence) : 0;
+          results.push({
+            label: `Page ${pageNumber}`,
+            text: data?.text ?? "",
+            confidence,
+            lowConfidenceWords: words
+              .filter((word) => (word.confidence ?? 0) > 0 && (word.confidence ?? 0) < 65)
+              .map((word) => word.text?.trim() ?? "")
+              .filter(Boolean)
+              .slice(0, 12),
+          });
+          setProgress(Math.round((pageIndex + 1) * stepSize));
+        }
+
+        if (pdfDocument.numPages > totalPages) {
+          setStatus(`OCR completed for ${totalPages} page(s). Increase max pages to process more.`);
+        } else {
+          setStatus(`OCR completed for ${totalPages} page(s).`);
+        }
+      } else {
+        setStatus("Unsupported file type. Use image or PDF.");
+        return;
+      }
+
+      setPageResults(results);
+      const mergedText = results
+        .map((entry) => entry.text.trim())
+        .filter(Boolean)
+        .join("\n\n");
+      setOcrText(normalizeOcrText(mergedText, preserveLineBreaks));
+      trackEvent("tool_ocr_workbench_run", {
+        sourceType: file.type.includes("pdf") ? "pdf" : "image",
+        pages: results.length,
+        confidence: Math.round(results.reduce((sum, row) => sum + row.confidence, 0) / Math.max(1, results.length)),
+      });
+      emitShareSignal({ action: "success", context: "ocr-workbench" });
+    } catch {
+      setStatus("OCR failed. Try a clearer image, fewer PDF pages, or a different language.");
+    } finally {
+      if (worker) {
+        try {
+          await worker.terminate();
+        } catch {
+          // Ignore worker termination failures.
+        }
+      }
+      await closePdfDocumentResources(loadingTask, pdfDocument);
+      setProcessing(false);
+      setProgress((current) => (current < 100 && ocrText ? 100 : current));
+    }
+  }, [file, language, maxPdfPages, ocrText, preserveLineBreaks]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Type}
+        title="OCR workbench"
+        subtitle="Extract text from images and PDFs with confidence insights, cleanup controls, and export options."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload source</span>
+          <input
+            type="file"
+            accept="image/*,application/pdf"
+            onChange={(event) => pickSourceFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="field">
+          <span>OCR language</span>
+          <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+            {OCR_LANGUAGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Max PDF pages ({maxPdfPages})</span>
+          <input
+            type="range"
+            min={1}
+            max={20}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(20, Number(event.target.value))))}
+          />
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={preserveLineBreaks}
+            onChange={(event) => setPreserveLineBreaks(event.target.checked)}
+          />
+          Preserve line breaks in output
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!file || processing} onClick={() => void runOcr()}>
+          {processing ? "Running OCR..." : "Extract text"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!ocrText}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(ocrText);
+            setStatus(ok ? "Extracted text copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!ocrText}
+          onClick={() => downloadTextFile("ocr-output.txt", ocrText)}
+        >
+          <Download size={15} />
+          TXT
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={tableRows.length === 0}
+          onClick={() => downloadCsv("ocr-table-rows.csv", ["Column 1", "Column 2", "Column 3", "Column 4"], tableRows)}
+        >
+          <Download size={15} />
+          CSV rows
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {processing ? (
+        <div className="progress-panel">
+          <p>OCR progress: {progress}%</p>
+          <div className="limit-meter">
+            <div className="limit-meter-fill" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      {sourcePreviewUrl ? (
+        <div className="image-preview">
+          <NextImage src={sourcePreviewUrl} alt="OCR source preview" width={420} height={260} unoptimized />
+        </div>
+      ) : null}
+
+      {pageResults.length ? (
+        <ResultList
+          rows={[
+            { label: "Pages processed", value: formatNumericValue(pageResults.length) },
+            { label: "Average confidence", value: `${averageConfidence.toFixed(1)}%` },
+            { label: "Extracted characters", value: formatNumericValue(ocrText.length) },
+            { label: "Table-like rows", value: formatNumericValue(tableRows.length) },
+          ]}
+        />
+      ) : null}
+
+      {pageResults.length ? (
+        <div className="mini-panel">
+          <h3>Page confidence summary</h3>
+          <ul className="plain-list">
+            {pageResults.map((entry) => (
+              <li key={entry.label}>
+                <div className="history-line">
+                  <strong>{entry.label}</strong>
+                  <span className={`status-badge ${entry.confidence >= 80 ? "ok" : entry.confidence >= 60 ? "warn" : "bad"}`}>
+                    {entry.confidence.toFixed(1)}%
+                  </span>
+                </div>
+                {entry.lowConfidenceWords.length ? (
+                  <small className="supporting-text">
+                    Low-confidence words: {entry.lowConfidenceWords.join(", ")}
+                  </small>
+                ) : (
+                  <small className="supporting-text">No notable low-confidence words captured.</small>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Extracted text output</span>
+        <textarea
+          value={ocrText}
+          onChange={(event) => setOcrText(event.target.value)}
+          rows={14}
+          placeholder="OCR output will appear here."
+        />
+      </label>
+    </section>
+  );
+}
+
 function ProductivityTool({ id }: { id: ProductivityToolId }) {
   const { t } = useLocale();
   switch (id) {
@@ -33936,6 +34341,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":
       return <JobApplicationKitBuilderTool />;
+    case "ocr-workbench":
+      return <OcrWorkbenchTool />;
     case "invoice-generator":
       return <InvoiceGeneratorTool />;
     default:
