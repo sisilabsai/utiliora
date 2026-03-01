@@ -629,6 +629,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Policy Generator Suite"),
   },
   {
+    slug: "adsense-readiness-auditor",
+    category: "seo-tools",
+    title: "AdSense Readiness Auditor",
+    summary: "Audit your site for trust pages, indexability, and technical essentials before AdSense review.",
+    description:
+      "Run a practical pre-submission audit for About/Contact/Privacy/Terms coverage, robots/sitemap/ads.txt availability, and page quality signals with prioritized fixes.",
+    keywords: [
+      "adsense readiness checker",
+      "adsense approval checklist",
+      "adsense rejection fix",
+      "ads.txt checker",
+      "site quality audit tool",
+    ],
+    engine: { kind: "text-tool", id: "adsense-readiness-auditor" },
+    faq: baseFaq("AdSense Readiness Auditor"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",

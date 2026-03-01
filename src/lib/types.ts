@@ -93,6 +93,7 @@ export type TextToolId =
   | "js-minifier"
   | "base64-encoder-decoder"
   | "policy-generator-suite"
+  | "adsense-readiness-auditor"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

@@ -11712,6 +11712,328 @@ function PlagiarismCheckerTool() {
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
+type AuditCheckSeverity = "critical" | "important" | "info";
+
+interface AdSenseAuditCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  severity: AuditCheckSeverity;
+  weight: number;
+}
+
+interface AdSenseAuditPageRow {
+  path: string;
+  url: string;
+  status: number;
+  redirected: boolean;
+  finalUrl: string;
+  contentType: string;
+  noindex: boolean;
+  title: string;
+  canonical: string;
+  wordCount: number;
+  internalLinkCount: number;
+  error?: string;
+}
+
+interface AdSenseAuditReport {
+  ok: boolean;
+  error?: string;
+  baseUrl: string;
+  checkedAt: string;
+  durationMs: number;
+  score: {
+    value: number;
+    max: number;
+    percent: number;
+    grade: string;
+    passedChecks: number;
+    totalChecks: number;
+  };
+  checks: AdSenseAuditCheck[];
+  fixOrder: Array<{
+    id: string;
+    label: string;
+    severity: AuditCheckSeverity;
+    detail: string;
+  }>;
+  pages: AdSenseAuditPageRow[];
+  linkedTrustPages: string[];
+}
+
+function AdSenseReadinessAuditorTool() {
+  const [baseUrl, setBaseUrl] = useState("https://utiliora.cloud");
+  const [additionalPathsInput, setAdditionalPathsInput] = useState("");
+  const [timeoutMs, setTimeoutMs] = useState(8000);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("Run a site audit to get AdSense readiness score and fix order.");
+  const [report, setReport] = useState<AdSenseAuditReport | null>(null);
+
+  const additionalPaths = useMemo(
+    () =>
+      additionalPathsInput
+        .replace(/\r\n?/g, "\n")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 10),
+    [additionalPathsInput],
+  );
+
+  const runAudit = useCallback(async () => {
+    const target = baseUrl.trim();
+    if (!target) {
+      setStatus("Enter a valid website URL.");
+      return;
+    }
+    setLoading(true);
+    setStatus("Running AdSense readiness audit...");
+    try {
+      const response = await fetch("/api/adsense-readiness", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: target,
+          additionalPaths,
+          timeoutMs,
+        }),
+      });
+      const payload = (await response.json()) as AdSenseAuditReport;
+      if (!response.ok || !payload.ok) {
+        setReport(null);
+        setStatus(payload.error ?? "Audit failed.");
+        trackEvent("tool_adsense_audit_run", { success: false });
+        return;
+      }
+      setReport(payload);
+      setStatus(`Audit completed. Score: ${payload.score.percent}% (${payload.score.grade}).`);
+      trackEvent("tool_adsense_audit_run", {
+        success: true,
+        score: payload.score.percent,
+        failedChecks: payload.fixOrder.length,
+      });
+    } catch {
+      setReport(null);
+      setStatus("Audit request failed.");
+      trackEvent("tool_adsense_audit_run", { success: false });
+    } finally {
+      setLoading(false);
+    }
+  }, [additionalPaths, baseUrl, timeoutMs]);
+
+  const reportMarkdown = useMemo(() => {
+    if (!report) return "";
+    const lines = [
+      "# AdSense Readiness Audit Report",
+      "",
+      `- Base URL: ${report.baseUrl}`,
+      `- Checked: ${new Date(report.checkedAt).toLocaleString("en-US")}`,
+      `- Duration: ${report.durationMs} ms`,
+      `- Score: ${report.score.percent}% (${report.score.grade})`,
+      `- Passed checks: ${report.score.passedChecks}/${report.score.totalChecks}`,
+      "",
+      "## Fix Order",
+      ...(report.fixOrder.length
+        ? report.fixOrder.map((item, index) => `${index + 1}. [${item.severity.toUpperCase()}] ${item.label} - ${item.detail}`)
+        : ["1. No outstanding fixes."]),
+      "",
+      "## Check Results",
+      ...report.checks.map((check) => {
+        const icon = check.passed ? "PASS" : "FAIL";
+        return `- ${icon} (${check.severity}) ${check.label}: ${check.detail}`;
+      }),
+      "",
+      "## Page Audit",
+      ...report.pages.map((page) => {
+        const statusToken = page.status || 0;
+        const noindexText = page.noindex ? "yes" : "no";
+        return `- ${page.path} -> status ${statusToken}, words ${page.wordCount}, noindex ${noindexText}`;
+      }),
+    ];
+    return lines.join("\n");
+  }, [report]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={MonitorUp}
+        title="AdSense readiness auditor"
+        subtitle="Audit trust pages, crawl essentials, and content quality before or after AdSense review."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Website URL</span>
+          <input
+            type="text"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://example.com"
+          />
+        </label>
+        <label className="field">
+          <span>Request timeout (ms)</span>
+          <input
+            type="number"
+            min={2500}
+            max={15000}
+            step={250}
+            value={timeoutMs}
+            onChange={(event) => setTimeoutMs(Math.max(2500, Math.min(15000, Number(event.target.value) || 8000)))}
+          />
+        </label>
+      </div>
+      <label className="field">
+        <span>Additional paths to audit (one per line, optional)</span>
+        <textarea
+          value={additionalPathsInput}
+          onChange={(event) => setAdditionalPathsInput(event.target.value)}
+          rows={4}
+          placeholder={"/blog\n/pricing\n/faq"}
+        />
+      </label>
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={loading} onClick={() => void runAudit()}>
+          {loading ? "Auditing..." : "Run audit"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!report}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(reportMarkdown);
+            setStatus(ok ? "Audit markdown report copied." : "No report to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!report}
+          onClick={() =>
+            downloadTextFile(
+              "adsense-readiness-report.json",
+              report ? JSON.stringify(report, null, 2) : "{}",
+              "application/json;charset=utf-8;",
+            )
+          }
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!report}
+          onClick={() => downloadTextFile("adsense-readiness-report.md", reportMarkdown, "text/markdown;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      {report ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "Readiness score", value: `${report.score.percent}%`, hint: report.score.grade },
+              { label: "Passed checks", value: `${report.score.passedChecks}/${report.score.totalChecks}` },
+              { label: "Outstanding fixes", value: formatNumericValue(report.fixOrder.length) },
+              { label: "Audited pages", value: formatNumericValue(report.pages.length) },
+            ]}
+          />
+
+          <div className="mini-panel">
+            <h3>Fix order</h3>
+            {report.fixOrder.length === 0 ? (
+              <p className="supporting-text">No blocking issues detected for the default checklist.</p>
+            ) : (
+              <ol className="plain-list">
+                {report.fixOrder.map((item) => (
+                  <li key={item.id}>
+                    <div className="history-line">
+                      <strong>{item.label}</strong>
+                      <span className={`status-badge ${item.severity === "critical" ? "bad" : item.severity === "important" ? "warn" : "info"}`}>
+                        {item.severity}
+                      </span>
+                    </div>
+                    <small className="supporting-text">{item.detail}</small>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+
+          <div className="mini-panel">
+            <h3>Checklist results</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Check</th>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.checks.map((check) => (
+                    <tr key={check.id}>
+                      <td>{check.label}</td>
+                      <td>{check.severity}</td>
+                      <td>
+                        <span className={`status-badge ${check.passed ? "ok" : check.severity === "critical" ? "bad" : "warn"}`}>
+                          {check.passed ? "Pass" : "Fail"}
+                        </span>
+                      </td>
+                      <td>{check.detail}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="mini-panel">
+            <h3>Page audit table</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Status</th>
+                    <th>Words</th>
+                    <th>Noindex</th>
+                    <th>Internal links</th>
+                    <th>Title</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.pages.map((page) => (
+                    <tr key={page.path}>
+                      <td>{page.path}</td>
+                      <td>{page.status || "-"}</td>
+                      <td>{formatNumericValue(page.wordCount)}</td>
+                      <td>{page.noindex ? "Yes" : "No"}</td>
+                      <td>{formatNumericValue(page.internalLinkCount)}</td>
+                      <td>{page.title || page.error || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 interface PolicyGeneratorState {
   businessName: string;
   websiteName: string;
@@ -12421,6 +12743,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <Base64Tool />;
     case "policy-generator-suite":
       return <PolicyGeneratorSuiteTool />;
+    case "adsense-readiness-auditor":
+      return <AdSenseReadinessAuditorTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":
