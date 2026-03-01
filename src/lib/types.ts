@@ -96,6 +96,7 @@ export type TextToolId =
   | "adsense-readiness-auditor"
   | "keyword-clustering-tool"
   | "utm-link-builder"
+  | "readability-grade-checker"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

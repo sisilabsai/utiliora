@@ -680,6 +680,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("UTM Link Builder"),
   },
   {
+    slug: "readability-grade-checker",
+    category: "seo-tools",
+    title: "Readability & Grade Checker",
+    summary: "Analyze text readability with grade-level metrics, passive voice detection, and hard-sentence diagnostics.",
+    description:
+      "Measure reading ease, education-grade complexity, sentence difficulty, and passive voice patterns with practical rewrite priorities and export-ready reports.",
+    keywords: [
+      "readability checker",
+      "flesch reading ease score",
+      "grade level checker",
+      "passive voice checker",
+      "sentence complexity analyzer",
+    ],
+    engine: { kind: "text-tool", id: "readability-grade-checker" },
+    faq: baseFaq("Readability & Grade Checker"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",

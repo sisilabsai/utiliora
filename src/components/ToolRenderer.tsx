@@ -12782,6 +12782,460 @@ function UtmLinkBuilderTool() {
   );
 }
 
+interface ReadabilitySentenceDiagnostic {
+  id: string;
+  sentence: string;
+  words: number;
+  syllables: number;
+  avgSyllablesPerWord: number;
+  passiveVoice: boolean;
+  hard: boolean;
+}
+
+interface ReadabilityReport {
+  words: number;
+  characters: number;
+  sentences: number;
+  syllables: number;
+  complexWords: number;
+  avgWordsPerSentence: number;
+  avgSyllablesPerWord: number;
+  fleschReadingEase: number;
+  fleschKincaidGrade: number;
+  gunningFog: number;
+  smog: number;
+  colemanLiau: number;
+  passiveSentenceCount: number;
+  hardSentenceCount: number;
+  diagnostics: ReadabilitySentenceDiagnostic[];
+}
+
+function splitReadabilitySentences(value: string): string[] {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function countEstimatedSyllables(word: string): number {
+  const normalized = word.toLowerCase().replace(/[^a-z]/g, "");
+  if (!normalized) return 0;
+  if (normalized.length <= 3) return 1;
+
+  const trimmed = normalized
+    .replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/i, "")
+    .replace(/^y/i, "");
+  const groups = trimmed.match(/[aeiouy]{1,2}/g);
+  let count = groups ? groups.length : 1;
+  if (trimmed.endsWith("le") && trimmed.length > 2 && !/[aeiouy]le$/i.test(trimmed)) {
+    count += 1;
+  }
+  return Math.max(1, count);
+}
+
+function detectPassiveVoice(sentence: string): boolean {
+  const normalized = sentence.toLowerCase();
+  return /\b(am|is|are|was|were|be|been|being)\b\s+\w+(ed|en)\b/.test(normalized);
+}
+
+function clampReadabilityMetric(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 10) / 10;
+}
+
+function summarizeReadability(text: string): ReadabilityReport | null {
+  const words = countWords(text);
+  const characters = countCharacters(text, true);
+  const sentenceList = splitReadabilitySentences(text);
+  const sentences = sentenceList.length;
+  if (!words || !sentences) return null;
+
+  let syllables = 0;
+  let complexWords = 0;
+  const diagnostics: ReadabilitySentenceDiagnostic[] = sentenceList.map((sentence, index) => {
+    const sentenceWords = sentence.match(/[a-zA-Z][a-zA-Z'-]*/g) ?? [];
+    const wordCount = sentenceWords.length;
+    let sentenceSyllables = 0;
+    sentenceWords.forEach((word) => {
+      const estimated = countEstimatedSyllables(word);
+      sentenceSyllables += estimated;
+      syllables += estimated;
+      if (estimated >= 3) {
+        complexWords += 1;
+      }
+    });
+    const passiveVoice = detectPassiveVoice(sentence);
+    const avgSyllablesPerWord = wordCount ? sentenceSyllables / wordCount : 0;
+    const hard = wordCount >= 26 || avgSyllablesPerWord >= 1.8 || passiveVoice;
+    return {
+      id: `${index}-${sentence.slice(0, 16)}`,
+      sentence,
+      words: wordCount,
+      syllables: sentenceSyllables,
+      avgSyllablesPerWord: clampReadabilityMetric(avgSyllablesPerWord),
+      passiveVoice,
+      hard,
+    };
+  });
+
+  const avgWordsPerSentence = words / sentences;
+  const avgSyllablesPerWord = syllables / words;
+  const fleschReadingEase = 206.835 - 1.015 * avgWordsPerSentence - 84.6 * avgSyllablesPerWord;
+  const fleschKincaidGrade = 0.39 * avgWordsPerSentence + 11.8 * avgSyllablesPerWord - 15.59;
+  const gunningFog = 0.4 * (avgWordsPerSentence + (100 * complexWords) / words);
+  const smog = 1.043 * Math.sqrt(complexWords * (30 / sentences)) + 3.1291;
+  const letters = (text.match(/[A-Za-z]/g) ?? []).length;
+  const L = (letters / words) * 100;
+  const S = (sentences / words) * 100;
+  const colemanLiau = 0.0588 * L - 0.296 * S - 15.8;
+
+  const passiveSentenceCount = diagnostics.filter((entry) => entry.passiveVoice).length;
+  const hardSentenceCount = diagnostics.filter((entry) => entry.hard).length;
+
+  return {
+    words,
+    characters,
+    sentences,
+    syllables,
+    complexWords,
+    avgWordsPerSentence: clampReadabilityMetric(avgWordsPerSentence),
+    avgSyllablesPerWord: clampReadabilityMetric(avgSyllablesPerWord),
+    fleschReadingEase: clampReadabilityMetric(fleschReadingEase),
+    fleschKincaidGrade: clampReadabilityMetric(fleschKincaidGrade),
+    gunningFog: clampReadabilityMetric(gunningFog),
+    smog: clampReadabilityMetric(smog),
+    colemanLiau: clampReadabilityMetric(colemanLiau),
+    passiveSentenceCount,
+    hardSentenceCount,
+    diagnostics: diagnostics.sort((left, right) => right.words - left.words).slice(0, 18),
+  };
+}
+
+function readabilityBand(score: number): { label: string; tone: "ok" | "info" | "warn" | "bad" } {
+  if (score >= 80) return { label: "Very easy", tone: "ok" };
+  if (score >= 70) return { label: "Easy", tone: "ok" };
+  if (score >= 60) return { label: "Standard", tone: "info" };
+  if (score >= 50) return { label: "Fairly difficult", tone: "warn" };
+  if (score >= 30) return { label: "Difficult", tone: "warn" };
+  return { label: "Very difficult", tone: "bad" };
+}
+
+function gradeBand(grade: number): string {
+  if (grade <= 5) return "Elementary level";
+  if (grade <= 8) return "Middle school level";
+  if (grade <= 10) return "High school level";
+  if (grade <= 13) return "College level";
+  return "Graduate level";
+}
+
+function ReadabilityGradeCheckerTool() {
+  const [input, setInput] = useState("");
+  const [report, setReport] = useState<ReadabilityReport | null>(null);
+  const [status, setStatus] = useState("Paste text to analyze readability and grade level.");
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("append");
+
+  const readabilityLabel = report ? readabilityBand(report.fleschReadingEase) : null;
+  const recommendations = useMemo(() => {
+    if (!report) return [];
+    const tips: string[] = [];
+    if (report.avgWordsPerSentence > 20) {
+      tips.push("Shorten long sentences to improve scanning and retention.");
+    }
+    if (report.passiveSentenceCount > Math.max(2, Math.round(report.sentences * 0.2))) {
+      tips.push("Reduce passive voice and prefer active verbs for clearer messaging.");
+    }
+    if (report.complexWords > Math.round(report.words * 0.15)) {
+      tips.push("Replace dense vocabulary with simpler alternatives where possible.");
+    }
+    if (report.hardSentenceCount > Math.round(report.sentences * 0.25)) {
+      tips.push("Rewrite high-friction sentences first (long, dense, or passive).");
+    }
+    if (report.fleschReadingEase < 55) {
+      tips.push("Aim for a Reading Ease score above 60 for broader audiences.");
+    }
+    if (!tips.length) {
+      tips.push("Readability is strong; keep sentence structures varied and concise.");
+    }
+    return tips;
+  }, [report]);
+
+  const handleAnalyze = useCallback(() => {
+    const normalized = input.trim();
+    if (!normalized) {
+      setStatus("Enter text first.");
+      setReport(null);
+      return;
+    }
+    const next = summarizeReadability(normalized);
+    if (!next) {
+      setStatus("Not enough text to analyze. Add at least a few full sentences.");
+      setReport(null);
+      return;
+    }
+    setReport(next);
+    setStatus(
+      `Readability analyzed: ${next.fleschReadingEase.toFixed(1)} reading ease, grade ${next.fleschKincaidGrade.toFixed(1)}.`,
+    );
+    trackEvent("tool_readability_checker_analyze", {
+      words: next.words,
+      sentences: next.sentences,
+      readingEase: next.fleschReadingEase,
+      grade: next.fleschKincaidGrade,
+      hardSentences: next.hardSentenceCount,
+    });
+  }, [input]);
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const extension = getFileExtension(file.name);
+        const normalized =
+          extension === "html" || extension === "htm" ? extractPlainTextFromHtml(raw) : normalizeUploadedText(raw);
+        const merged = mergeUploadedText(input, normalized, uploadMode);
+        setInput(merged);
+        setStatus(`Loaded text from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load file.");
+      }
+    },
+    [input, uploadMode],
+  );
+
+  const csvRows = useMemo(
+    () =>
+      report
+        ? report.diagnostics.map((entry) => [
+            entry.sentence,
+            String(entry.words),
+            String(entry.syllables),
+            String(entry.avgSyllablesPerWord),
+            entry.passiveVoice ? "Yes" : "No",
+            entry.hard ? "Yes" : "No",
+          ])
+        : [],
+    [report],
+  );
+
+  const markdownReport = useMemo(() => {
+    if (!report) return "";
+    const lines = [
+      "# Readability Report",
+      "",
+      `- Words: ${report.words}`,
+      `- Sentences: ${report.sentences}`,
+      `- Reading Ease: ${report.fleschReadingEase.toFixed(1)} (${readabilityBand(report.fleschReadingEase).label})`,
+      `- Flesch-Kincaid Grade: ${report.fleschKincaidGrade.toFixed(1)} (${gradeBand(report.fleschKincaidGrade)})`,
+      `- Gunning Fog: ${report.gunningFog.toFixed(1)}`,
+      `- SMOG: ${report.smog.toFixed(1)}`,
+      `- Coleman-Liau: ${report.colemanLiau.toFixed(1)}`,
+      `- Passive Sentences: ${report.passiveSentenceCount}`,
+      `- Hard Sentences: ${report.hardSentenceCount}`,
+      "",
+      "## Recommendations",
+      ...recommendations.map((tip, index) => `${index + 1}. ${tip}`),
+      "",
+      "## Sentence Diagnostics",
+      ...report.diagnostics.map(
+        (entry) =>
+          `- ${entry.sentence} | words: ${entry.words} | avg syllables/word: ${entry.avgSyllablesPerWord.toFixed(
+            1,
+          )} | passive: ${entry.passiveVoice ? "yes" : "no"} | hard: ${entry.hard ? "yes" : "no"}`,
+      ),
+    ];
+    return lines.join("\n");
+  }, [report, recommendations]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Readability & grade checker"
+        subtitle="Measure reading ease, grade complexity, and hard-sentence friction before publishing."
+      />
+
+      <label className="field">
+        <span>Input text</span>
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          rows={12}
+          placeholder="Paste article, landing-page, or email copy."
+        />
+      </label>
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload text/HTML file</span>
+          <input
+            type="file"
+            accept=".txt,.md,.markdown,.html,.htm"
+            onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="field">
+          <span>Upload behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append to current text</option>
+            <option value="replace">Replace current text</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={handleAnalyze}>
+          Analyze readability
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(markdownReport || input);
+            setStatus(ok ? "Report copied." : "Nothing to copy.");
+          }}
+          disabled={!report && !input.trim()}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("readability-report.md", markdownReport, "text/markdown;charset=utf-8;")}
+          disabled={!report}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "readability-diagnostics.csv",
+              ["Sentence", "Words", "Syllables", "Avg syllables/word", "Passive", "Hard"],
+              csvRows,
+            )
+          }
+          disabled={!report}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+      </div>
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "Words", value: formatNumericValue(report?.words ?? countWords(input)) },
+          { label: "Characters", value: formatNumericValue(report?.characters ?? countCharacters(input, true)) },
+          { label: "Sentences", value: formatNumericValue(report?.sentences ?? splitReadabilitySentences(input).length) },
+          {
+            label: "Reading ease",
+            value: report ? report.fleschReadingEase.toFixed(1) : "-",
+            hint: readabilityLabel?.label,
+          },
+          {
+            label: "Grade level",
+            value: report ? report.fleschKincaidGrade.toFixed(1) : "-",
+            hint: report ? gradeBand(report.fleschKincaidGrade) : undefined,
+          },
+          { label: "Hard sentences", value: formatNumericValue(report?.hardSentenceCount ?? 0) },
+        ]}
+      />
+
+      {report ? (
+        <>
+          <p className={`status-badge ${readabilityLabel?.tone ?? "info"}`}>
+            Reading ease {report.fleschReadingEase.toFixed(1)} ({readabilityLabel?.label ?? "N/A"}) | Grade{" "}
+            {report.fleschKincaidGrade.toFixed(1)}
+          </p>
+
+          <div className="mini-panel">
+            <h3>Rewrite priorities</h3>
+            <ul className="plain-list">
+              {recommendations.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="mini-panel">
+            <h3>Readability metrics</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                    <th>Interpretation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Flesch Reading Ease</td>
+                    <td>{report.fleschReadingEase.toFixed(1)}</td>
+                    <td>{readabilityBand(report.fleschReadingEase).label}</td>
+                  </tr>
+                  <tr>
+                    <td>Flesch-Kincaid Grade</td>
+                    <td>{report.fleschKincaidGrade.toFixed(1)}</td>
+                    <td>{gradeBand(report.fleschKincaidGrade)}</td>
+                  </tr>
+                  <tr>
+                    <td>Gunning Fog</td>
+                    <td>{report.gunningFog.toFixed(1)}</td>
+                    <td>Lower is easier to read.</td>
+                  </tr>
+                  <tr>
+                    <td>SMOG</td>
+                    <td>{report.smog.toFixed(1)}</td>
+                    <td>Higher means more educational complexity.</td>
+                  </tr>
+                  <tr>
+                    <td>Coleman-Liau</td>
+                    <td>{report.colemanLiau.toFixed(1)}</td>
+                    <td>Character-based grade estimate.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="mini-panel">
+            <h3>Hard sentence diagnostics</h3>
+            <div className="table-scroll">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Sentence</th>
+                    <th>Words</th>
+                    <th>Avg syllables/word</th>
+                    <th>Passive voice</th>
+                    <th>Hard</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.diagnostics.map((entry) => (
+                    <tr key={entry.id}>
+                      <td>{entry.sentence}</td>
+                      <td>{formatNumericValue(entry.words)}</td>
+                      <td>{entry.avgSyllablesPerWord.toFixed(1)}</td>
+                      <td>{entry.passiveVoice ? "Yes" : "No"}</td>
+                      <td>{entry.hard ? "Yes" : "No"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
@@ -13822,6 +14276,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <KeywordClusteringTool />;
     case "utm-link-builder":
       return <UtmLinkBuilderTool />;
+    case "readability-grade-checker":
+      return <ReadabilityGradeCheckerTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":
