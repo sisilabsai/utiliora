@@ -94,6 +94,7 @@ export type TextToolId =
   | "base64-encoder-decoder"
   | "policy-generator-suite"
   | "adsense-readiness-auditor"
+  | "keyword-clustering-tool"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

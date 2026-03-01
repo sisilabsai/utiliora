@@ -646,6 +646,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("AdSense Readiness Auditor"),
   },
   {
+    slug: "keyword-clustering-tool",
+    category: "seo-tools",
+    title: "Keyword Clustering Tool",
+    summary: "Group keywords into intent-based topical clusters for faster SEO content planning.",
+    description:
+      "Paste keyword lists to auto-cluster related terms, identify search intent, and generate pillar-topic plans with CSV and markdown exports.",
+    keywords: [
+      "keyword clustering tool",
+      "seo keyword grouping",
+      "keyword intent clustering",
+      "topic cluster generator",
+      "content hub planning tool",
+    ],
+    engine: { kind: "text-tool", id: "keyword-clustering-tool" },
+    faq: baseFaq("Keyword Clustering Tool"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",

@@ -11709,6 +11709,631 @@ function PlagiarismCheckerTool() {
   );
 }
 
+type KeywordClusterIntent = "Informational" | "Commercial" | "Transactional" | "Navigational" | "Mixed";
+
+interface KeywordClusterInputRow {
+  keyword: string;
+  volume: number | null;
+}
+
+interface KeywordClusterItem {
+  keyword: string;
+  normalized: string;
+  tokens: string[];
+  volume: number | null;
+  intent: KeywordClusterIntent;
+  scoreToSeed: number;
+}
+
+interface KeywordClusterGroup {
+  id: string;
+  label: string;
+  seedKeyword: string;
+  intent: KeywordClusterIntent;
+  avgSimilarity: number;
+  focusTokens: string[];
+  totalVolume: number;
+  items: KeywordClusterItem[];
+}
+
+const KEYWORD_CLUSTER_STOP_WORDS = new Set([
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "your",
+  "you",
+  "are",
+  "the",
+  "best",
+  "online",
+  "free",
+  "tool",
+  "tools",
+  "how",
+  "what",
+  "why",
+  "where",
+  "when",
+  "which",
+  "guide",
+  "tips",
+  "vs",
+  "near",
+  "using",
+  "use",
+  "new",
+  "top",
+  "to",
+  "in",
+  "on",
+  "at",
+  "of",
+  "a",
+  "an",
+]);
+
+const KEYWORD_CLUSTER_TRANSACTIONAL_CUES = [
+  "buy",
+  "price",
+  "pricing",
+  "cost",
+  "quote",
+  "book",
+  "hire",
+  "discount",
+  "deal",
+  "coupon",
+  "trial",
+  "download",
+  "subscribe",
+];
+
+const KEYWORD_CLUSTER_COMMERCIAL_CUES = [
+  "best",
+  "review",
+  "reviews",
+  "compare",
+  "comparison",
+  "alternative",
+  "alternatives",
+  "top",
+  "software",
+  "platform",
+  "service",
+  "agency",
+  "tool",
+  "tools",
+];
+
+const KEYWORD_CLUSTER_INFORMATIONAL_CUES = [
+  "how",
+  "what",
+  "why",
+  "when",
+  "tutorial",
+  "learn",
+  "example",
+  "examples",
+  "checklist",
+  "template",
+  "ideas",
+  "tips",
+  "strategy",
+];
+
+function stemKeywordClusterToken(value: string): string {
+  const token = value.trim().toLowerCase();
+  if (token.length <= 4) return token;
+  if (token.endsWith("ing") && token.length > 6) return token.slice(0, -3);
+  if (token.endsWith("ies") && token.length > 5) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("ed") && token.length > 5) return token.slice(0, -2);
+  if (token.endsWith("es") && token.length > 5) return token.slice(0, -2);
+  if (token.endsWith("s") && token.length > 4) return token.slice(0, -1);
+  return token;
+}
+
+function tokenizeKeywordClusterInput(keyword: string): string[] {
+  const tokens = keyword
+    .toLowerCase()
+    .match(/[a-z0-9+#.-]{2,}/g)
+    ?.map((token) => stemKeywordClusterToken(token))
+    .filter((token) => token.length >= 2 && !KEYWORD_CLUSTER_STOP_WORDS.has(token));
+  return tokens?.length ? tokens : [];
+}
+
+function normalizeKeywordClusterPhrase(keyword: string): string {
+  return keyword.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function scoreKeywordClusterSimilarity(left: KeywordClusterItem, right: KeywordClusterItem): number {
+  const leftSet = new Set(left.tokens);
+  const rightSet = new Set(right.tokens);
+  const union = new Set([...leftSet, ...rightSet]);
+  if (!union.size) return 0;
+  let intersectionCount = 0;
+  leftSet.forEach((token) => {
+    if (rightSet.has(token)) intersectionCount += 1;
+  });
+  let score = intersectionCount / union.size;
+  if (left.normalized.includes(right.normalized) || right.normalized.includes(left.normalized)) {
+    score += 0.15;
+  }
+  return Math.max(0, Math.min(1, score));
+}
+
+function inferKeywordClusterIntent(keyword: string): KeywordClusterIntent {
+  const normalized = keyword.toLowerCase();
+  const hasTransactional = KEYWORD_CLUSTER_TRANSACTIONAL_CUES.some((cue) => normalized.includes(cue));
+  const hasCommercial = KEYWORD_CLUSTER_COMMERCIAL_CUES.some((cue) => normalized.includes(cue));
+  const hasInformational = KEYWORD_CLUSTER_INFORMATIONAL_CUES.some((cue) => normalized.includes(cue));
+  const hasNavigational = normalized.includes("login") || normalized.includes("sign in") || normalized.includes(".com");
+
+  const bucketCount = [hasTransactional, hasCommercial, hasInformational, hasNavigational].filter(Boolean).length;
+  if (bucketCount > 1) return "Mixed";
+  if (hasTransactional) return "Transactional";
+  if (hasCommercial) return "Commercial";
+  if (hasInformational) return "Informational";
+  if (hasNavigational) return "Navigational";
+  return "Informational";
+}
+
+function resolveClusterIntent(items: KeywordClusterItem[]): KeywordClusterIntent {
+  const counts = new Map<KeywordClusterIntent, number>();
+  items.forEach((item) => {
+    counts.set(item.intent, (counts.get(item.intent) ?? 0) + 1);
+  });
+  const sorted = [...counts.entries()].sort((left, right) => right[1] - left[1]);
+  if (!sorted.length) return "Informational";
+  if (sorted.length > 1 && sorted[0][1] === sorted[1][1]) return "Mixed";
+  return sorted[0][0];
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function parseKeywordClusterInput(raw: string): KeywordClusterInputRow[] {
+  const unique = new Set<string>();
+  const rows: KeywordClusterInputRow[] = [];
+
+  raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const parsed = line.match(/^(.*?)[,\t|;]\s*([\d,]+)\s*$/);
+      const keyword = (parsed?.[1] ?? line).replace(/^[-*•]\s*/, "").trim();
+      if (!keyword) return;
+      const normalizedKey = normalizeKeywordClusterPhrase(keyword);
+      if (unique.has(normalizedKey)) return;
+      unique.add(normalizedKey);
+
+      const volumeRaw = parsed?.[2]?.replace(/,/g, "") ?? "";
+      const volumeCandidate = Number.parseInt(volumeRaw, 10);
+      rows.push({
+        keyword,
+        volume: Number.isFinite(volumeCandidate) && volumeCandidate > 0 ? volumeCandidate : null,
+      });
+    });
+
+  return rows;
+}
+
+function buildKeywordClusters(inputRows: KeywordClusterInputRow[], threshold: number): KeywordClusterGroup[] {
+  const rows: KeywordClusterItem[] = inputRows
+    .map((row) => {
+      const normalized = normalizeKeywordClusterPhrase(row.keyword);
+      const tokens = tokenizeKeywordClusterInput(row.keyword);
+      return {
+        keyword: row.keyword,
+        normalized,
+        tokens: tokens.length ? tokens : normalized.split(/\s+/).filter(Boolean),
+        volume: row.volume,
+        intent: inferKeywordClusterIntent(row.keyword),
+        scoreToSeed: 1,
+      };
+    })
+    .filter((row) => row.normalized.length >= 2);
+
+  const groups: KeywordClusterGroup[] = [];
+  const safeThreshold = Math.max(0.15, Math.min(0.9, threshold));
+
+  rows.forEach((row) => {
+    if (!groups.length) {
+      groups.push({
+        id: crypto.randomUUID(),
+        label: toTitleCase(row.keyword),
+        seedKeyword: row.keyword,
+        intent: row.intent,
+        avgSimilarity: 1,
+        focusTokens: row.tokens.slice(0, 3),
+        totalVolume: row.volume ?? 0,
+        items: [{ ...row, scoreToSeed: 1 }],
+      });
+      return;
+    }
+
+    let bestGroup: KeywordClusterGroup | null = null;
+    let bestScore = 0;
+
+    for (const group of groups) {
+      const seed = group.items[0];
+      const seedScore = scoreKeywordClusterSimilarity(row, seed);
+      const peerScores = group.items
+        .slice(0, 5)
+        .map((item) => scoreKeywordClusterSimilarity(row, item))
+        .sort((left, right) => right - left);
+      const peerScore = peerScores[0] ?? 0;
+      const weightedScore = seedScore * 0.7 + peerScore * 0.3;
+      if (weightedScore > bestScore) {
+        bestScore = weightedScore;
+        bestGroup = group;
+      }
+    }
+
+    if (!bestGroup || bestScore < safeThreshold) {
+      groups.push({
+        id: crypto.randomUUID(),
+        label: toTitleCase(row.keyword),
+        seedKeyword: row.keyword,
+        intent: row.intent,
+        avgSimilarity: 1,
+        focusTokens: row.tokens.slice(0, 3),
+        totalVolume: row.volume ?? 0,
+        items: [{ ...row, scoreToSeed: 1 }],
+      });
+      return;
+    }
+
+    bestGroup.items.push({ ...row, scoreToSeed: bestScore });
+    bestGroup.totalVolume += row.volume ?? 0;
+  });
+
+  groups.forEach((group) => {
+    group.items.sort((left, right) => {
+      const leftVolume = left.volume ?? -1;
+      const rightVolume = right.volume ?? -1;
+      if (leftVolume !== rightVolume) return rightVolume - leftVolume;
+      return left.keyword.localeCompare(right.keyword);
+    });
+
+    const tokenFrequency = new Map<string, number>();
+    group.items.forEach((item) => {
+      item.tokens.forEach((token) => {
+        tokenFrequency.set(token, (tokenFrequency.get(token) ?? 0) + 1);
+      });
+    });
+
+    group.focusTokens = [...tokenFrequency.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 4)
+      .map(([token]) => token);
+    group.intent = resolveClusterIntent(group.items);
+    group.avgSimilarity =
+      Math.round(
+        (group.items.reduce((sum, item) => sum + item.scoreToSeed, 0) / Math.max(1, group.items.length)) * 1000,
+      ) / 1000;
+    group.label = toTitleCase(group.focusTokens.slice(0, 2).join(" ")) || toTitleCase(group.seedKeyword);
+  });
+
+  return groups.sort((left, right) => {
+    if (left.items.length !== right.items.length) return right.items.length - left.items.length;
+    if (left.totalVolume !== right.totalVolume) return right.totalVolume - left.totalVolume;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+function buildKeywordClusterMarkdown(
+  groups: KeywordClusterGroup[],
+  inputRows: KeywordClusterInputRow[],
+  threshold: number,
+): string {
+  const lines: string[] = [
+    "# Keyword Clustering Report",
+    "",
+    `- Keywords analyzed: ${inputRows.length}`,
+    `- Clusters generated: ${groups.length}`,
+    `- Similarity threshold: ${threshold.toFixed(2)}`,
+    "",
+    "## Cluster Summary",
+  ];
+
+  groups.forEach((group, index) => {
+    lines.push(
+      `${index + 1}. ${group.label} | Intent: ${group.intent} | Keywords: ${group.items.length} | Avg similarity: ${(
+        group.avgSimilarity * 100
+      ).toFixed(1)}%`,
+    );
+  });
+
+  lines.push("", "## Cluster Details");
+  groups.forEach((group, index) => {
+    lines.push("");
+    lines.push(`### Cluster ${index + 1}: ${group.label}`);
+    lines.push(`- Intent: ${group.intent}`);
+    lines.push(`- Seed keyword: ${group.seedKeyword}`);
+    lines.push(`- Focus tokens: ${group.focusTokens.join(", ") || "-"}`);
+    lines.push(`- Estimated volume sum: ${group.totalVolume > 0 ? group.totalVolume.toString() : "n/a"}`);
+    lines.push(`- Suggested pillar topic: Ultimate Guide to ${group.label}`);
+    lines.push("- Keywords:");
+    group.items.forEach((item) => {
+      const volume = item.volume ? ` | Vol: ${item.volume}` : "";
+      lines.push(`  - ${item.keyword}${volume}`);
+    });
+  });
+
+  return lines.join("\n");
+}
+
+function KeywordClusteringTool() {
+  const [keywordInput, setKeywordInput] = useState("");
+  const [threshold, setThreshold] = useState(0.42);
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("append");
+  const [status, setStatus] = useState("Paste keywords to cluster by topical relevance and intent.");
+  const [groups, setGroups] = useState<KeywordClusterGroup[]>([]);
+  const [inputRows, setInputRows] = useState<KeywordClusterInputRow[]>([]);
+
+  const reportMarkdown = useMemo(
+    () => (groups.length ? buildKeywordClusterMarkdown(groups, inputRows, threshold) : ""),
+    [groups, inputRows, threshold],
+  );
+
+  const analyze = useCallback(() => {
+    const parsedRows = parseKeywordClusterInput(keywordInput);
+    if (!parsedRows.length) {
+      setStatus("Enter at least 3 keywords to cluster.");
+      setGroups([]);
+      setInputRows([]);
+      return;
+    }
+    if (parsedRows.length < 3) {
+      setStatus("Add at least 3 keywords for useful clustering.");
+      setGroups([]);
+      setInputRows(parsedRows);
+      return;
+    }
+
+    const clustered = buildKeywordClusters(parsedRows, threshold);
+    setInputRows(parsedRows);
+    setGroups(clustered);
+    setStatus(`Created ${clustered.length} clusters from ${parsedRows.length} keywords.`);
+    trackEvent("tool_keyword_clustering_run", {
+      keywords: parsedRows.length,
+      clusters: clustered.length,
+      threshold: Number(threshold.toFixed(2)),
+    });
+  }, [keywordInput, threshold]);
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const nextValue =
+          uploadMode === "replace" || !keywordInput.trim()
+            ? normalized
+            : `${keywordInput.trimEnd()}\n${normalized.trimStart()}`;
+        setKeywordInput(nextValue);
+        setStatus(`Loaded keyword list from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load keyword file.");
+      }
+    },
+    [keywordInput, uploadMode],
+  );
+
+  const csvRows = useMemo(
+    () =>
+      groups.flatMap((group) =>
+        group.items.map((item) => [
+          group.label,
+          group.intent,
+          group.seedKeyword,
+          item.keyword,
+          item.volume ? String(item.volume) : "",
+          (item.scoreToSeed * 100).toFixed(2),
+        ]),
+      ),
+    [groups],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Tags}
+        title="Keyword clustering tool"
+        subtitle="Group keywords into intent clusters and plan pillar-content hubs faster."
+      />
+
+      <label className="field">
+        <span>Keywords (one per line, optional volume like: keyword,1200)</span>
+        <textarea
+          value={keywordInput}
+          onChange={(event) => setKeywordInput(event.target.value)}
+          rows={11}
+          placeholder={"seo audit checklist\nbest seo audit tool\ntechnical seo audit template,1200"}
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Similarity threshold ({threshold.toFixed(2)})</span>
+          <input
+            type="range"
+            min={0.15}
+            max={0.8}
+            step={0.01}
+            value={threshold}
+            onChange={(event) => setThreshold(Math.max(0.15, Math.min(0.8, Number(event.target.value))))}
+          />
+          <small className="supporting-text">Lower values merge broader topics. Higher values create tighter clusters.</small>
+        </label>
+        <label className="field">
+          <span>Import keyword file</span>
+          <input type="file" accept=".txt,.csv,.tsv,.md" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append to existing list</option>
+            <option value="replace">Replace existing list</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={analyze}>
+          Cluster keywords
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(reportMarkdown);
+            setStatus(ok ? "Cluster report copied." : "No report to copy yet.");
+          }}
+          disabled={!groups.length}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("keyword-clusters.md", reportMarkdown, "text/markdown;charset=utf-8;")}
+          disabled={!groups.length}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            downloadCsv(
+              "keyword-clusters.csv",
+              ["Cluster", "Intent", "Seed Keyword", "Keyword", "Volume", "Similarity to Seed %"],
+              csvRows,
+            )
+          }
+          disabled={!groups.length}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setKeywordInput("");
+            setGroups([]);
+            setInputRows([]);
+            setStatus("Cleared keyword clustering workspace.");
+          }}
+        >
+          <Trash2 size={15} />
+          Clear
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Keywords parsed", value: formatNumericValue(inputRows.length) },
+          { label: "Clusters", value: formatNumericValue(groups.length) },
+          {
+            label: "Largest cluster",
+            value: groups.length ? formatNumericValue(groups[0].items.length) : "0",
+            hint: groups.length ? groups[0].label : undefined,
+          },
+          {
+            label: "Keywords with volume",
+            value: formatNumericValue(inputRows.filter((row) => typeof row.volume === "number").length),
+          },
+        ]}
+      />
+
+      {groups.length ? (
+        <div className="mini-panel">
+          <h3>Cluster summary</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Cluster</th>
+                  <th>Intent</th>
+                  <th>Keywords</th>
+                  <th>Avg similarity</th>
+                  <th>Estimated volume</th>
+                  <th>Pillar topic suggestion</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((group) => (
+                  <tr key={group.id}>
+                    <td>{group.label}</td>
+                    <td>{group.intent}</td>
+                    <td>{formatNumericValue(group.items.length)}</td>
+                    <td>{(group.avgSimilarity * 100).toFixed(1)}%</td>
+                    <td>{group.totalVolume > 0 ? formatNumericValue(group.totalVolume) : "-"}</td>
+                    <td>{`Ultimate Guide to ${group.label}`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {groups.map((group, index) => (
+        <div key={group.id} className="mini-panel">
+          <div className="panel-head">
+            <h3>
+              Cluster {index + 1}: {group.label}
+            </h3>
+            <span className="status-badge info">{group.intent}</span>
+          </div>
+          <p className="supporting-text">
+            Seed: {group.seedKeyword} | Focus tokens: {group.focusTokens.join(", ") || "-"} | Suggested pillar:{" "}
+            {`Ultimate Guide to ${group.label}`}
+          </p>
+          <div className="chip-list">
+            {group.items.map((item) => (
+              <span key={`${group.id}-${item.keyword}`} className="chip">
+                {item.keyword}
+                {item.volume ? ` (${formatNumericValue(item.volume)})` : ""}
+              </span>
+            ))}
+          </div>
+          <div className="button-row">
+            <button
+              className="chip-button"
+              type="button"
+              onClick={async () => {
+                const ok = await copyTextToClipboard(group.items.map((item) => item.keyword).join("\n"));
+                setStatus(ok ? `Copied ${group.items.length} keywords from ${group.label}.` : "Could not copy cluster keywords.");
+              }}
+            >
+              <Copy size={14} />
+              Copy cluster keywords
+            </button>
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
@@ -12745,6 +13370,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <PolicyGeneratorSuiteTool />;
     case "adsense-readiness-auditor":
       return <AdSenseReadinessAuditorTool />;
+    case "keyword-clustering-tool":
+      return <KeywordClusteringTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":
