@@ -36413,12 +36413,210 @@ interface JobApplicationKitResult {
   missingKeywords: string[];
   priorityMissingKeywords: string[];
   rewrittenBullets: string[];
+  resumeSummaryDraft: string;
+  interviewPitch: string;
+  networkingMessage: string;
+  atsChecklist: string[];
   coverLetter: string;
   emails: {
     postApplication: string;
     interviewThankYou: string;
     noResponseFollowUp: string;
   };
+}
+
+type JobApplicationImportMode = "replace" | "append";
+
+interface JobPostingScrapeResponse {
+  ok: boolean;
+  error?: string;
+  requestedUrl?: string;
+  finalUrl?: string;
+  redirected?: boolean;
+  status?: number;
+  source?: "jsonld" | "html";
+  roleTitle?: string;
+  companyName?: string;
+  location?: string;
+  employmentType?: string;
+  summary?: string;
+  jobDescription?: string;
+  wordCount?: number;
+}
+
+interface JobApplicationKitScrapeMeta {
+  requestedUrl: string;
+  finalUrl: string;
+  source: "jsonld" | "html";
+  importedAt: number;
+  wordCount: number;
+  status: number;
+}
+
+const JOB_APPLICATION_KIT_UPLOAD_ACCEPT =
+  ".pdf,.doc,.docx,.docm,.dotx,.dotm,.ppt,.pptx,.pptm,.potx,.potm,.xls,.xlsx,.xlsm,.xltx,.xltm,.odt,.ods,.odp,.epub,.rtf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,application/pdf,application/json";
+const JOB_APPLICATION_KIT_UPLOAD_MAX_BYTES = 30 * 1024 * 1024;
+const JOB_APPLICATION_KIT_STORAGE_BASE_KEY = "utiliora-job-application-kit-v2";
+
+function sanitizeJobKitArray(raw: unknown, limit: number, maxLen = 220): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean)
+    .map((entry) => entry.slice(0, maxLen))
+    .slice(0, limit);
+}
+
+function sanitizeJobApplicationKitResult(raw: unknown): JobApplicationKitResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<JobApplicationKitResult>;
+  if (!Number.isFinite(candidate.scorePercent) || !Number.isFinite(candidate.totalTrackedKeywords)) return null;
+  if (!candidate.emails || typeof candidate.emails !== "object") return null;
+  const emails = candidate.emails as Partial<JobApplicationKitResult["emails"]>;
+  return {
+    scorePercent: Math.max(0, Math.min(100, Math.round(Number(candidate.scorePercent)))),
+    totalTrackedKeywords: Math.max(0, Math.min(200, Math.round(Number(candidate.totalTrackedKeywords)))),
+    matchedKeywords: sanitizeJobKitArray(candidate.matchedKeywords, 80, 80),
+    missingKeywords: sanitizeJobKitArray(candidate.missingKeywords, 80, 80),
+    priorityMissingKeywords: sanitizeJobKitArray(candidate.priorityMissingKeywords, 24, 80),
+    rewrittenBullets: sanitizeJobKitArray(candidate.rewrittenBullets, 24, 320),
+    resumeSummaryDraft:
+      typeof candidate.resumeSummaryDraft === "string" ? candidate.resumeSummaryDraft.slice(0, 2400) : "",
+    interviewPitch: typeof candidate.interviewPitch === "string" ? candidate.interviewPitch.slice(0, 1200) : "",
+    networkingMessage: typeof candidate.networkingMessage === "string" ? candidate.networkingMessage.slice(0, 800) : "",
+    atsChecklist: sanitizeJobKitArray(candidate.atsChecklist, 20, 180),
+    coverLetter: typeof candidate.coverLetter === "string" ? candidate.coverLetter.slice(0, 20_000) : "",
+    emails: {
+      postApplication: typeof emails.postApplication === "string" ? emails.postApplication.slice(0, 8000) : "",
+      interviewThankYou: typeof emails.interviewThankYou === "string" ? emails.interviewThankYou.slice(0, 8000) : "",
+      noResponseFollowUp: typeof emails.noResponseFollowUp === "string" ? emails.noResponseFollowUp.slice(0, 8000) : "",
+    },
+  };
+}
+
+function sanitizeJobApplicationKitScrapeMeta(raw: unknown): JobApplicationKitScrapeMeta | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<JobApplicationKitScrapeMeta>;
+  if (typeof candidate.requestedUrl !== "string" || typeof candidate.finalUrl !== "string") return null;
+  const source = candidate.source === "jsonld" || candidate.source === "html" ? candidate.source : null;
+  if (!source) return null;
+  return {
+    requestedUrl: candidate.requestedUrl.slice(0, 400),
+    finalUrl: candidate.finalUrl.slice(0, 400),
+    source,
+    importedAt: Number.isFinite(candidate.importedAt) ? Number(candidate.importedAt) : Date.now(),
+    wordCount: Number.isFinite(candidate.wordCount) ? Math.max(0, Math.min(200_000, Number(candidate.wordCount))) : 0,
+    status: Number.isFinite(candidate.status) ? Math.max(0, Math.min(999, Number(candidate.status))) : 0,
+  };
+}
+
+function normalizeJobKitEditableText(value: string): string {
+  return normalizeUploadedText(value)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function mergeJobKitText(current: string, incoming: string, mode: JobApplicationImportMode, sourceLabel: string): string {
+  const normalizedIncoming = normalizeJobKitEditableText(incoming);
+  if (!normalizedIncoming) return normalizeJobKitEditableText(current);
+  if (mode === "replace" || !current.trim()) return normalizedIncoming;
+  const header = sourceLabel ? `\n\n----- ${sourceLabel} -----\n` : "\n\n";
+  return normalizeJobKitEditableText(`${current.trimEnd()}${header}${normalizedIncoming}`);
+}
+
+function extractTextFromJsonPayload(raw: string, target: "resume" | "job"): string {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return raw;
+    const record = parsed as Record<string, unknown>;
+    const targetKey = target === "resume" ? "resumeText" : "jobDescription";
+    const direct = record[targetKey];
+    if (typeof direct === "string" && direct.trim()) return direct;
+    if (typeof record.text === "string" && record.text.trim()) return record.text;
+    if (typeof record.content === "string" && record.content.trim()) return record.content;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function buildJobApplicationKitHtmlDocument(markdown: string): string {
+  const bodyHtml = markdownToHtml(markdown || "# Job Application Kit\n\nNo content generated yet.");
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Job Application Kit</title>
+  <style>
+    body { margin: 24px auto; max-width: 840px; padding: 0 16px; font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; line-height: 1.55; }
+    h1, h2, h3 { color: #0f172a; line-height: 1.3; }
+    pre, code { font-family: Consolas, "Courier New", monospace; }
+    pre { background: #f4f6f8; border: 1px solid #dbe2ea; border-radius: 10px; padding: 12px; overflow: auto; white-space: pre-wrap; }
+    a { color: #0f4fa8; }
+    ul, ol { padding-left: 22px; }
+  </style>
+</head>
+<body>${bodyHtml}</body>
+</html>`;
+}
+
+function buildJobApplicationKitJson(options: {
+  applicantName: string;
+  applicantEmail: string;
+  roleTitle: string;
+  companyName: string;
+  resumeText: string;
+  jobDescription: string;
+  result: JobApplicationKitResult;
+  scrapeMeta: JobApplicationKitScrapeMeta | null;
+}): string {
+  return JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      applicant: {
+        name: options.applicantName,
+        email: options.applicantEmail,
+      },
+      target: {
+        roleTitle: options.roleTitle,
+        companyName: options.companyName,
+      },
+      sources: {
+        resumeTextChars: options.resumeText.length,
+        jobDescriptionChars: options.jobDescription.length,
+        scrapedJobPosting: options.scrapeMeta,
+      },
+      result: options.result,
+    },
+    null,
+    2,
+  );
+}
+
+function buildResumeBuilderHandoffUrl(resumeText: string, jobDescription: string): string | null {
+  const normalizedResume = normalizeJobKitEditableText(resumeText);
+  const normalizedJobDescription = normalizeJobKitEditableText(jobDescription);
+  if (!normalizedResume && !normalizedJobDescription) return null;
+
+  try {
+    const url = new URL("/productivity-tools/resume-builder", window.location.origin);
+    if (normalizedResume) {
+      const fallback = createDefaultResumeData();
+      const structured = buildResumeFromImportedText(normalizedResume, fallback);
+      const sanitized = sanitizeResumeData(structured);
+      if (sanitized) {
+        url.searchParams.set("resumeData", encodeBase64Url(JSON.stringify(sanitized)));
+      }
+    }
+    if (normalizedJobDescription) {
+      url.searchParams.set("jd", encodeURIComponent(normalizedJobDescription));
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 const JOB_APPLICATION_STOP_WORDS = new Set([
@@ -36568,6 +36766,17 @@ function buildJobApplicationKit(options: {
 
   const keywordHighlights = matchedKeywords.slice(0, 8).join(", ") || "cross-functional execution";
   const growthFocus = priorityMissingKeywords.slice(0, 4).join(", ") || "role-specific impact metrics";
+  const resumeSummaryDraft = `${roleTitle} candidate with demonstrated execution across ${keywordHighlights}. Known for translating ambiguity into delivery plans, aligning stakeholders, and shipping measurable outcomes. Target impact areas for ${companyName}: ${growthFocus}.`;
+  const interviewPitch = `I focus on turning priorities into measurable delivery. In previous roles, I improved execution quality and stakeholder clarity across initiatives tied to ${keywordHighlights}. For ${companyName}, I would start by aligning on success metrics, then execute against ${growthFocus} with transparent reporting and fast iteration.`;
+  const networkingMessage = `Hi, I am exploring ${roleTitle} opportunities at ${companyName}. I bring experience in ${keywordHighlights} and would value connecting about team priorities and fit.`;
+  const atsChecklist = [
+    "Align resume headline with exact role title from posting.",
+    "Add top missing keywords naturally in skills and experience bullets.",
+    "Quantify at least 3 bullets using %, $, time saved, or volume.",
+    "Place strongest role-relevant achievements in first 6 bullets.",
+    "Mirror posting terminology for tools, frameworks, and domain language.",
+    "Keep resume format ATS-safe (simple headings, no tables/images).",
+  ];
 
   const coverLetter = `Dear Hiring Manager at ${companyName},
 
@@ -36626,6 +36835,10 @@ ${applicantEmail}`,
     missingKeywords,
     priorityMissingKeywords,
     rewrittenBullets,
+    resumeSummaryDraft,
+    interviewPitch,
+    networkingMessage,
+    atsChecklist,
     coverLetter,
     emails,
   };
@@ -36659,6 +36872,18 @@ function buildJobApplicationKitMarkdown(options: {
     "## Resume Bullet Rewrite Suggestions",
     ...result.rewrittenBullets,
     "",
+    "## Professional Summary Draft",
+    result.resumeSummaryDraft,
+    "",
+    "## 60-Second Interview Pitch",
+    result.interviewPitch,
+    "",
+    "## Networking Message",
+    result.networkingMessage,
+    "",
+    "## ATS Optimization Checklist",
+    ...result.atsChecklist.map((line, index) => `${index + 1}. ${line}`),
+    "",
     "## Cover Letter Draft",
     result.coverLetter,
     "",
@@ -36676,14 +36901,105 @@ function buildJobApplicationKitMarkdown(options: {
 }
 
 function JobApplicationKitBuilderTool() {
+  const toolSession = useToolSession({
+    toolKey: "job-application-kit",
+    defaultSessionLabel: "Application kit",
+    newSessionPrefix: "job-kit",
+  });
+  const storageKey = toolSession.storageKey(JOB_APPLICATION_KIT_STORAGE_BASE_KEY);
+  const resumeImportRef = useRef<HTMLInputElement | null>(null);
+  const jobImportRef = useRef<HTMLInputElement | null>(null);
+
   const [applicantName, setApplicantName] = useState("Your Name");
   const [applicantEmail, setApplicantEmail] = useState("your.email@example.com");
   const [roleTitle, setRoleTitle] = useState("Product Manager");
   const [companyName, setCompanyName] = useState("Target Company");
   const [resumeText, setResumeText] = useState("");
   const [jobDescription, setJobDescription] = useState("");
-  const [status, setStatus] = useState("Paste resume + job description, then generate your complete application kit.");
+  const [jobPostingUrl, setJobPostingUrl] = useState("");
+  const [importMode, setImportMode] = useState<JobApplicationImportMode>("replace");
+  const [scrapeTimeoutMs, setScrapeTimeoutMs] = useState(12_000);
+  const [status, setStatus] = useState("Import files or a job URL, then generate your complete application kit.");
   const [result, setResult] = useState<JobApplicationKitResult | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isScrapingJobPosting, setIsScrapingJobPosting] = useState(false);
+  const [scrapeMeta, setScrapeMeta] = useState<JobApplicationKitScrapeMeta | null>(null);
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<{
+        applicantName: string;
+        applicantEmail: string;
+        roleTitle: string;
+        companyName: string;
+        resumeText: string;
+        jobDescription: string;
+        jobPostingUrl: string;
+        importMode: JobApplicationImportMode;
+        scrapeTimeoutMs: number;
+        result: unknown;
+        scrapeMeta: unknown;
+      }>;
+      if (typeof parsed.applicantName === "string") setApplicantName(parsed.applicantName);
+      if (typeof parsed.applicantEmail === "string") setApplicantEmail(parsed.applicantEmail);
+      if (typeof parsed.roleTitle === "string") setRoleTitle(parsed.roleTitle);
+      if (typeof parsed.companyName === "string") setCompanyName(parsed.companyName);
+      if (typeof parsed.resumeText === "string") setResumeText(parsed.resumeText);
+      if (typeof parsed.jobDescription === "string") setJobDescription(parsed.jobDescription);
+      if (typeof parsed.jobPostingUrl === "string") setJobPostingUrl(parsed.jobPostingUrl);
+      if (parsed.importMode === "append" || parsed.importMode === "replace") setImportMode(parsed.importMode);
+      if (Number.isFinite(parsed.scrapeTimeoutMs)) {
+        setScrapeTimeoutMs(Math.max(3000, Math.min(20_000, Math.round(Number(parsed.scrapeTimeoutMs)))));
+      }
+      const savedResult = sanitizeJobApplicationKitResult(parsed.result);
+      if (savedResult) setResult(savedResult);
+      const savedMeta = sanitizeJobApplicationKitScrapeMeta(parsed.scrapeMeta);
+      if (savedMeta) setScrapeMeta(savedMeta);
+    } catch {
+      // Ignore malformed local state.
+    }
+  }, [storageKey, toolSession.isReady]);
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    try {
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          applicantName,
+          applicantEmail,
+          roleTitle,
+          companyName,
+          resumeText,
+          jobDescription,
+          jobPostingUrl,
+          importMode,
+          scrapeTimeoutMs,
+          result,
+          scrapeMeta,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [
+    applicantEmail,
+    applicantName,
+    companyName,
+    importMode,
+    jobDescription,
+    jobPostingUrl,
+    resumeText,
+    result,
+    roleTitle,
+    scrapeMeta,
+    scrapeTimeoutMs,
+    storageKey,
+    toolSession.isReady,
+  ]);
 
   const kitMarkdown = useMemo(() => {
     if (!result) return "";
@@ -36695,38 +37011,159 @@ function JobApplicationKitBuilderTool() {
     });
   }, [applicantName, companyName, result, roleTitle]);
 
-  const handleTextUpload = useCallback(
-    async (file: File | null, target: "resume" | "job") => {
-      if (!file) return;
-      try {
-        const content = await readTextFileWithLimit(file, 1024 * 1024);
-        if (target === "resume") {
-          setResumeText(content);
-          setStatus(`Loaded resume text from ${file.name}.`);
-        } else {
-          setJobDescription(content);
-          setStatus(`Loaded job description text from ${file.name}.`);
-        }
-      } catch {
-        setStatus("Could not read uploaded file. Use .txt, .md, or other plain-text files.");
-      }
-    },
-    [],
+  const kitHtml = useMemo(() => (result ? buildJobApplicationKitHtmlDocument(kitMarkdown) : ""), [kitMarkdown, result]);
+  const kitJson = useMemo(
+    () =>
+      result
+        ? buildJobApplicationKitJson({
+            applicantName,
+            applicantEmail,
+            roleTitle,
+            companyName,
+            resumeText,
+            jobDescription,
+            result,
+            scrapeMeta,
+          })
+        : "",
+    [applicantEmail, applicantName, companyName, jobDescription, resumeText, result, roleTitle, scrapeMeta],
   );
 
+  const importFiles = useCallback(
+    async (files: FileList | null, target: "resume" | "job") => {
+      if (!files?.length) return;
+      setIsImporting(true);
+      setStatus(`Importing ${files.length} file${files.length > 1 ? "s" : ""}...`);
+      const fragments: string[] = [];
+      try {
+        for (const file of Array.from(files).slice(0, 12)) {
+          if (file.size > JOB_APPLICATION_KIT_UPLOAD_MAX_BYTES) {
+            throw new Error(`"${file.name}" is larger than ${formatBytes(JOB_APPLICATION_KIT_UPLOAD_MAX_BYTES)}.`);
+          }
+          const lowerName = file.name.toLowerCase();
+          let importedText = "";
+          let source = "Text";
+
+          if (lowerName.endsWith(".json") || file.type === "application/json") {
+            const raw = await file.text();
+            importedText = extractTextFromJsonPayload(raw, target);
+            source = "JSON";
+          } else if (lowerName.endsWith(".pdf") || file.type === "application/pdf") {
+            const parsedPdf = await extractTextFromPdfDocument(file, {
+              pageRangeInput: "all",
+              maxPages: 10,
+              includePageMarkers: false,
+            });
+            importedText = parsedPdf.text;
+            source = `PDF (${parsedPdf.selectedPages.length}p)`;
+          } else {
+            const parsedDocument = await extractTextFromDocumentFile(file, {
+              convertHtmlToText: true,
+            });
+            importedText = parsedDocument.text;
+            source = parsedDocument.source;
+          }
+
+          const normalized = normalizeJobKitEditableText(importedText);
+          if (!normalized) continue;
+          fragments.push(`Source file: ${file.name} (${source})\n${normalized}`);
+        }
+
+        if (!fragments.length) {
+          setStatus("No readable text was extracted from selected files.");
+          return;
+        }
+
+        const incoming = fragments.join("\n\n");
+        if (target === "resume") {
+          setResumeText((current) => mergeJobKitText(current, incoming, importMode, "Resume import"));
+        } else {
+          setJobDescription((current) => mergeJobKitText(current, incoming, importMode, "Job import"));
+        }
+        setStatus(`Imported ${fragments.length} file${fragments.length > 1 ? "s" : ""} for ${target}.`);
+        trackEvent("tool_job_application_kit_import", { target, mode: importMode, files: fragments.length });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import selected files.");
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [importMode],
+  );
+
+  const importFromJobUrl = useCallback(async () => {
+    const target = jobPostingUrl.trim();
+    if (!target) {
+      setStatus("Enter a job posting URL first.");
+      return;
+    }
+
+    setIsScrapingJobPosting(true);
+    setStatus("Fetching job posting URL...");
+    try {
+      const response = await fetch(
+        `/api/job-posting-scrape?url=${encodeURIComponent(target)}&timeoutMs=${Math.max(
+          3000,
+          Math.min(20_000, scrapeTimeoutMs),
+        )}`,
+      );
+      const payload = (await response.json()) as JobPostingScrapeResponse;
+      if (!response.ok || !payload.ok || !payload.jobDescription) {
+        setStatus(payload.error ?? "Could not import this job posting URL.");
+        return;
+      }
+
+      setJobDescription((current) =>
+        mergeJobKitText(current, payload.jobDescription ?? "", importMode, `Imported from ${payload.finalUrl ?? target}`),
+      );
+      if (payload.roleTitle?.trim() && (!roleTitle.trim() || roleTitle === "Product Manager")) {
+        setRoleTitle(payload.roleTitle.trim());
+      }
+      if (payload.companyName?.trim() && (!companyName.trim() || companyName === "Target Company")) {
+        setCompanyName(payload.companyName.trim());
+      }
+      setScrapeMeta({
+        requestedUrl: payload.requestedUrl ?? target,
+        finalUrl: payload.finalUrl ?? target,
+        source: payload.source === "jsonld" ? "jsonld" : "html",
+        importedAt: Date.now(),
+        wordCount: Math.max(0, Number(payload.wordCount ?? 0)),
+        status: Math.max(0, Number(payload.status ?? 0)),
+      });
+
+      setStatus(`Imported job posting (${payload.source?.toUpperCase() ?? "HTML"}, ${payload.wordCount ?? 0} words).`);
+      trackEvent("tool_job_application_kit_url_import", {
+        source: payload.source ?? "unknown",
+        words: Number(payload.wordCount ?? 0),
+      });
+    } catch {
+      setStatus("Could not fetch this URL right now.");
+    } finally {
+      setIsScrapingJobPosting(false);
+    }
+  }, [companyName, importMode, jobPostingUrl, roleTitle, scrapeTimeoutMs]);
+
   const generateKit = useCallback(() => {
-    if (!resumeText.trim() || !jobDescription.trim()) {
+    const normalizedResumeText = normalizeJobKitEditableText(resumeText);
+    const normalizedJobDescription = normalizeJobKitEditableText(jobDescription);
+    if (!normalizedResumeText || !normalizedJobDescription) {
       setStatus("Resume text and job description are required.");
       setResult(null);
       return;
     }
+
+    const resolvedRole = roleTitle.trim() || guessTargetRoleFromJobDescription(normalizedJobDescription, "");
+    const resolvedCompany = companyName.trim() || guessCompanyFromJobDescription(normalizedJobDescription);
+    if (!roleTitle.trim() && resolvedRole) setRoleTitle(resolvedRole);
+    if (!companyName.trim() && resolvedCompany) setCompanyName(resolvedCompany);
+
     const generated = buildJobApplicationKit({
       applicantName,
       applicantEmail,
-      roleTitle,
-      companyName,
-      resumeText,
-      jobDescription,
+      roleTitle: resolvedRole,
+      companyName: resolvedCompany,
+      resumeText: normalizedResumeText,
+      jobDescription: normalizedJobDescription,
     });
     setResult(generated);
     setStatus(`Kit generated. ATS match score: ${generated.scorePercent}%.`);
@@ -36737,13 +37174,46 @@ function JobApplicationKitBuilderTool() {
     });
   }, [applicantEmail, applicantName, companyName, jobDescription, resumeText, roleTitle]);
 
+  const openInResumeBuilder = useCallback(() => {
+    const url = buildResumeBuilderHandoffUrl(resumeText, jobDescription);
+    if (!url) {
+      setStatus("Add resume and job content first.");
+      return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+    setStatus("Opened Resume Builder with handoff data.");
+  }, [jobDescription, resumeText]);
+
+  const copyResumeBuilderLink = useCallback(async () => {
+    const url = buildResumeBuilderHandoffUrl(resumeText, jobDescription);
+    if (!url) {
+      setStatus("Add resume and job content first.");
+      return;
+    }
+    const ok = await copyTextToClipboard(url);
+    setStatus(ok ? "Resume Builder handoff link copied." : "Could not copy handoff link.");
+  }, [jobDescription, resumeText]);
+
   return (
     <section className="tool-surface">
       <ToolHeading
         icon={Briefcase}
         title="Job application kit builder"
-        subtitle="Generate ATS match insights, cover letter draft, and follow-up emails from one target role."
+        subtitle="Multi-file import, URL scraping, ATS kit generation, export bundle, and Resume Builder handoff."
       />
+
+      {toolSession.isReady ? (
+        <ToolSessionControls
+          sessionId={toolSession.sessionId}
+          sessionLabel={toolSession.sessionLabel}
+          sessions={toolSession.sessions}
+          description="Each session keeps separate candidate data, imports, and generated outputs."
+          onSelectSession={toolSession.selectSession}
+          onCreateSession={toolSession.createSession}
+          onRenameSession={toolSession.renameSession}
+        />
+      ) : null}
+
       <div className="field-grid">
         <label className="field">
           <span>Applicant name</span>
@@ -36765,45 +37235,120 @@ function JobApplicationKitBuilderTool() {
 
       <div className="field-grid">
         <label className="field">
-          <span>Upload resume text file (optional)</span>
-          <input type="file" accept=".txt,.md" onChange={(event) => void handleTextUpload(event.target.files?.[0] ?? null, "resume")} />
+          <span>Job posting URL</span>
+          <input
+            type="text"
+            value={jobPostingUrl}
+            onChange={(event) => setJobPostingUrl(event.target.value)}
+            placeholder="https://jobs.example.com/role/123"
+          />
         </label>
         <label className="field">
-          <span>Upload job description file (optional)</span>
-          <input type="file" accept=".txt,.md" onChange={(event) => void handleTextUpload(event.target.files?.[0] ?? null, "job")} />
+          <span>URL timeout (ms)</span>
+          <input
+            type="number"
+            min={3000}
+            max={20_000}
+            step={500}
+            value={scrapeTimeoutMs}
+            onChange={(event) => setScrapeTimeoutMs(Math.max(3000, Math.min(20_000, Number(event.target.value) || 12_000)))}
+          />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={importMode} onChange={(event) => setImportMode(event.target.value as JobApplicationImportMode)}>
+            <option value="replace">Replace existing text</option>
+            <option value="append">Append to existing text</option>
+          </select>
         </label>
       </div>
 
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={isScrapingJobPosting} onClick={() => void importFromJobUrl()}>
+          {isScrapingJobPosting ? "Importing URL..." : "Import from job URL"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => resumeImportRef.current?.click()}>
+          <Plus size={15} />
+          Import resume files
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => jobImportRef.current?.click()}>
+          <Plus size={15} />
+          Import job files
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setResumeText((current) => normalizeJobKitEditableText(current));
+            setJobDescription((current) => normalizeJobKitEditableText(current));
+            setStatus("Formatted text content.");
+          }}
+        >
+          <Sparkles size={15} />
+          Format text
+        </button>
+      </div>
+
+      <input
+        ref={resumeImportRef}
+        type="file"
+        hidden
+        multiple
+        accept={JOB_APPLICATION_KIT_UPLOAD_ACCEPT}
+        onChange={async (event) => {
+          await importFiles(event.target.files, "resume");
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={jobImportRef}
+        type="file"
+        hidden
+        multiple
+        accept={JOB_APPLICATION_KIT_UPLOAD_ACCEPT}
+        onChange={async (event) => {
+          await importFiles(event.target.files, "job");
+          event.target.value = "";
+        }}
+      />
+
+      {isImporting ? <p className="supporting-text">Import in progress. Large files can take a few seconds.</p> : null}
+      {scrapeMeta ? (
+        <p className="supporting-text">
+          Last URL import: {scrapeMeta.finalUrl} ({scrapeMeta.source.toUpperCase()}, {scrapeMeta.wordCount} words).
+        </p>
+      ) : null}
+
       <label className="field">
         <span>Resume text</span>
-        <textarea
-          value={resumeText}
-          onChange={(event) => setResumeText(event.target.value)}
-          rows={8}
-          placeholder="Paste your resume content here."
-        />
+        <textarea value={resumeText} onChange={(event) => setResumeText(event.target.value)} rows={10} />
       </label>
       <label className="field">
         <span>Job description</span>
-        <textarea
-          value={jobDescription}
-          onChange={(event) => setJobDescription(event.target.value)}
-          rows={8}
-          placeholder="Paste the target job posting here."
-        />
+        <textarea value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} rows={12} />
       </label>
 
       <div className="button-row">
         <button className="action-button" type="button" onClick={generateKit}>
           Generate apply kit
         </button>
+        <button className="action-button secondary" type="button" onClick={openInResumeBuilder}>
+          Open in resume builder
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => void copyResumeBuilderLink()}>
+          <Share2 size={15} />
+          Copy handoff link
+        </button>
+      </div>
+
+      <div className="button-row">
         <button
           className="action-button secondary"
           type="button"
           disabled={!result}
           onClick={async () => {
             const ok = await copyTextToClipboard(kitMarkdown);
-            setStatus(ok ? "Full application kit copied." : "No kit available to copy.");
+            setStatus(ok ? "Full application kit copied." : "No kit available.");
           }}
         >
           <Copy size={15} />
@@ -36822,18 +37367,51 @@ function JobApplicationKitBuilderTool() {
           className="action-button secondary"
           type="button"
           disabled={!result}
+          onClick={() => downloadTextFile("job-application-kit.html", kitHtml, "text/html;charset=utf-8;")}
+        >
+          <Download size={15} />
+          HTML
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={() => downloadTextFile("job-application-kit.doc", kitHtml, "application/msword;charset=utf-8;")}
+        >
+          <Download size={15} />
+          DOC
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={() => downloadTextFile("job-application-kit.json", kitJson, "application/json;charset=utf-8;")}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
           onClick={async () => {
             if (!result) return;
             try {
               const JSZip = await loadJsZipModule();
               const zip = new JSZip();
               zip.file("00-application-kit.md", kitMarkdown);
+              zip.file("00-application-kit.html", kitHtml);
+              zip.file("00-application-kit.json", kitJson);
               zip.file("01-cover-letter.txt", result.coverLetter);
               zip.file("02-post-application-email.txt", result.emails.postApplication);
               zip.file("03-interview-thank-you-email.txt", result.emails.interviewThankYou);
               zip.file("04-no-response-follow-up-email.txt", result.emails.noResponseFollowUp);
               zip.file("05-priority-missing-keywords.txt", result.priorityMissingKeywords.join("\n"));
               zip.file("06-rewrite-bullets.txt", result.rewrittenBullets.join("\n"));
+              zip.file("07-professional-summary.txt", result.resumeSummaryDraft);
+              zip.file("08-interview-pitch.txt", result.interviewPitch);
+              zip.file("09-networking-message.txt", result.networkingMessage);
+              zip.file("10-ats-checklist.txt", result.atsChecklist.join("\n"));
               const blob = await zip.generateAsync({ type: "blob" });
               downloadBlobFile("job-application-kit.zip", blob);
               setStatus("Downloaded complete application kit ZIP.");
@@ -36843,7 +37421,7 @@ function JobApplicationKitBuilderTool() {
           }}
         >
           <Download size={15} />
-          Download apply pack
+          Download apply pack ZIP
         </button>
       </div>
 
@@ -36883,6 +37461,30 @@ function JobApplicationKitBuilderTool() {
               ))}
             </ul>
           </div>
+
+          <div className="mini-panel">
+            <h3>ATS optimization checklist</h3>
+            <ul className="plain-list">
+              {result.atsChecklist.map((line, index) => (
+                <li key={`${line}-${index}`}>{line}</li>
+              ))}
+            </ul>
+          </div>
+
+          <label className="field">
+            <span>Professional summary draft</span>
+            <textarea value={result.resumeSummaryDraft} rows={5} readOnly />
+          </label>
+
+          <label className="field">
+            <span>60-second interview pitch</span>
+            <textarea value={result.interviewPitch} rows={5} readOnly />
+          </label>
+
+          <label className="field">
+            <span>Networking message</span>
+            <textarea value={result.networkingMessage} rows={4} readOnly />
+          </label>
 
           <label className="field">
             <span>Cover letter draft</span>
@@ -37364,4 +37966,6 @@ export function ToolRenderer({ tool }: ToolRendererProps) {
       return <p>{t("tool.renderer_unavailable", undefined, "Tool renderer unavailable.")}</p>;
   }
 }
+
+
 

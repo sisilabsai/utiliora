@@ -1345,12 +1345,15 @@ const productivityTools: ToolDefinition[] = [
     slug: "job-application-kit-builder",
     category: "productivity-tools",
     title: "Job Application Kit Builder",
-    summary: "Generate ATS match insights, tailored cover letters, and follow-up email templates from one job post.",
+    summary:
+      "Import resume/job files, scrape job URLs, generate ATS-focused application assets, and hand off directly to Resume Builder.",
     description:
-      "Turn your resume and a target job description into a practical apply-ready kit with keyword gap analysis, priority fixes, structured bullet rewrites, cover letter draft, and follow-up outreach emails.",
+      "Turn resume files and target job postings into a world-class apply kit with multi-format extraction, URL-based job import, keyword gap analysis, bullet rewrites, summary/pitch drafts, outreach templates, and export bundles.",
     keywords: [
       "ats resume match",
       "job application kit",
+      "job posting scraper",
+      "resume job matcher",
       "cover letter generator",
       "job description keyword matcher",
       "follow up email after applying",
