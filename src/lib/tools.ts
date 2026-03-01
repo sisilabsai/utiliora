@@ -612,6 +612,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Base64 Encoder/Decoder"),
   },
   {
+    slug: "policy-generator-suite",
+    category: "seo-tools",
+    title: "Policy Generator Suite",
+    summary: "Generate Privacy Policy, Terms, Cookie Policy, and Disclaimer pages in one workflow.",
+    description:
+      "Create production-ready website policy pages with editable business details, compliance toggles, and instant export to HTML, Markdown, or text.",
+    keywords: [
+      "privacy policy generator",
+      "terms and conditions generator",
+      "cookie policy generator",
+      "disclaimer generator",
+      "website policy template",
+    ],
+    engine: { kind: "text-tool", id: "policy-generator-suite" },
+    faq: baseFaq("Policy Generator Suite"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",

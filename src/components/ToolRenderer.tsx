@@ -11709,6 +11709,684 @@ function PlagiarismCheckerTool() {
   );
 }
 
+type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
+type PolicyOutputFormat = "markdown" | "html" | "text";
+
+interface PolicyGeneratorState {
+  businessName: string;
+  websiteName: string;
+  websiteUrl: string;
+  contactEmail: string;
+  countryRegion: string;
+  effectiveDate: string;
+  usesAnalytics: boolean;
+  usesCookies: boolean;
+  usesAds: boolean;
+  usesAffiliateLinks: boolean;
+  collectsNewsletterEmails: boolean;
+  hasUserAccounts: boolean;
+  allowsUserContent: boolean;
+  sellsProductsOrServices: boolean;
+  servesChildren: boolean;
+}
+
+const POLICY_DOCUMENT_LABELS: Record<PolicyDocumentId, string> = {
+  privacy: "Privacy Policy",
+  terms: "Terms and Conditions",
+  cookie: "Cookie Policy",
+  disclaimer: "Disclaimer",
+};
+
+const POLICY_FILE_BASENAMES: Record<PolicyDocumentId, string> = {
+  privacy: "privacy-policy",
+  terms: "terms-and-conditions",
+  cookie: "cookie-policy",
+  disclaimer: "disclaimer",
+};
+
+const POLICY_DOC_ORDER: PolicyDocumentId[] = ["privacy", "terms", "cookie", "disclaimer"];
+
+const POLICY_GENERATOR_STORAGE_KEY = "utiliora-policy-generator-suite-v1";
+
+function getTodayDateInputValue(): string {
+  const now = new Date();
+  const offsetMilliseconds = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offsetMilliseconds).toISOString().slice(0, 10);
+}
+
+const POLICY_GENERATOR_DEFAULT_STATE: PolicyGeneratorState = {
+  businessName: "Utiliora",
+  websiteName: "Utiliora",
+  websiteUrl: "https://utiliora.cloud",
+  contactEmail: "support@utiliora.cloud",
+  countryRegion: "Uganda",
+  effectiveDate: getTodayDateInputValue(),
+  usesAnalytics: true,
+  usesCookies: true,
+  usesAds: true,
+  usesAffiliateLinks: false,
+  collectsNewsletterEmails: true,
+  hasUserAccounts: false,
+  allowsUserContent: false,
+  sellsProductsOrServices: false,
+  servesChildren: false,
+};
+
+function sanitizePolicyUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^[a-zA-Z][\w+.-]*:/.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function formatPolicyEffectiveDate(value: string): string {
+  if (!value) return "the effective date shown above";
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.valueOf())) return value;
+  return parsed.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+}
+
+function markdownToPlainText(markdown: string): string {
+  return markdown
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/`(.+?)`/g, "$1")
+    .replace(/\[(.+?)\]\((.+?)\)/g, "$1 ($2)")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function wrapPolicyHtmlDocument(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
+
+function policyMarkdownToOutput(markdown: string, title: string, format: PolicyOutputFormat): string {
+  if (format === "markdown") return markdown;
+  if (format === "text") return markdownToPlainText(markdown);
+  const htmlBody = markdownToHtml(markdown);
+  return wrapPolicyHtmlDocument(title, htmlBody);
+}
+
+function buildPolicyDocuments(state: PolicyGeneratorState): Record<PolicyDocumentId, string> {
+  const businessName = state.businessName.trim() || "This website operator";
+  const websiteName = state.websiteName.trim() || businessName;
+  const websiteUrl = sanitizePolicyUrl(state.websiteUrl) || "your website";
+  const contactEmail = state.contactEmail.trim() || "support@example.com";
+  const countryRegion = state.countryRegion.trim() || "your jurisdiction";
+  const effectiveDate = formatPolicyEffectiveDate(state.effectiveDate);
+
+  const privacyCollectedData: string[] = [
+    "Basic technical data such as browser type, device details, and interaction timestamps.",
+  ];
+  if (state.collectsNewsletterEmails) {
+    privacyCollectedData.push("Email addresses and related consent records for newsletter communication.");
+  }
+  if (state.hasUserAccounts) {
+    privacyCollectedData.push("Account profile data such as name, email, and sign-in metadata.");
+  }
+  if (state.sellsProductsOrServices) {
+    privacyCollectedData.push("Billing and transaction details needed to process purchases and provide support.");
+  }
+  if (state.allowsUserContent) {
+    privacyCollectedData.push("User-submitted content, attachments, and moderation metadata.");
+  }
+  if (state.usesAnalytics) {
+    privacyCollectedData.push("Analytics events used to understand feature usage and improve performance.");
+  }
+  if (state.usesAds) {
+    privacyCollectedData.push("Advertising identifiers and performance metrics used for ad delivery and measurement.");
+  }
+  if (state.usesCookies) {
+    privacyCollectedData.push("Cookie identifiers and local storage signals for preferences and session continuity.");
+  }
+
+  const privacyUsageItems: string[] = [
+    "Operate, secure, and maintain the website and related services.",
+    "Respond to support requests and platform inquiries.",
+  ];
+  if (state.collectsNewsletterEmails) {
+    privacyUsageItems.push("Send newsletters, updates, and optional marketing communication where legally permitted.");
+  }
+  if (state.usesAnalytics) {
+    privacyUsageItems.push("Measure product performance and prioritize feature improvements.");
+  }
+  if (state.usesAds) {
+    privacyUsageItems.push("Serve and optimize advertising placements, including fraud prevention checks.");
+  }
+  if (state.sellsProductsOrServices) {
+    privacyUsageItems.push("Process orders, payments, refunds, and financial records.");
+  }
+
+  const privacyThirdParties: string[] = [
+    "Infrastructure and hosting providers that keep the service online.",
+  ];
+  if (state.usesAnalytics) privacyThirdParties.push("Analytics providers that process aggregate usage events.");
+  if (state.usesAds) privacyThirdParties.push("Advertising partners and demand sources for ad serving.");
+  if (state.sellsProductsOrServices) privacyThirdParties.push("Payment processors for secure transaction handling.");
+  if (state.collectsNewsletterEmails) privacyThirdParties.push("Email delivery vendors for newsletter and update distribution.");
+
+  const privacyMarkdown = `# Privacy Policy
+
+Last updated: ${effectiveDate}
+
+${businessName} ("we", "our", or "us") operates ${websiteName} (${websiteUrl}). This Privacy Policy explains how we collect, use, disclose, and protect information when you use our website.
+
+## 1. Information We Collect
+${privacyCollectedData.map((item) => `- ${item}`).join("\n")}
+
+## 2. How We Use Information
+${privacyUsageItems.map((item) => `- ${item}`).join("\n")}
+
+## 3. Cookies and Tracking
+${
+  state.usesCookies
+    ? "We use cookies and similar technologies to keep the website functional, remember preferences, and improve user experience. You can control cookies through browser settings."
+    : "We currently limit cookie usage to essential technical operation and avoid non-essential tracking cookies where possible."
+}
+
+## 4. Data Sharing
+We may share relevant data with trusted service providers only when required to operate our services. Typical providers may include:
+${privacyThirdParties.map((item) => `- ${item}`).join("\n")}
+
+## 5. Data Retention
+We retain personal data only for as long as needed to fulfill the purposes described in this policy, comply with legal obligations, resolve disputes, and enforce agreements.
+
+## 6. Your Rights
+Depending on your jurisdiction, you may have rights to request access, correction, deletion, restriction, objection, or portability of your personal data.
+
+## 7. Security
+We use reasonable technical and organizational safeguards to protect data. No internet-based system is perfectly secure.
+
+## 8. Children's Privacy
+${
+  state.servesChildren
+    ? "Our services may be accessed by minors under supervision. Where required, we obtain guardian consent and apply additional protective controls."
+    : "Our services are not directed to children under 13, and we do not knowingly collect personal data from children under 13."
+}
+
+## 9. Policy Updates
+We may update this policy from time to time. The "Last updated" date indicates the latest revision.
+
+## 10. Contact
+For privacy requests or questions, contact us at ${contactEmail}.
+`;
+
+  const termsMarkdown = `# Terms and Conditions
+
+Last updated: ${effectiveDate}
+
+These Terms and Conditions ("Terms") govern access to and use of ${websiteName} (${websiteUrl}) operated by ${businessName}.
+
+## 1. Acceptance of Terms
+By accessing or using this website, you agree to these Terms. If you do not agree, do not use the website.
+
+## 2. Services
+We provide online utility tools and related content for informational and workflow purposes.
+
+## 3. User Responsibilities
+- Provide accurate information where requested.
+- Do not use the platform for unlawful, abusive, or harmful activity.
+- Do not attempt to disrupt, reverse engineer, or compromise service integrity.
+
+## 4. Accounts
+${
+  state.hasUserAccounts
+    ? "If account features are available, you are responsible for maintaining account confidentiality and all activity under your account."
+    : "Most tools are available without registration. If account features are introduced, additional account terms may apply."
+}
+
+## 5. Payments
+${
+  state.sellsProductsOrServices
+    ? "If paid features or services are offered, pricing, payment terms, billing cycles, and refund policy details will be presented at checkout or in a related order agreement."
+    : "The website currently provides free-access utility tools. If paid plans are introduced, updated billing terms will be published."
+}
+
+## 6. Intellectual Property
+All website branding, design, and original content are protected by applicable intellectual property laws. You may not copy or redistribute protected materials without permission.
+
+## 7. Disclaimer of Warranties
+Services are provided on an "as is" and "as available" basis without warranties of any kind, express or implied.
+
+## 8. Limitation of Liability
+To the maximum extent permitted by law, ${businessName} is not liable for indirect, incidental, special, consequential, or punitive damages arising from website use.
+
+## 9. Indemnification
+You agree to indemnify and hold harmless ${businessName} from claims resulting from your misuse of the website or violation of these Terms.
+
+## 10. Termination
+We may suspend or terminate access if we reasonably believe these Terms are violated or misuse threatens platform integrity.
+
+## 11. Governing Law
+These Terms are governed by the laws of ${countryRegion}, without regard to conflict-of-law principles.
+
+## 12. Contact
+For legal questions regarding these Terms, contact ${contactEmail}.
+`;
+
+  const cookieMarkdown = `# Cookie Policy
+
+Last updated: ${effectiveDate}
+
+This Cookie Policy explains how ${businessName} uses cookies and similar technologies on ${websiteName} (${websiteUrl}).
+
+## 1. What Are Cookies?
+Cookies are small text files stored on your device to help websites function, remember preferences, and understand usage patterns.
+
+## 2. Cookie Categories We Use
+- **Essential cookies:** Required for core website functionality and security.
+- **Preference cookies:** Remember language, session, and UI preferences.
+- **Analytics cookies:** ${state.usesAnalytics ? "Enabled to help measure product performance and improve experience." : "Currently disabled or minimized."}
+- **Advertising cookies:** ${state.usesAds ? "Enabled for ad delivery, measurement, and anti-fraud controls." : "Not actively used for non-essential ad targeting."}
+
+## 3. Managing Cookies
+You can control or disable cookies through browser settings. Disabling some cookies may affect website functionality.
+
+## 4. Third-Party Cookies
+${
+  state.usesAnalytics || state.usesAds
+    ? "Some third-party providers may place or read cookies when their services are embedded on our pages."
+    : "We minimize third-party cookie usage and avoid optional trackers wherever possible."
+}
+
+## 5. Policy Changes
+We may update this Cookie Policy as technology and legal requirements evolve.
+
+## 6. Contact
+For cookie-related questions, contact ${contactEmail}.
+`;
+
+  const disclaimerMarkdown = `# Disclaimer
+
+Last updated: ${effectiveDate}
+
+The information and tools provided on ${websiteName} (${websiteUrl}) by ${businessName} are for general informational purposes only.
+
+## 1. No Professional Advice
+Tool outputs do not constitute legal, financial, tax, medical, or professional advice. You should consult qualified professionals for decisions requiring expert guidance.
+
+## 2. Accuracy of Information
+We aim to keep content and calculations useful and current, but we make no guarantees about completeness, reliability, or suitability for any specific purpose.
+
+## 3. External Links
+Our website may contain links to third-party websites. We are not responsible for their content, policies, or practices.
+
+## 4. Earnings and Outcome Disclaimer
+Any references to performance, income, or outcomes are illustrative and do not guarantee future results.
+
+## 5. Affiliate Disclosure
+${
+  state.usesAffiliateLinks
+    ? "Some links may be affiliate links, meaning we may earn a commission if you purchase through those links at no additional cost to you."
+    : "We currently do not rely on affiliate links as a primary monetization model. If this changes, we will clearly disclose affiliate relationships."
+}
+
+## 6. Advertising Disclosure
+${
+  state.usesAds
+    ? "We may display advertising (including contextual and personalized ads where allowed). Ad providers may use cookies or similar technologies subject to their own policies."
+    : "We currently run limited or no advertising placements. If advertising is introduced, this disclaimer will be updated."
+}
+
+## 7. Limitation of Liability
+By using this website, you agree that ${businessName} is not liable for losses or damages arising from reliance on website content or tool outputs.
+
+## 8. Contact
+For disclaimer-related questions, contact ${contactEmail}.
+`;
+
+  return {
+    privacy: privacyMarkdown.trim(),
+    terms: termsMarkdown.trim(),
+    cookie: cookieMarkdown.trim(),
+    disclaimer: disclaimerMarkdown.trim(),
+  };
+}
+
+function PolicyGeneratorSuiteTool() {
+  const [state, setState] = useState<PolicyGeneratorState>(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") {
+      return POLICY_GENERATOR_DEFAULT_STATE;
+    }
+    try {
+      const raw = localStorage.getItem(POLICY_GENERATOR_STORAGE_KEY);
+      if (!raw) return POLICY_GENERATOR_DEFAULT_STATE;
+      const parsed = JSON.parse(raw) as Partial<PolicyGeneratorState>;
+      return {
+        ...POLICY_GENERATOR_DEFAULT_STATE,
+        ...parsed,
+      };
+    } catch {
+      return POLICY_GENERATOR_DEFAULT_STATE;
+    }
+  });
+  const [selectedDocument, setSelectedDocument] = useState<PolicyDocumentId>("privacy");
+  const [outputFormat, setOutputFormat] = useState<PolicyOutputFormat>("markdown");
+  const [status, setStatus] = useState("Configure policy details and export ready-to-publish pages.");
+  const [copyStatus, setCopyStatus] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(POLICY_GENERATOR_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [state]);
+
+  const generatedDocuments = useMemo(() => buildPolicyDocuments(state), [state]);
+
+  const renderedCurrentDocument = useMemo(() => {
+    const markdown = generatedDocuments[selectedDocument];
+    return policyMarkdownToOutput(markdown, POLICY_DOCUMENT_LABELS[selectedDocument], outputFormat);
+  }, [generatedDocuments, outputFormat, selectedDocument]);
+
+  const updateState = useCallback(<K extends keyof PolicyGeneratorState>(key: K, value: PolicyGeneratorState[K]) => {
+    setState((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const outputExtension = outputFormat === "markdown" ? "md" : outputFormat === "html" ? "html" : "txt";
+  const outputMimeType =
+    outputFormat === "markdown"
+      ? "text/markdown;charset=utf-8;"
+      : outputFormat === "html"
+        ? "text/html;charset=utf-8;"
+        : "text/plain;charset=utf-8;";
+
+  const checklistRows: Array<{ label: string; done: boolean; note: string }> = [
+    { label: "Business name set", done: Boolean(state.businessName.trim()), note: state.businessName.trim() || "Missing" },
+    { label: "Website URL set", done: Boolean(sanitizePolicyUrl(state.websiteUrl)), note: sanitizePolicyUrl(state.websiteUrl) || "Missing" },
+    { label: "Contact email set", done: Boolean(state.contactEmail.trim()), note: state.contactEmail.trim() || "Missing" },
+    { label: "Country/region set", done: Boolean(state.countryRegion.trim()), note: state.countryRegion.trim() || "Missing" },
+  ];
+  const checklistCompleted = checklistRows.filter((row) => row.done).length;
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Policy generator suite"
+        subtitle="Generate Privacy Policy, Terms, Cookie Policy, and Disclaimer pages without paid APIs."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Business / legal name</span>
+          <input
+            type="text"
+            value={state.businessName}
+            onChange={(event) => updateState("businessName", event.target.value)}
+            placeholder="Your company legal name"
+          />
+        </label>
+        <label className="field">
+          <span>Website / brand name</span>
+          <input
+            type="text"
+            value={state.websiteName}
+            onChange={(event) => updateState("websiteName", event.target.value)}
+            placeholder="Brand users see on-site"
+          />
+        </label>
+        <label className="field">
+          <span>Website URL</span>
+          <input
+            type="text"
+            value={state.websiteUrl}
+            onChange={(event) => updateState("websiteUrl", event.target.value)}
+            placeholder="https://example.com"
+          />
+        </label>
+        <label className="field">
+          <span>Contact email</span>
+          <input
+            type="email"
+            value={state.contactEmail}
+            onChange={(event) => updateState("contactEmail", event.target.value)}
+            placeholder="support@example.com"
+          />
+        </label>
+        <label className="field">
+          <span>Country / region</span>
+          <input
+            type="text"
+            value={state.countryRegion}
+            onChange={(event) => updateState("countryRegion", event.target.value)}
+            placeholder="Country for legal jurisdiction"
+          />
+        </label>
+        <label className="field">
+          <span>Effective date</span>
+          <input
+            type="date"
+            value={state.effectiveDate}
+            onChange={(event) => updateState("effectiveDate", event.target.value)}
+          />
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.usesAnalytics}
+            onChange={(event) => updateState("usesAnalytics", event.target.checked)}
+          />
+          Uses analytics
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.usesCookies}
+            onChange={(event) => updateState("usesCookies", event.target.checked)}
+          />
+          Uses cookies/local storage
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.usesAds}
+            onChange={(event) => updateState("usesAds", event.target.checked)}
+          />
+          Displays ads
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.usesAffiliateLinks}
+            onChange={(event) => updateState("usesAffiliateLinks", event.target.checked)}
+          />
+          Uses affiliate links
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.collectsNewsletterEmails}
+            onChange={(event) => updateState("collectsNewsletterEmails", event.target.checked)}
+          />
+          Collects newsletter emails
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.hasUserAccounts}
+            onChange={(event) => updateState("hasUserAccounts", event.target.checked)}
+          />
+          Has user accounts
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.allowsUserContent}
+            onChange={(event) => updateState("allowsUserContent", event.target.checked)}
+          />
+          Accepts user-submitted content
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.sellsProductsOrServices}
+            onChange={(event) => updateState("sellsProductsOrServices", event.target.checked)}
+          />
+          Sells products/services
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={state.servesChildren}
+            onChange={(event) => updateState("servesChildren", event.target.checked)}
+          />
+          Intended for children/minors
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Policy document</span>
+          <select
+            value={selectedDocument}
+            onChange={(event) => setSelectedDocument(event.target.value as PolicyDocumentId)}
+          >
+            {POLICY_DOC_ORDER.map((documentId) => (
+              <option key={documentId} value={documentId}>
+                {POLICY_DOCUMENT_LABELS[documentId]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Output format</span>
+          <select
+            value={outputFormat}
+            onChange={(event) => setOutputFormat(event.target.value as PolicyOutputFormat)}
+          >
+            <option value="markdown">Markdown (.md)</option>
+            <option value="html">HTML (.html)</option>
+            <option value="text">Plain text (.txt)</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const copied = await copyTextToClipboard(renderedCurrentDocument);
+            setCopyStatus(copied ? `${POLICY_DOCUMENT_LABELS[selectedDocument]} copied.` : "Could not copy output.");
+            if (copied) {
+              trackEvent("tool_policy_generator_copy", { document: selectedDocument, format: outputFormat });
+            }
+          }}
+        >
+          <Copy size={15} />
+          Copy current
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            downloadTextFile(
+              `${POLICY_FILE_BASENAMES[selectedDocument]}.${outputExtension}`,
+              renderedCurrentDocument,
+              outputMimeType,
+            );
+            setStatus(`Downloaded ${POLICY_DOCUMENT_LABELS[selectedDocument]} as ${outputExtension.toUpperCase()}.`);
+            trackEvent("tool_policy_generator_download", { document: selectedDocument, format: outputFormat });
+          }}
+        >
+          <Download size={15} />
+          Download current
+        </button>
+        <button
+          className="action-button"
+          type="button"
+          onClick={async () => {
+            try {
+              const JSZip = await loadJsZipModule();
+              const zip = new JSZip();
+              POLICY_DOC_ORDER.forEach((documentId) => {
+                zip.file(
+                  `${POLICY_FILE_BASENAMES[documentId]}.${outputExtension}`,
+                  policyMarkdownToOutput(
+                    generatedDocuments[documentId],
+                    POLICY_DOCUMENT_LABELS[documentId],
+                    outputFormat,
+                  ),
+                );
+              });
+              const bundle = await zip.generateAsync({ type: "blob" });
+              downloadBlobFile(`policy-suite-${outputFormat}.zip`, bundle);
+              setStatus(`Downloaded all 4 policy documents as ${outputExtension.toUpperCase()} files in one ZIP.`);
+              trackEvent("tool_policy_generator_bundle_download", { format: outputFormat, documents: 4 });
+            } catch {
+              setStatus("Could not create ZIP bundle.");
+            }
+          }}
+        >
+          <Download size={15} />
+          Download all (ZIP)
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setState(POLICY_GENERATOR_DEFAULT_STATE);
+            setStatus("Reset to default template values.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Reset
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Documents generated", value: "4" },
+          { label: "Checklist completed", value: `${checklistCompleted} / ${checklistRows.length}` },
+          { label: "Selected document", value: POLICY_DOCUMENT_LABELS[selectedDocument] },
+          { label: "Output format", value: outputFormat.toUpperCase() },
+        ]}
+      />
+
+      <div className="mini-panel">
+        <h3>AdSense and trust-page checklist</h3>
+        <ul className="plain-list">
+          {checklistRows.map((row) => (
+            <li key={row.label}>
+              <div className="history-line">
+                <span>{row.label}</span>
+                <span className={`status-badge ${row.done ? "ok" : "warn"}`}>{row.done ? "Ready" : "Needs input"}</span>
+              </div>
+              <small className="supporting-text">{row.note}</small>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <label className="field">
+        <span>
+          Generated {POLICY_DOCUMENT_LABELS[selectedDocument]} ({outputExtension})
+        </span>
+        <textarea value={renderedCurrentDocument} rows={18} readOnly />
+      </label>
+    </section>
+  );
+}
+
 function TextTool({ id }: { id: TextToolId }) {
   switch (id) {
     case "word-counter":
@@ -11741,6 +12419,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <MinifierTool mode="js" />;
     case "base64-encoder-decoder":
       return <Base64Tool />;
+    case "policy-generator-suite":
+      return <PolicyGeneratorSuiteTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":
