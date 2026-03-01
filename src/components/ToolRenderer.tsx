@@ -4,6 +4,7 @@ import NextImage from "next/image";
 import type { jsPDF as JsPdfType } from "jspdf";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import JsBarcode from "jsbarcode";
+import QRCode from "qrcode";
 import {
   Bell,
   BellOff,
@@ -15912,22 +15913,957 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
   }
 }
 
+type QrContentType = "url" | "text" | "email" | "phone" | "sms" | "wifi" | "geo" | "vcard";
+type QrErrorCorrection = "L" | "M" | "Q" | "H";
+type QrBatchFormat = "png" | "svg" | "both";
+
+interface QrHistoryEntry {
+  id: string;
+  payload: string;
+  label: string;
+  createdAt: number;
+}
+
+interface QrPreset {
+  id: string;
+  name: string;
+  payload: string;
+  contentType: QrContentType;
+  size: number;
+  margin: number;
+  errorCorrection: QrErrorCorrection;
+  darkColor: string;
+  lightColor: string;
+  logoDataUrl: string;
+  logoScalePercent: number;
+}
+
+interface ParsedQrBatchItem {
+  id: string;
+  label: string;
+  payload: string;
+}
+
+interface BuildQrPayloadOptions {
+  contentType: QrContentType;
+  rawValue: string;
+  emailTo: string;
+  emailSubject: string;
+  emailBody: string;
+  phoneNumber: string;
+  smsNumber: string;
+  smsMessage: string;
+  wifiSsid: string;
+  wifiPassword: string;
+  wifiEncryption: "WPA" | "WEP" | "nopass";
+  wifiHidden: boolean;
+  geoLatitude: string;
+  geoLongitude: string;
+  vcardFirstName: string;
+  vcardLastName: string;
+  vcardOrg: string;
+  vcardTitle: string;
+  vcardPhone: string;
+  vcardEmail: string;
+  vcardWebsite: string;
+  vcardAddress: string;
+  vcardNote: string;
+}
+
+const QR_HISTORY_STORAGE_KEY = "utiliora-qr-history-v1";
+const QR_PRESET_STORAGE_KEY = "utiliora-qr-preset-v1";
+const QR_HISTORY_LIMIT = 20;
+const QR_PRESET_LIMIT = 16;
+
+function normalizeHexColor(value: string, fallback: string): string {
+  const normalized = value.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : fallback;
+}
+
+function sanitizePhoneNumber(value: string): string {
+  return value.replace(/[^\d+]/g, "").trim();
+}
+
+function ensureProtocol(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /^[a-zA-Z][\w+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function escapeWifiValue(value: string): string {
+  return value.replace(/([\\;,:"])/g, "\\$1");
+}
+
+function escapeVcardValue(value: string): string {
+  return value.replace(/\r\n?/g, "\\n").replace(/;/g, "\\;").replace(/,/g, "\\,").trim();
+}
+
+function buildQrPayload(options: BuildQrPayloadOptions): { payload: string; label: string; error: string } {
+  const rawValue = options.rawValue.trim();
+  switch (options.contentType) {
+    case "url": {
+      const url = ensureProtocol(rawValue);
+      if (!url) return { payload: "", label: "URL QR", error: "Enter a URL." };
+      return { payload: url, label: "URL QR", error: "" };
+    }
+    case "text": {
+      if (!rawValue) return { payload: "", label: "Text QR", error: "Enter text to encode." };
+      return { payload: rawValue, label: "Text QR", error: "" };
+    }
+    case "email": {
+      const emailTo = options.emailTo.trim();
+      if (!emailTo) return { payload: "", label: "Email QR", error: "Enter an email recipient." };
+      const params = new URLSearchParams();
+      if (options.emailSubject.trim()) params.set("subject", options.emailSubject.trim());
+      if (options.emailBody.trim()) params.set("body", options.emailBody.trim());
+      const query = params.toString();
+      return {
+        payload: `mailto:${emailTo}${query ? `?${query}` : ""}`,
+        label: "Email QR",
+        error: "",
+      };
+    }
+    case "phone": {
+      const phone = sanitizePhoneNumber(options.phoneNumber);
+      if (!phone) return { payload: "", label: "Phone QR", error: "Enter a phone number." };
+      return { payload: `tel:${phone}`, label: "Phone QR", error: "" };
+    }
+    case "sms": {
+      const number = sanitizePhoneNumber(options.smsNumber);
+      if (!number) return { payload: "", label: "SMS QR", error: "Enter an SMS number." };
+      return { payload: `SMSTO:${number}:${options.smsMessage.trim()}`, label: "SMS QR", error: "" };
+    }
+    case "wifi": {
+      const ssid = options.wifiSsid.trim();
+      if (!ssid) return { payload: "", label: "WiFi QR", error: "Enter a WiFi SSID." };
+      const hiddenSegment = options.wifiHidden ? "H:true;" : "";
+      const passwordSegment =
+        options.wifiEncryption === "nopass" ? "" : `P:${escapeWifiValue(options.wifiPassword.trim())};`;
+      return {
+        payload: `WIFI:T:${options.wifiEncryption};S:${escapeWifiValue(ssid)};${passwordSegment}${hiddenSegment};`,
+        label: "WiFi QR",
+        error: "",
+      };
+    }
+    case "geo": {
+      const latitude = Number.parseFloat(options.geoLatitude);
+      const longitude = Number.parseFloat(options.geoLongitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return { payload: "", label: "Location QR", error: "Enter valid latitude and longitude." };
+      }
+      return { payload: `geo:${latitude},${longitude}`, label: "Location QR", error: "" };
+    }
+    case "vcard": {
+      const firstName = options.vcardFirstName.trim();
+      const lastName = options.vcardLastName.trim();
+      const fullName = `${firstName} ${lastName}`.trim();
+      if (!fullName) return { payload: "", label: "vCard QR", error: "Add at least a first or last name." };
+      const lines = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        `N:${escapeVcardValue(lastName)};${escapeVcardValue(firstName)};;;`,
+        `FN:${escapeVcardValue(fullName)}`,
+      ];
+      if (options.vcardOrg.trim()) lines.push(`ORG:${escapeVcardValue(options.vcardOrg)}`);
+      if (options.vcardTitle.trim()) lines.push(`TITLE:${escapeVcardValue(options.vcardTitle)}`);
+      if (options.vcardPhone.trim()) lines.push(`TEL;TYPE=CELL:${escapeVcardValue(options.vcardPhone)}`);
+      if (options.vcardEmail.trim()) lines.push(`EMAIL:${escapeVcardValue(options.vcardEmail)}`);
+      if (options.vcardWebsite.trim()) lines.push(`URL:${ensureProtocol(options.vcardWebsite.trim())}`);
+      if (options.vcardAddress.trim()) lines.push(`ADR:;;${escapeVcardValue(options.vcardAddress)};;;;`);
+      if (options.vcardNote.trim()) lines.push(`NOTE:${escapeVcardValue(options.vcardNote)}`);
+      lines.push("END:VCARD");
+      return { payload: lines.join("\n"), label: "vCard QR", error: "" };
+    }
+    default:
+      return { payload: "", label: "QR", error: "Unsupported QR content type." };
+  }
+}
+
+function parseQrBatchInput(raw: string): ParsedQrBatchItem[] {
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const pipeIndex = line.indexOf("|");
+      if (pipeIndex > 0) {
+        const label = line.slice(0, pipeIndex).trim();
+        const payload = line.slice(pipeIndex + 1).trim();
+        return {
+          id: `${index}-${label}-${payload}`,
+          label: label || `QR ${index + 1}`,
+          payload,
+        };
+      }
+      return {
+        id: `${index}-${line}`,
+        label: `QR ${index + 1}`,
+        payload: line,
+      };
+    })
+    .filter((item) => item.payload);
+}
+
+function drawRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const safeRadius = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
+
+async function composeQrWithLogo(
+  qrDataUrl: string,
+  size: number,
+  logoDataUrl: string,
+  logoScalePercent: number,
+  lightColor: string,
+): Promise<string> {
+  if (!logoDataUrl) return qrDataUrl;
+  const qrImage = await loadImage(qrDataUrl);
+  const logoImage = await loadImage(logoDataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) return qrDataUrl;
+
+  context.clearRect(0, 0, size, size);
+  context.drawImage(qrImage, 0, 0, size, size);
+
+  const safeLogoScale = Math.min(Math.max(logoScalePercent / 100, 0.12), 0.36);
+  const logoSize = Math.round(size * safeLogoScale);
+  const badgeSize = Math.round(logoSize * 1.28);
+  const badgeX = Math.round((size - badgeSize) / 2);
+  const badgeY = Math.round((size - badgeSize) / 2);
+
+  context.save();
+  context.shadowColor = "rgba(15, 23, 42, 0.16)";
+  context.shadowBlur = 16;
+  context.fillStyle = normalizeHexColor(lightColor, "#FFFFFF");
+  drawRoundedRect(context, badgeX, badgeY, badgeSize, badgeSize, Math.round(badgeSize * 0.18));
+  context.fill();
+  context.restore();
+
+  const logoX = Math.round((size - logoSize) / 2);
+  const logoY = Math.round((size - logoSize) / 2);
+  context.drawImage(logoImage, logoX, logoY, logoSize, logoSize);
+  return canvas.toDataURL("image/png");
+}
+
+function formatQrTimestamp(timestamp: number): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(timestamp));
+  } catch {
+    return new Date(timestamp).toISOString();
+  }
+}
+
 function QrCodeGeneratorTool() {
-  const [text, setText] = useState("https://utiliora.com");
-  const url = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(text)}`;
+  const [contentType, setContentType] = useState<QrContentType>("url");
+  const [rawValue, setRawValue] = useState("https://utiliora.cloud");
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [smsNumber, setSmsNumber] = useState("");
+  const [smsMessage, setSmsMessage] = useState("");
+  const [wifiSsid, setWifiSsid] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+  const [wifiEncryption, setWifiEncryption] = useState<"WPA" | "WEP" | "nopass">("WPA");
+  const [wifiHidden, setWifiHidden] = useState(false);
+  const [geoLatitude, setGeoLatitude] = useState("0.3476");
+  const [geoLongitude, setGeoLongitude] = useState("32.5825");
+  const [vcardFirstName, setVcardFirstName] = useState("");
+  const [vcardLastName, setVcardLastName] = useState("");
+  const [vcardOrg, setVcardOrg] = useState("");
+  const [vcardTitle, setVcardTitle] = useState("");
+  const [vcardPhone, setVcardPhone] = useState("");
+  const [vcardEmail, setVcardEmail] = useState("");
+  const [vcardWebsite, setVcardWebsite] = useState("");
+  const [vcardAddress, setVcardAddress] = useState("");
+  const [vcardNote, setVcardNote] = useState("");
+
+  const [size, setSize] = useState(320);
+  const [margin, setMargin] = useState(2);
+  const [errorCorrection, setErrorCorrection] = useState<QrErrorCorrection>("M");
+  const [darkColor, setDarkColor] = useState("#0F172A");
+  const [lightColor, setLightColor] = useState("#FFFFFF");
+  const [logoDataUrl, setLogoDataUrl] = useState("");
+  const [logoName, setLogoName] = useState("");
+  const [logoScalePercent, setLogoScalePercent] = useState(20);
+
+  const [previewPngDataUrl, setPreviewPngDataUrl] = useState("");
+  const [previewSvg, setPreviewSvg] = useState("");
+  const [status, setStatus] = useState("Configure your QR content to generate output.");
+  const [copyStatus, setCopyStatus] = useState("");
+
+  const [history, setHistory] = useState<QrHistoryEntry[]>(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(QR_HISTORY_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as QrHistoryEntry[]) : [];
+      return Array.isArray(parsed) ? parsed.slice(0, QR_HISTORY_LIMIT) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [presets, setPresets] = useState<QrPreset[]>(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(QR_PRESET_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as QrPreset[]) : [];
+      return Array.isArray(parsed) ? parsed.slice(0, QR_PRESET_LIMIT) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [presetName, setPresetName] = useState("");
+  const [batchInput, setBatchInput] = useState("");
+  const [batchStatus, setBatchStatus] = useState("");
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const payloadResult = useMemo(
+    () =>
+      buildQrPayload({
+        contentType,
+        rawValue,
+        emailTo,
+        emailSubject,
+        emailBody,
+        phoneNumber,
+        smsNumber,
+        smsMessage,
+        wifiSsid,
+        wifiPassword,
+        wifiEncryption,
+        wifiHidden,
+        geoLatitude,
+        geoLongitude,
+        vcardFirstName,
+        vcardLastName,
+        vcardOrg,
+        vcardTitle,
+        vcardPhone,
+        vcardEmail,
+        vcardWebsite,
+        vcardAddress,
+        vcardNote,
+      }),
+    [
+      contentType,
+      rawValue,
+      emailTo,
+      emailSubject,
+      emailBody,
+      phoneNumber,
+      smsNumber,
+      smsMessage,
+      wifiSsid,
+      wifiPassword,
+      wifiEncryption,
+      wifiHidden,
+      geoLatitude,
+      geoLongitude,
+      vcardFirstName,
+      vcardLastName,
+      vcardOrg,
+      vcardTitle,
+      vcardPhone,
+      vcardEmail,
+      vcardWebsite,
+      vcardAddress,
+      vcardNote,
+    ],
+  );
+  const parsedBatchItems = useMemo(() => parseQrBatchInput(batchInput), [batchInput]);
+  const safeFileBase = useMemo(
+    () => slugify(payloadResult.label.replace(/\s+qr$/i, "").trim() || "qr-code") || "qr-code",
+    [payloadResult.label],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(QR_HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, QR_HISTORY_LIMIT)));
+    } catch {
+      // Ignore persistence errors.
+    }
+  }, [history]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(QR_PRESET_STORAGE_KEY, JSON.stringify(presets.slice(0, QR_PRESET_LIMIT)));
+    } catch {
+      // Ignore persistence errors.
+    }
+  }, [presets]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function generatePreview(): Promise<void> {
+      const payload = payloadResult.payload.trim();
+      if (!payload || payloadResult.error) {
+        setPreviewPngDataUrl("");
+        setPreviewSvg("");
+        setStatus(payloadResult.error || "Enter content to generate a QR code.");
+        return;
+      }
+      setIsGenerating(true);
+      try {
+        const baseOptions = {
+          errorCorrectionLevel: errorCorrection,
+          margin,
+          width: size,
+          color: {
+            dark: normalizeHexColor(darkColor, "#0F172A"),
+            light: normalizeHexColor(lightColor, "#FFFFFF"),
+          },
+        } as const;
+        const rawPng = await QRCode.toDataURL(payload, baseOptions);
+        const pngWithLogo = logoDataUrl
+          ? await composeQrWithLogo(rawPng, size, logoDataUrl, logoScalePercent, lightColor)
+          : rawPng;
+        const svg = await QRCode.toString(payload, { ...baseOptions, type: "svg" });
+        if (cancelled) return;
+        setPreviewPngDataUrl(pngWithLogo);
+        setPreviewSvg(svg);
+        setStatus("QR code ready.");
+      } catch {
+        if (cancelled) return;
+        setPreviewPngDataUrl("");
+        setPreviewSvg("");
+        setStatus("Could not generate QR code for the current content.");
+      } finally {
+        if (!cancelled) setIsGenerating(false);
+      }
+    }
+    void generatePreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [payloadResult.payload, payloadResult.error, errorCorrection, margin, size, darkColor, lightColor, logoDataUrl, logoScalePercent]);
+
+  const saveToHistory = useCallback(() => {
+    const payload = payloadResult.payload.trim();
+    if (!payload || payloadResult.error) return;
+    const entry: QrHistoryEntry = {
+      id: crypto.randomUUID(),
+      payload,
+      label: payloadResult.label,
+      createdAt: Date.now(),
+    };
+    setHistory((previous) => [entry, ...previous.filter((item) => item.payload !== payload)].slice(0, QR_HISTORY_LIMIT));
+  }, [payloadResult.payload, payloadResult.error, payloadResult.label]);
+
+  const handleLogoUpload = useCallback((file: File | null) => {
+    if (!file) {
+      setLogoDataUrl("");
+      setLogoName("");
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setStatus("Logo must be an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setLogoDataUrl(reader.result);
+        setLogoName(file.name);
+      }
+    };
+    reader.onerror = () => setStatus("Could not read the selected logo.");
+    reader.readAsDataURL(file);
+  }, []);
+
+  const handleCopyPayload = useCallback(async () => {
+    const payload = payloadResult.payload.trim();
+    if (!payload || payloadResult.error) {
+      setCopyStatus(payloadResult.error || "No payload available.");
+      return;
+    }
+    const copied = await copyTextToClipboard(payload);
+    setCopyStatus(copied ? "QR payload copied." : "Could not copy QR payload.");
+    if (copied) {
+      trackEvent("tool_qr_copy_payload", { contentType, length: payload.length });
+    }
+  }, [payloadResult.payload, payloadResult.error, contentType]);
+
+  const handleDownloadPng = useCallback(() => {
+    if (!previewPngDataUrl) return;
+    downloadDataUrl(`utiliora-${safeFileBase}.png`, previewPngDataUrl);
+    trackEvent("tool_qr_download_png", { contentType, logo: Boolean(logoDataUrl), size });
+    saveToHistory();
+  }, [previewPngDataUrl, safeFileBase, contentType, logoDataUrl, size, saveToHistory]);
+
+  const handleDownloadSvg = useCallback(() => {
+    if (!previewSvg) return;
+    downloadTextFile(`utiliora-${safeFileBase}.svg`, previewSvg, "image/svg+xml;charset=utf-8;");
+    trackEvent("tool_qr_download_svg", { contentType, size });
+    saveToHistory();
+  }, [previewSvg, safeFileBase, contentType, size, saveToHistory]);
+
+  const savePreset = useCallback(() => {
+    const payload = payloadResult.payload.trim();
+    if (!payload || payloadResult.error) return;
+    const preset: QrPreset = {
+      id: crypto.randomUUID(),
+      name: presetName.trim() || payloadResult.label,
+      payload,
+      contentType,
+      size,
+      margin,
+      errorCorrection,
+      darkColor: normalizeHexColor(darkColor, "#0F172A"),
+      lightColor: normalizeHexColor(lightColor, "#FFFFFF"),
+      logoDataUrl,
+      logoScalePercent,
+    };
+    setPresets((previous) => [preset, ...previous].slice(0, QR_PRESET_LIMIT));
+    setPresetName("");
+  }, [
+    payloadResult.payload,
+    payloadResult.error,
+    payloadResult.label,
+    presetName,
+    contentType,
+    size,
+    margin,
+    errorCorrection,
+    darkColor,
+    lightColor,
+    logoDataUrl,
+    logoScalePercent,
+  ]);
+
+  const handleBatchDownload = useCallback(
+    async (format: QrBatchFormat) => {
+      if (!parsedBatchItems.length) {
+        setBatchStatus("Add at least one line to generate batch QR codes.");
+        return;
+      }
+      setBatchRunning(true);
+      try {
+        const JSZip = await loadJsZipModule();
+        const zip = new JSZip();
+        const baseOptions = {
+          errorCorrectionLevel: errorCorrection,
+          margin,
+          width: size,
+          color: {
+            dark: normalizeHexColor(darkColor, "#0F172A"),
+            light: normalizeHexColor(lightColor, "#FFFFFF"),
+          },
+        } as const;
+
+        for (let index = 0; index < parsedBatchItems.length; index += 1) {
+          const item = parsedBatchItems[index];
+          const filenameBase = slugify(item.label) || `qr-${index + 1}`;
+          if (format === "png" || format === "both") {
+            const rawPng = await QRCode.toDataURL(item.payload, baseOptions);
+            const pngWithLogo = logoDataUrl
+              ? await composeQrWithLogo(rawPng, size, logoDataUrl, logoScalePercent, lightColor)
+              : rawPng;
+            const pngBlob = await (await fetch(pngWithLogo)).blob();
+            zip.file(`${filenameBase}.png`, pngBlob);
+          }
+          if (format === "svg" || format === "both") {
+            const svg = await QRCode.toString(item.payload, { ...baseOptions, type: "svg" });
+            zip.file(`${filenameBase}.svg`, svg);
+          }
+        }
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const zipName = format === "both" ? "png-svg" : format;
+        downloadBlobFile(`utiliora-qr-batch-${zipName}.zip`, zipBlob);
+        setBatchStatus(`Downloaded ${parsedBatchItems.length} QR code${parsedBatchItems.length === 1 ? "" : "s"} as ZIP.`);
+        trackEvent("tool_qr_batch_download", { format, count: parsedBatchItems.length, contentType });
+      } catch {
+        setBatchStatus("Batch generation failed. Try fewer rows and retry.");
+      } finally {
+        setBatchRunning(false);
+      }
+    },
+    [parsedBatchItems, errorCorrection, margin, size, darkColor, lightColor, logoDataUrl, logoScalePercent, contentType],
+  );
+
+  const previewRows: ResultRow[] = [
+    { label: "Payload length", value: formatNumericValue(payloadResult.payload.length), hint: "characters" },
+    { label: "Output", value: `${size} x ${size} px` },
+    { label: "Error correction", value: errorCorrection },
+    { label: "Logo", value: logoDataUrl ? "Enabled" : "Off", hint: logoName || undefined },
+  ];
+
   return (
     <section className="tool-surface">
       <h2>QR code generator</h2>
-      <label className="field">
-        <span>Text or URL</span>
-        <input type="text" value={text} onChange={(event) => setText(event.target.value)} />
-      </label>
-      <div className="image-preview">
-        <NextImage src={url} alt="Generated QR code preview" width={240} height={240} unoptimized />
+      <p className="supporting-text">Client-side QR generation with templates, branding, presets, and batch export.</p>
+      <div className="field-grid">
+        <label className="field">
+          <span>Content type</span>
+          <select value={contentType} onChange={(event) => setContentType(event.target.value as QrContentType)}>
+            <option value="url">URL</option>
+            <option value="text">Plain text</option>
+            <option value="email">Email</option>
+            <option value="phone">Phone call</option>
+            <option value="sms">SMS</option>
+            <option value="wifi">WiFi</option>
+            <option value="geo">Location</option>
+            <option value="vcard">vCard</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Error correction</span>
+          <select value={errorCorrection} onChange={(event) => setErrorCorrection(event.target.value as QrErrorCorrection)}>
+            <option value="L">L (smallest)</option>
+            <option value="M">M (balanced)</option>
+            <option value="Q">Q (higher)</option>
+            <option value="H">H (highest)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Size (px)</span>
+          <input
+            type="number"
+            min={128}
+            max={1024}
+            step={8}
+            value={size}
+            onChange={(event) => setSize(clampInteger(Number(event.target.value), 128, 1024))}
+          />
+        </label>
+        <label className="field">
+          <span>Margin</span>
+          <input type="number" min={0} max={8} value={margin} onChange={(event) => setMargin(clampInteger(Number(event.target.value), 0, 8))} />
+        </label>
+        <label className="field">
+          <span>Dark color</span>
+          <input type="color" value={darkColor} onChange={(event) => setDarkColor(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Light color</span>
+          <input type="color" value={lightColor} onChange={(event) => setLightColor(event.target.value)} />
+        </label>
       </div>
-      <a className="action-link" href={url} download="utiliora-qr.png">
-        Download QR image
-      </a>
+
+      {contentType === "url" || contentType === "text" ? (
+        <label className="field">
+          <span>{contentType === "url" ? "URL" : "Text content"}</span>
+          <textarea value={rawValue} onChange={(event) => setRawValue(event.target.value)} rows={contentType === "url" ? 2 : 4} />
+        </label>
+      ) : null}
+      {contentType === "email" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>Recipient</span>
+            <input type="email" value={emailTo} onChange={(event) => setEmailTo(event.target.value)} placeholder="hello@example.com" />
+          </label>
+          <label className="field">
+            <span>Subject</span>
+            <input type="text" value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} />
+          </label>
+          <label className="field" style={{ gridColumn: "1 / -1" }}>
+            <span>Body</span>
+            <textarea value={emailBody} onChange={(event) => setEmailBody(event.target.value)} rows={3} />
+          </label>
+        </div>
+      ) : null}
+      {contentType === "phone" ? (
+        <label className="field">
+          <span>Phone number</span>
+          <input type="text" value={phoneNumber} onChange={(event) => setPhoneNumber(event.target.value)} placeholder="+256700000000" />
+        </label>
+      ) : null}
+      {contentType === "sms" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>SMS number</span>
+            <input type="text" value={smsNumber} onChange={(event) => setSmsNumber(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Message</span>
+            <input type="text" value={smsMessage} onChange={(event) => setSmsMessage(event.target.value)} />
+          </label>
+        </div>
+      ) : null}
+      {contentType === "wifi" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>SSID</span>
+            <input type="text" value={wifiSsid} onChange={(event) => setWifiSsid(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Encryption</span>
+            <select value={wifiEncryption} onChange={(event) => setWifiEncryption(event.target.value as "WPA" | "WEP" | "nopass")}>
+              <option value="WPA">WPA/WPA2</option>
+              <option value="WEP">WEP</option>
+              <option value="nopass">No password</option>
+            </select>
+          </label>
+          {wifiEncryption !== "nopass" ? (
+            <label className="field">
+              <span>Password</span>
+              <input type="text" value={wifiPassword} onChange={(event) => setWifiPassword(event.target.value)} />
+            </label>
+          ) : null}
+          <label className="checkbox">
+            <input type="checkbox" checked={wifiHidden} onChange={(event) => setWifiHidden(event.target.checked)} />
+            Hidden network
+          </label>
+        </div>
+      ) : null}
+      {contentType === "geo" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>Latitude</span>
+            <input type="number" step="any" value={geoLatitude} onChange={(event) => setGeoLatitude(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Longitude</span>
+            <input type="number" step="any" value={geoLongitude} onChange={(event) => setGeoLongitude(event.target.value)} />
+          </label>
+        </div>
+      ) : null}
+      {contentType === "vcard" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>First name</span>
+            <input type="text" value={vcardFirstName} onChange={(event) => setVcardFirstName(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Last name</span>
+            <input type="text" value={vcardLastName} onChange={(event) => setVcardLastName(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Organization</span>
+            <input type="text" value={vcardOrg} onChange={(event) => setVcardOrg(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Title</span>
+            <input type="text" value={vcardTitle} onChange={(event) => setVcardTitle(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Phone</span>
+            <input type="text" value={vcardPhone} onChange={(event) => setVcardPhone(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Email</span>
+            <input type="email" value={vcardEmail} onChange={(event) => setVcardEmail(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Website</span>
+            <input type="text" value={vcardWebsite} onChange={(event) => setVcardWebsite(event.target.value)} placeholder="https://example.com" />
+          </label>
+          <label className="field">
+            <span>Address</span>
+            <input type="text" value={vcardAddress} onChange={(event) => setVcardAddress(event.target.value)} />
+          </label>
+          <label className="field" style={{ gridColumn: "1 / -1" }}>
+            <span>Note</span>
+            <textarea value={vcardNote} onChange={(event) => setVcardNote(event.target.value)} rows={2} />
+          </label>
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <h3>Branding</h3>
+        <div className="field-grid">
+          <label className="field">
+            <span>Center logo (optional)</span>
+            <input type="file" accept="image/*" onChange={(event) => handleLogoUpload(event.target.files?.[0] ?? null)} />
+          </label>
+          <label className="field">
+            <span>Logo size ({logoScalePercent}%)</span>
+            <input
+              type="range"
+              min={12}
+              max={36}
+              step={1}
+              value={logoScalePercent}
+              onChange={(event) => setLogoScalePercent(clampInteger(Number(event.target.value), 12, 36))}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={() => void handleCopyPayload()}>
+          <Copy size={15} />
+          Copy payload
+        </button>
+        <button className="action-button" type="button" onClick={handleDownloadPng} disabled={!previewPngDataUrl || isGenerating}>
+          <Download size={15} />
+          Download PNG
+        </button>
+        <button className="action-button secondary" type="button" onClick={handleDownloadSvg} disabled={!previewSvg || isGenerating}>
+          <Download size={15} />
+          Download SVG
+        </button>
+        <button className="action-button secondary" type="button" onClick={saveToHistory}>
+          Save history
+        </button>
+      </div>
+      {copyStatus ? <p className="supporting-text">{copyStatus}</p> : null}
+      <div className="image-preview">
+        {previewPngDataUrl ? (
+          <NextImage
+            src={previewPngDataUrl}
+            alt="Generated QR code preview"
+            width={size}
+            height={size}
+            unoptimized
+            style={{ maxWidth: "100%", height: "auto", display: "block", margin: "0 auto" }}
+          />
+        ) : (
+          <p className="supporting-text">{status}</p>
+        )}
+      </div>
+      <ResultList rows={previewRows} />
+      <p className="supporting-text">{status}</p>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Preset name</span>
+          <input type="text" value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder={`${payloadResult.label} preset`} />
+        </label>
+        <div className="button-row" style={{ alignSelf: "end" }}>
+          <button className="action-button secondary" type="button" onClick={savePreset}>
+            Save preset
+          </button>
+        </div>
+      </div>
+
+      {presets.length ? (
+        <div className="mini-panel">
+          <h3>Presets</h3>
+          <div className="chip-list">
+            {presets.map((preset) => (
+              <div key={preset.id} className="chip" style={{ display: "inline-flex", gap: "0.4rem", alignItems: "center" }}>
+                <span>{preset.name}</span>
+                <button
+                  className="chip-button"
+                  type="button"
+                  onClick={() => {
+                    setContentType(preset.contentType === "url" ? "url" : "text");
+                    setRawValue(preset.payload);
+                    setSize(preset.size);
+                    setMargin(preset.margin);
+                    setErrorCorrection(preset.errorCorrection);
+                    setDarkColor(preset.darkColor);
+                    setLightColor(preset.lightColor);
+                    setLogoDataUrl(preset.logoDataUrl);
+                    setLogoName(preset.logoDataUrl ? "Preset logo" : "");
+                    setLogoScalePercent(preset.logoScalePercent);
+                    setStatus(`Applied preset "${preset.name}".`);
+                  }}
+                >
+                  Use
+                </button>
+                <button
+                  className="chip-button"
+                  type="button"
+                  onClick={() => setPresets((previous) => previous.filter((item) => item.id !== preset.id))}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {history.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Recent history</h3>
+            <button className="chip-button" type="button" onClick={() => setHistory([])}>
+              Clear
+            </button>
+          </div>
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <div>
+                    <strong>{entry.label}</strong>
+                    <small className="supporting-text">{formatQrTimestamp(entry.createdAt)}</small>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="chip-button"
+                      type="button"
+                      onClick={() => {
+                        setContentType("text");
+                        setRawValue(entry.payload);
+                      }}
+                    >
+                      Load
+                    </button>
+                    <button
+                      className="chip-button"
+                      type="button"
+                      onClick={() => setHistory((previous) => previous.filter((item) => item.id !== entry.id))}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <h3>Batch generation</h3>
+        <p className="supporting-text">
+          One line per payload, or <code>label|payload</code> for custom file names.
+        </p>
+        <label className="field">
+          <span>Batch entries</span>
+          <textarea
+            value={batchInput}
+            onChange={(event) => setBatchInput(event.target.value)}
+            rows={6}
+            placeholder={"Homepage|https://utiliora.cloud\nPricing|https://utiliora.cloud/pricing"}
+          />
+        </label>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={() => void handleBatchDownload("png")} disabled={batchRunning}>
+            PNG ZIP
+          </button>
+          <button className="action-button secondary" type="button" onClick={() => void handleBatchDownload("svg")} disabled={batchRunning}>
+            SVG ZIP
+          </button>
+          <button className="action-button" type="button" onClick={() => void handleBatchDownload("both")} disabled={batchRunning}>
+            PNG + SVG ZIP
+          </button>
+          <small className="supporting-text">
+            {parsedBatchItems.length} item{parsedBatchItems.length === 1 ? "" : "s"}
+          </small>
+        </div>
+        {batchStatus ? <p className="supporting-text">{batchStatus}</p> : null}
+      </div>
     </section>
   );
 }
