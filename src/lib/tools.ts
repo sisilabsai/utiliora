@@ -663,6 +663,23 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Keyword Clustering Tool"),
   },
   {
+    slug: "utm-link-builder",
+    category: "seo-tools",
+    title: "UTM Link Builder",
+    summary: "Create campaign-tagged URLs for analytics with bulk generation and CSV export.",
+    description:
+      "Build clean UTM links for ads, email, and social campaigns, validate destination URLs, and export bulk tagged links for reporting workflows.",
+    keywords: [
+      "utm builder",
+      "campaign url builder",
+      "google analytics utm generator",
+      "utm link generator",
+      "bulk utm builder",
+    ],
+    engine: { kind: "text-tool", id: "utm-link-builder" },
+    faq: baseFaq("UTM Link Builder"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",

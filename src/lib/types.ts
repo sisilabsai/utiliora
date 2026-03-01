@@ -95,6 +95,7 @@ export type TextToolId =
   | "policy-generator-suite"
   | "adsense-readiness-auditor"
   | "keyword-clustering-tool"
+  | "utm-link-builder"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

@@ -12334,6 +12334,454 @@ function KeywordClusteringTool() {
   );
 }
 
+interface UtmLinkEntry {
+  id: string;
+  label: string;
+  destination: string;
+  taggedUrl: string;
+  urlLength: number;
+}
+
+const UTM_PRESET_STORAGE_KEY = "utiliora-utm-builder-presets-v1";
+
+interface UtmPreset {
+  id: string;
+  name: string;
+  utmSource: string;
+  utmMedium: string;
+  utmCampaign: string;
+  utmTerm: string;
+  utmContent: string;
+  utmId: string;
+}
+
+function normalizeUtmDestinationUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = /^[a-zA-Z][\w+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeUtmValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function buildUtmTaggedUrl(
+  destination: string,
+  fields: {
+    source: string;
+    medium: string;
+    campaign: string;
+    term: string;
+    content: string;
+    id: string;
+  },
+): string {
+  const normalizedDestination = normalizeUtmDestinationUrl(destination);
+  if (!normalizedDestination) return "";
+  const parsed = new URL(normalizedDestination);
+
+  const source = normalizeUtmValue(fields.source);
+  const medium = normalizeUtmValue(fields.medium);
+  const campaign = normalizeUtmValue(fields.campaign);
+  const term = normalizeUtmValue(fields.term);
+  const content = normalizeUtmValue(fields.content);
+  const id = normalizeUtmValue(fields.id);
+
+  if (source) parsed.searchParams.set("utm_source", source);
+  if (medium) parsed.searchParams.set("utm_medium", medium);
+  if (campaign) parsed.searchParams.set("utm_campaign", campaign);
+  if (term) parsed.searchParams.set("utm_term", term);
+  if (content) parsed.searchParams.set("utm_content", content);
+  if (id) parsed.searchParams.set("utm_id", id);
+  return parsed.toString();
+}
+
+function parseUtmBulkInput(raw: string): Array<{ label: string; destination: string }> {
+  return raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const tokens = line.split(",");
+      if (tokens.length >= 2) {
+        const first = tokens[0]?.trim() ?? "";
+        const second = tokens.slice(1).join(",").trim();
+        const firstLooksLikeUrl = normalizeUtmDestinationUrl(first).length > 0;
+        if (firstLooksLikeUrl) {
+          return { label: `Row ${index + 1}`, destination: first };
+        }
+        return { label: first || `Row ${index + 1}`, destination: second };
+      }
+      return { label: `Row ${index + 1}`, destination: line };
+    })
+    .filter((item) => normalizeUtmDestinationUrl(item.destination));
+}
+
+function UtmLinkBuilderTool() {
+  const [destinationUrl, setDestinationUrl] = useState("https://utiliora.cloud");
+  const [utmSource, setUtmSource] = useState("google");
+  const [utmMedium, setUtmMedium] = useState("cpc");
+  const [utmCampaign, setUtmCampaign] = useState("launch");
+  const [utmTerm, setUtmTerm] = useState("");
+  const [utmContent, setUtmContent] = useState("");
+  const [utmId, setUtmId] = useState("");
+  const [bulkInput, setBulkInput] = useState("");
+  const [bulkMode, setBulkMode] = useState<TextUploadMergeMode>("append");
+  const [bulkLinks, setBulkLinks] = useState<UtmLinkEntry[]>([]);
+  const [status, setStatus] = useState("Build campaign URLs with consistent UTM parameters.");
+  const [presetName, setPresetName] = useState("");
+  const [presets, setPresets] = useState<UtmPreset[]>(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(UTM_PRESET_STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as UtmPreset[]) : [];
+      return Array.isArray(parsed) ? parsed.slice(0, 20) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      localStorage.setItem(UTM_PRESET_STORAGE_KEY, JSON.stringify(presets.slice(0, 20)));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [presets]);
+
+  const primaryTaggedUrl = useMemo(
+    () =>
+      buildUtmTaggedUrl(destinationUrl, {
+        source: utmSource,
+        medium: utmMedium,
+        campaign: utmCampaign,
+        term: utmTerm,
+        content: utmContent,
+        id: utmId,
+      }),
+    [destinationUrl, utmContent, utmCampaign, utmId, utmMedium, utmSource, utmTerm],
+  );
+
+  const generateBulkLinks = useCallback(() => {
+    const parsedRows = parseUtmBulkInput(bulkInput);
+    if (!parsedRows.length) {
+      setBulkLinks([]);
+      setStatus("Provide valid destination URLs for bulk generation.");
+      return;
+    }
+    const generated = parsedRows.map((row, index) => {
+      const taggedUrl = buildUtmTaggedUrl(row.destination, {
+        source: utmSource,
+        medium: utmMedium,
+        campaign: utmCampaign,
+        term: utmTerm,
+        content: utmContent,
+        id: utmId,
+      });
+      return {
+        id: `${index}-${row.label}-${row.destination}`,
+        label: row.label,
+        destination: normalizeUtmDestinationUrl(row.destination),
+        taggedUrl,
+        urlLength: taggedUrl.length,
+      };
+    });
+    setBulkLinks(generated);
+    setStatus(`Generated ${generated.length} campaign URL${generated.length === 1 ? "" : "s"}.`);
+    trackEvent("tool_utm_builder_bulk_generate", {
+      count: generated.length,
+      source: normalizeUtmValue(utmSource),
+      medium: normalizeUtmValue(utmMedium),
+      campaign: normalizeUtmValue(utmCampaign),
+    });
+  }, [bulkInput, utmCampaign, utmContent, utmId, utmMedium, utmSource, utmTerm]);
+
+  const savePreset = useCallback(() => {
+    const name = presetName.trim() || `${normalizeUtmValue(utmSource)}-${normalizeUtmValue(utmMedium)}`;
+    if (!name || !normalizeUtmValue(utmSource) || !normalizeUtmValue(utmMedium) || !normalizeUtmValue(utmCampaign)) {
+      setStatus("utm_source, utm_medium, and utm_campaign are required to save a preset.");
+      return;
+    }
+    const preset: UtmPreset = {
+      id: crypto.randomUUID(),
+      name,
+      utmSource,
+      utmMedium,
+      utmCampaign,
+      utmTerm,
+      utmContent,
+      utmId,
+    };
+    setPresets((current) => [preset, ...current].slice(0, 20));
+    setPresetName("");
+    setStatus(`Saved preset "${name}".`);
+  }, [presetName, utmCampaign, utmContent, utmId, utmMedium, utmSource, utmTerm]);
+
+  const handleBulkUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const nextInput =
+          bulkMode === "replace" || !bulkInput.trim()
+            ? normalized
+            : `${bulkInput.trimEnd()}\n${normalized.trimStart()}`;
+        setBulkInput(nextInput);
+        setStatus(`Loaded bulk destinations from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import bulk destination file.");
+      }
+    },
+    [bulkInput, bulkMode],
+  );
+
+  const bulkCsvRows = useMemo(
+    () =>
+      bulkLinks.map((item) => [
+        item.label,
+        item.destination,
+        item.taggedUrl,
+        item.urlLength.toString(),
+        item.urlLength > 2000 ? "Long URL risk" : "",
+      ]),
+    [bulkLinks],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Link2}
+        title="UTM link builder"
+        subtitle="Generate campaign links for analytics with single and bulk workflows."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Destination URL</span>
+          <input
+            type="text"
+            value={destinationUrl}
+            onChange={(event) => setDestinationUrl(event.target.value)}
+            placeholder="https://example.com/page"
+          />
+        </label>
+        <label className="field">
+          <span>utm_source</span>
+          <input type="text" value={utmSource} onChange={(event) => setUtmSource(event.target.value)} placeholder="google" />
+        </label>
+        <label className="field">
+          <span>utm_medium</span>
+          <input type="text" value={utmMedium} onChange={(event) => setUtmMedium(event.target.value)} placeholder="cpc" />
+        </label>
+        <label className="field">
+          <span>utm_campaign</span>
+          <input
+            type="text"
+            value={utmCampaign}
+            onChange={(event) => setUtmCampaign(event.target.value)}
+            placeholder="spring_launch"
+          />
+        </label>
+        <label className="field">
+          <span>utm_term (optional)</span>
+          <input type="text" value={utmTerm} onChange={(event) => setUtmTerm(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>utm_content (optional)</span>
+          <input type="text" value={utmContent} onChange={(event) => setUtmContent(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>utm_id (optional)</span>
+          <input type="text" value={utmId} onChange={(event) => setUtmId(event.target.value)} />
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Preset name</span>
+          <input type="text" value={presetName} onChange={(event) => setPresetName(event.target.value)} placeholder="google-cpc-launch" />
+        </label>
+        <div className="button-row" style={{ alignSelf: "end" }}>
+          <button className="action-button secondary" type="button" onClick={savePreset}>
+            Save preset
+          </button>
+        </div>
+      </div>
+
+      {presets.length ? (
+        <div className="mini-panel">
+          <h3>Saved UTM presets</h3>
+          <div className="chip-list">
+            {presets.map((preset) => (
+              <div key={preset.id} className="chip" style={{ display: "inline-flex", gap: "0.4rem", alignItems: "center" }}>
+                <span>{preset.name}</span>
+                <button
+                  className="chip-button"
+                  type="button"
+                  onClick={() => {
+                    setUtmSource(preset.utmSource);
+                    setUtmMedium(preset.utmMedium);
+                    setUtmCampaign(preset.utmCampaign);
+                    setUtmTerm(preset.utmTerm);
+                    setUtmContent(preset.utmContent);
+                    setUtmId(preset.utmId);
+                    setStatus(`Applied preset "${preset.name}".`);
+                  }}
+                >
+                  Use
+                </button>
+                <button className="chip-button" type="button" onClick={() => setPresets((current) => current.filter((entry) => entry.id !== preset.id))}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Tagged URL</span>
+        <textarea value={primaryTaggedUrl} rows={4} readOnly />
+      </label>
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(primaryTaggedUrl);
+            setStatus(ok ? "Tagged URL copied." : "No tagged URL available.");
+          }}
+          disabled={!primaryTaggedUrl}
+        >
+          <Copy size={15} />
+          Copy URL
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("utm-link.txt", primaryTaggedUrl)}
+          disabled={!primaryTaggedUrl}
+        >
+          <Download size={15} />
+          Download URL
+        </button>
+      </div>
+
+      <div className="mini-panel">
+        <h3>Bulk campaign URL builder</h3>
+        <p className="supporting-text">
+          Add one URL per line, or use <code>label,url</code> format.
+        </p>
+        <label className="field">
+          <span>Bulk destinations</span>
+          <textarea
+            value={bulkInput}
+            onChange={(event) => setBulkInput(event.target.value)}
+            rows={7}
+            placeholder={"Homepage,https://utiliora.cloud\nPricing,https://utiliora.cloud/pricing"}
+          />
+        </label>
+        <div className="field-grid">
+          <label className="field">
+            <span>Import list file</span>
+            <input type="file" accept=".txt,.csv,.md" onChange={(event) => void handleBulkUpload(event.target.files?.[0] ?? null)} />
+          </label>
+          <label className="field">
+            <span>Import behavior</span>
+            <select value={bulkMode} onChange={(event) => setBulkMode(event.target.value as TextUploadMergeMode)}>
+              <option value="append">Append lines</option>
+              <option value="replace">Replace lines</option>
+            </select>
+          </label>
+        </div>
+        <div className="button-row">
+          <button className="action-button" type="button" onClick={generateBulkLinks}>
+            Generate bulk links
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            disabled={!bulkLinks.length}
+            onClick={async () => {
+              const ok = await copyTextToClipboard(bulkLinks.map((entry) => entry.taggedUrl).join("\n"));
+              setStatus(ok ? "Bulk tagged URLs copied." : "No bulk links to copy.");
+            }}
+          >
+            <Copy size={15} />
+            Copy all links
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            disabled={!bulkLinks.length}
+            onClick={() =>
+              downloadCsv(
+                "utm-bulk-links.csv",
+                ["Label", "Destination URL", "Tagged URL", "Length", "Notes"],
+                bulkCsvRows,
+              )
+            }
+          >
+            <Download size={15} />
+            Download CSV
+          </button>
+        </div>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+      <ResultList
+        rows={[
+          { label: "Primary tagged URL length", value: formatNumericValue(primaryTaggedUrl.length) },
+          { label: "Bulk links generated", value: formatNumericValue(bulkLinks.length) },
+          {
+            label: "Long URL risk",
+            value: formatNumericValue(bulkLinks.filter((entry) => entry.urlLength > 2000).length),
+            hint: "URLs above ~2000 chars can break in some systems.",
+          },
+        ]}
+      />
+
+      {bulkLinks.length ? (
+        <div className="mini-panel">
+          <h3>Bulk link results</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Destination</th>
+                  <th>Tagged URL</th>
+                  <th>Length</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bulkLinks.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.label}</td>
+                    <td>{entry.destination}</td>
+                    <td>{entry.taggedUrl}</td>
+                    <td>{formatNumericValue(entry.urlLength)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
@@ -13372,6 +13820,8 @@ function TextTool({ id }: { id: TextToolId }) {
       return <AdSenseReadinessAuditorTool />;
     case "keyword-clustering-tool":
       return <KeywordClusteringTool />;
+    case "utm-link-builder":
+      return <UtmLinkBuilderTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":
