@@ -33414,6 +33414,509 @@ function MeetingTimePlannerTool() {
   );
 }
 
+interface JobApplicationKitResult {
+  scorePercent: number;
+  totalTrackedKeywords: number;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  priorityMissingKeywords: string[];
+  rewrittenBullets: string[];
+  coverLetter: string;
+  emails: {
+    postApplication: string;
+    interviewThankYou: string;
+    noResponseFollowUp: string;
+  };
+}
+
+const JOB_APPLICATION_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "also",
+  "among",
+  "and",
+  "any",
+  "are",
+  "been",
+  "being",
+  "both",
+  "build",
+  "can",
+  "could",
+  "data",
+  "each",
+  "for",
+  "from",
+  "have",
+  "having",
+  "into",
+  "job",
+  "like",
+  "more",
+  "must",
+  "need",
+  "needs",
+  "our",
+  "role",
+  "should",
+  "skills",
+  "such",
+  "team",
+  "that",
+  "their",
+  "them",
+  "they",
+  "this",
+  "those",
+  "through",
+  "using",
+  "with",
+  "your",
+  "you",
+  "will",
+  "work",
+  "years",
+  "year",
+  "ability",
+  "experience",
+  "responsible",
+  "preferred",
+  "required",
+  "strong",
+  "excellent",
+  "knowledge",
+  "understanding",
+  "plus",
+  "pluses",
+  "highly",
+  "across",
+  "while",
+  "where",
+  "when",
+  "what",
+  "which",
+  "who",
+  "whose",
+  "than",
+  "then",
+  "there",
+  "here",
+  "able",
+  "ensuring",
+  "ensure",
+  "support",
+  "help",
+  "including",
+  "within",
+  "across",
+  "over",
+  "under",
+  "into",
+]);
+
+function extractNormalizedKeywords(value: string): string[] {
+  const matches = value.toLowerCase().match(/[a-z][a-z0-9+#.-]{2,}/g) ?? [];
+  return matches.filter((token) => !JOB_APPLICATION_STOP_WORDS.has(token) && !/^\d+$/.test(token));
+}
+
+function getTopKeywords(value: string, limit: number): string[] {
+  const frequency = new Map<string, number>();
+  extractNormalizedKeywords(value).forEach((token) => {
+    frequency.set(token, (frequency.get(token) ?? 0) + 1);
+  });
+  return [...frequency.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([token]) => token);
+}
+
+function normalizeBulletLine(value: string): string {
+  return value.replace(/^[-*•]\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+function buildJobApplicationKit(options: {
+  applicantName: string;
+  applicantEmail: string;
+  roleTitle: string;
+  companyName: string;
+  resumeText: string;
+  jobDescription: string;
+}): JobApplicationKitResult {
+  const applicantName = options.applicantName.trim() || "Applicant";
+  const applicantEmail = options.applicantEmail.trim() || "applicant@example.com";
+  const roleTitle = options.roleTitle.trim() || "the role";
+  const companyName = options.companyName.trim() || "your company";
+  const resumeText = options.resumeText.trim();
+  const jobDescription = options.jobDescription.trim();
+
+  const jdKeywords = getTopKeywords(jobDescription, 40);
+  const resumeTokenSet = new Set(extractNormalizedKeywords(resumeText));
+  const matchedKeywords = jdKeywords.filter((keyword) => resumeTokenSet.has(keyword));
+  const missingKeywords = jdKeywords.filter((keyword) => !resumeTokenSet.has(keyword));
+  const priorityMissingKeywords = missingKeywords.slice(0, 12);
+  const scorePercent = Math.round((matchedKeywords.length / Math.max(1, jdKeywords.length)) * 100);
+
+  const resumeLines = resumeText
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => normalizeBulletLine(line))
+    .filter((line) => line.length >= 20);
+
+  const likelyAchievementLines = resumeLines.filter((line) => /\d/.test(line));
+  const evidenceLines = [...likelyAchievementLines, ...resumeLines].slice(0, 5);
+  const rewrittenBullets = evidenceLines.map((line, index) => {
+    const keyword = priorityMissingKeywords[index] ?? jdKeywords[index] ?? "business impact";
+    return `- ${line}. Expanded ownership and quantified impact around ${keyword}.`;
+  });
+  if (!rewrittenBullets.length) {
+    rewrittenBullets.push(
+      `- Delivered measurable outcomes aligned with ${priorityMissingKeywords[0] ?? "core job requirements"}.`,
+    );
+  }
+
+  const keywordHighlights = matchedKeywords.slice(0, 8).join(", ") || "cross-functional execution";
+  const growthFocus = priorityMissingKeywords.slice(0, 4).join(", ") || "role-specific impact metrics";
+
+  const coverLetter = `Dear Hiring Manager at ${companyName},
+
+I am applying for the ${roleTitle} role. My background includes practical execution in areas such as ${keywordHighlights}, and I am motivated by opportunities to create measurable outcomes in fast-moving teams.
+
+In recent work, I have consistently improved delivery quality, operational clarity, and stakeholder communication while keeping business priorities in focus. I would bring that same execution mindset to ${companyName}, with additional focus on ${growthFocus}.
+
+I am excited about contributing to your team and would value the opportunity to discuss how my experience aligns with your goals.
+
+Sincerely,
+${applicantName}
+${applicantEmail}`;
+
+  const emails = {
+    postApplication: `Subject: Application submitted - ${roleTitle} (${applicantName})
+
+Hi Hiring Team,
+
+I have submitted my application for the ${roleTitle} position at ${companyName}. I am excited about the opportunity and wanted to confirm my interest.
+
+If helpful, I can share additional examples of relevant work.
+
+Best regards,
+${applicantName}
+${applicantEmail}`,
+    interviewThankYou: `Subject: Thank you for the interview - ${roleTitle}
+
+Hi [Interviewer Name],
+
+Thank you for taking the time to speak with me today about the ${roleTitle} role. I appreciated learning more about your priorities and team direction.
+
+Our conversation reinforced my interest in contributing at ${companyName}, especially around ${growthFocus}.
+
+Thanks again for your time.
+
+Best regards,
+${applicantName}
+${applicantEmail}`,
+    noResponseFollowUp: `Subject: Follow-up on ${roleTitle} application
+
+Hi Hiring Team,
+
+I hope you are doing well. I wanted to follow up on my application for the ${roleTitle} role submitted recently.
+
+I remain very interested in the position and would be glad to provide any additional information that could support your review.
+
+Thank you,
+${applicantName}
+${applicantEmail}`,
+  };
+
+  return {
+    scorePercent,
+    totalTrackedKeywords: jdKeywords.length,
+    matchedKeywords,
+    missingKeywords,
+    priorityMissingKeywords,
+    rewrittenBullets,
+    coverLetter,
+    emails,
+  };
+}
+
+function buildJobApplicationKitMarkdown(options: {
+  applicantName: string;
+  roleTitle: string;
+  companyName: string;
+  result: JobApplicationKitResult;
+}): string {
+  const roleTitle = options.roleTitle.trim() || "target role";
+  const companyName = options.companyName.trim() || "target company";
+  const applicantName = options.applicantName.trim() || "Applicant";
+  const result = options.result;
+
+  return [
+    "# Job Application Kit",
+    "",
+    `- Candidate: ${applicantName}`,
+    `- Role: ${roleTitle}`,
+    `- Company: ${companyName}`,
+    `- ATS match score: ${result.scorePercent}%`,
+    `- Tracked keywords: ${result.totalTrackedKeywords}`,
+    "",
+    "## Priority Missing Keywords",
+    ...(result.priorityMissingKeywords.length
+      ? result.priorityMissingKeywords.map((keyword) => `- ${keyword}`)
+      : ["- No major keyword gaps detected."]),
+    "",
+    "## Resume Bullet Rewrite Suggestions",
+    ...result.rewrittenBullets,
+    "",
+    "## Cover Letter Draft",
+    result.coverLetter,
+    "",
+    "## Follow-up Emails",
+    "",
+    "### Post-Application Confirmation",
+    result.emails.postApplication,
+    "",
+    "### Interview Thank You",
+    result.emails.interviewThankYou,
+    "",
+    "### No-Response Follow-up",
+    result.emails.noResponseFollowUp,
+  ].join("\n");
+}
+
+function JobApplicationKitBuilderTool() {
+  const [applicantName, setApplicantName] = useState("Your Name");
+  const [applicantEmail, setApplicantEmail] = useState("your.email@example.com");
+  const [roleTitle, setRoleTitle] = useState("Product Manager");
+  const [companyName, setCompanyName] = useState("Target Company");
+  const [resumeText, setResumeText] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [status, setStatus] = useState("Paste resume + job description, then generate your complete application kit.");
+  const [result, setResult] = useState<JobApplicationKitResult | null>(null);
+
+  const kitMarkdown = useMemo(() => {
+    if (!result) return "";
+    return buildJobApplicationKitMarkdown({
+      applicantName,
+      roleTitle,
+      companyName,
+      result,
+    });
+  }, [applicantName, companyName, result, roleTitle]);
+
+  const handleTextUpload = useCallback(
+    async (file: File | null, target: "resume" | "job") => {
+      if (!file) return;
+      try {
+        const content = await readTextFileWithLimit(file, 1024 * 1024);
+        if (target === "resume") {
+          setResumeText(content);
+          setStatus(`Loaded resume text from ${file.name}.`);
+        } else {
+          setJobDescription(content);
+          setStatus(`Loaded job description text from ${file.name}.`);
+        }
+      } catch {
+        setStatus("Could not read uploaded file. Use .txt, .md, or other plain-text files.");
+      }
+    },
+    [],
+  );
+
+  const generateKit = useCallback(() => {
+    if (!resumeText.trim() || !jobDescription.trim()) {
+      setStatus("Resume text and job description are required.");
+      setResult(null);
+      return;
+    }
+    const generated = buildJobApplicationKit({
+      applicantName,
+      applicantEmail,
+      roleTitle,
+      companyName,
+      resumeText,
+      jobDescription,
+    });
+    setResult(generated);
+    setStatus(`Kit generated. ATS match score: ${generated.scorePercent}%.`);
+    trackEvent("tool_job_application_kit_generate", {
+      score: generated.scorePercent,
+      trackedKeywords: generated.totalTrackedKeywords,
+      missingKeywords: generated.priorityMissingKeywords.length,
+    });
+  }, [applicantEmail, applicantName, companyName, jobDescription, resumeText, roleTitle]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Briefcase}
+        title="Job application kit builder"
+        subtitle="Generate ATS match insights, cover letter draft, and follow-up emails from one target role."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Applicant name</span>
+          <input type="text" value={applicantName} onChange={(event) => setApplicantName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Applicant email</span>
+          <input type="email" value={applicantEmail} onChange={(event) => setApplicantEmail(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Target role</span>
+          <input type="text" value={roleTitle} onChange={(event) => setRoleTitle(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Target company</span>
+          <input type="text" value={companyName} onChange={(event) => setCompanyName(event.target.value)} />
+        </label>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Upload resume text file (optional)</span>
+          <input type="file" accept=".txt,.md" onChange={(event) => void handleTextUpload(event.target.files?.[0] ?? null, "resume")} />
+        </label>
+        <label className="field">
+          <span>Upload job description file (optional)</span>
+          <input type="file" accept=".txt,.md" onChange={(event) => void handleTextUpload(event.target.files?.[0] ?? null, "job")} />
+        </label>
+      </div>
+
+      <label className="field">
+        <span>Resume text</span>
+        <textarea
+          value={resumeText}
+          onChange={(event) => setResumeText(event.target.value)}
+          rows={8}
+          placeholder="Paste your resume content here."
+        />
+      </label>
+      <label className="field">
+        <span>Job description</span>
+        <textarea
+          value={jobDescription}
+          onChange={(event) => setJobDescription(event.target.value)}
+          rows={8}
+          placeholder="Paste the target job posting here."
+        />
+      </label>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generateKit}>
+          Generate apply kit
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(kitMarkdown);
+            setStatus(ok ? "Full application kit copied." : "No kit available to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy full kit
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={() => downloadTextFile("job-application-kit.md", kitMarkdown, "text/markdown;charset=utf-8;")}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={async () => {
+            if (!result) return;
+            try {
+              const JSZip = await loadJsZipModule();
+              const zip = new JSZip();
+              zip.file("00-application-kit.md", kitMarkdown);
+              zip.file("01-cover-letter.txt", result.coverLetter);
+              zip.file("02-post-application-email.txt", result.emails.postApplication);
+              zip.file("03-interview-thank-you-email.txt", result.emails.interviewThankYou);
+              zip.file("04-no-response-follow-up-email.txt", result.emails.noResponseFollowUp);
+              zip.file("05-priority-missing-keywords.txt", result.priorityMissingKeywords.join("\n"));
+              zip.file("06-rewrite-bullets.txt", result.rewrittenBullets.join("\n"));
+              const blob = await zip.generateAsync({ type: "blob" });
+              downloadBlobFile("job-application-kit.zip", blob);
+              setStatus("Downloaded complete application kit ZIP.");
+            } catch {
+              setStatus("Could not create application kit ZIP.");
+            }
+          }}
+        >
+          <Download size={15} />
+          Download apply pack
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      {result ? (
+        <>
+          <ResultList
+            rows={[
+              { label: "ATS match score", value: `${result.scorePercent}%` },
+              { label: "Tracked keywords", value: formatNumericValue(result.totalTrackedKeywords) },
+              { label: "Matched keywords", value: formatNumericValue(result.matchedKeywords.length) },
+              { label: "Priority gaps", value: formatNumericValue(result.priorityMissingKeywords.length) },
+            ]}
+          />
+
+          <div className="mini-panel">
+            <h3>Priority missing keywords</h3>
+            {result.priorityMissingKeywords.length ? (
+              <div className="chip-list">
+                {result.priorityMissingKeywords.map((keyword) => (
+                  <span key={keyword} className="chip">
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="supporting-text">No significant gaps detected from tracked keywords.</p>
+            )}
+          </div>
+
+          <div className="mini-panel">
+            <h3>Resume bullet rewrite suggestions</h3>
+            <ul className="plain-list">
+              {result.rewrittenBullets.map((line, index) => (
+                <li key={`${line}-${index}`}>{line}</li>
+              ))}
+            </ul>
+          </div>
+
+          <label className="field">
+            <span>Cover letter draft</span>
+            <textarea value={result.coverLetter} rows={10} readOnly />
+          </label>
+
+          <label className="field">
+            <span>Post-application email</span>
+            <textarea value={result.emails.postApplication} rows={8} readOnly />
+          </label>
+
+          <label className="field">
+            <span>Interview thank-you email</span>
+            <textarea value={result.emails.interviewThankYou} rows={8} readOnly />
+          </label>
+
+          <label className="field">
+            <span>No-response follow-up email</span>
+            <textarea value={result.emails.noResponseFollowUp} rows={8} readOnly />
+          </label>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ProductivityTool({ id }: { id: ProductivityToolId }) {
   const { t } = useLocale();
   switch (id) {
@@ -33431,6 +33934,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <DocumentTranslatorTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
+    case "job-application-kit-builder":
+      return <JobApplicationKitBuilderTool />;
     case "invoice-generator":
       return <InvoiceGeneratorTool />;
     default:

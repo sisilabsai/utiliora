@@ -146,6 +146,7 @@ export type ProductivityToolId =
   | "text-translator"
   | "document-translator"
   | "resume-builder"
+  | "job-application-kit-builder"
   | "invoice-generator";
 
 export type ToolEngine =

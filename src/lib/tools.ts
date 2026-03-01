@@ -1240,6 +1240,23 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Resume Builder"),
   },
   {
+    slug: "job-application-kit-builder",
+    category: "productivity-tools",
+    title: "Job Application Kit Builder",
+    summary: "Generate ATS match insights, tailored cover letters, and follow-up email templates from one job post.",
+    description:
+      "Turn your resume and a target job description into a practical apply-ready kit with keyword gap analysis, priority fixes, structured bullet rewrites, cover letter draft, and follow-up outreach emails.",
+    keywords: [
+      "ats resume match",
+      "job application kit",
+      "cover letter generator",
+      "job description keyword matcher",
+      "follow up email after applying",
+    ],
+    engine: { kind: "productivity-tool", id: "job-application-kit-builder" },
+    faq: baseFaq("Job Application Kit Builder"),
+  },
+  {
     slug: "invoice-generator",
     category: "productivity-tools",
     title: "Invoice Generator",
