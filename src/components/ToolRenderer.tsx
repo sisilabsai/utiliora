@@ -6067,6 +6067,662 @@ function MetaTagGeneratorTool() {
   );
 }
 
+type MetaDescriptionTone = "balanced" | "benefit" | "urgent" | "authority";
+
+interface MetaDescriptionVariant {
+  id: string;
+  text: string;
+  length: number;
+  withinLengthRange: boolean;
+  hasPrimaryKeyword: boolean;
+  hasSecondaryKeyword: boolean;
+  score: number;
+}
+
+interface MetaDescriptionBulkSeed {
+  id: string;
+  url: string;
+  title: string;
+  keyword: string;
+  valueProp: string;
+  cta: string;
+  brand: string;
+}
+
+interface MetaDescriptionBulkResult extends MetaDescriptionBulkSeed {
+  description: string;
+  length: number;
+  score: number;
+  withinLengthRange: boolean;
+}
+
+function normalizeMetaDescriptionUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = /^[a-zA-Z][\w+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function splitMetaDescriptionKeywords(value: string): string[] {
+  return value
+    .split(/[,|;]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function cleanMetaDescriptionSentence(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
+}
+
+function trimMetaDescription(value: string, maxLength: number): string {
+  const cleaned = cleanMetaDescriptionSentence(value);
+  if (!cleaned) return "";
+  if (cleaned.length <= maxLength) return cleaned;
+  const sliceTarget = Math.max(70, maxLength - 1);
+  const sliced = cleaned.slice(0, sliceTarget);
+  const cutAt = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf(","), sliced.lastIndexOf("."));
+  const base = (cutAt > 45 ? sliced.slice(0, cutAt) : sliced).replace(/[,:;.\- ]+$/g, "");
+  return `${base}...`;
+}
+
+function scoreMetaDescription(text: string, primaryKeyword: string, secondaryKeywords: string[], maxLength: number): number {
+  const normalized = text.toLowerCase();
+  const targetKeyword = primaryKeyword.toLowerCase().trim();
+  const hasPrimaryKeyword = targetKeyword ? normalized.includes(targetKeyword) : false;
+  const hasSecondaryKeyword = secondaryKeywords.some((keyword) => normalized.includes(keyword.toLowerCase()));
+  const hasCtaVerb = /\b(get|start|discover|explore|try|learn|build|improve|boost|compare)\b/i.test(text);
+  const hasValueNumber = /\b\d{2,4}\b/.test(text);
+
+  let score = 0;
+  if (text.length >= 130 && text.length <= maxLength) {
+    score += 35;
+  } else if (text.length >= 110 && text.length <= Math.max(maxLength + 10, 160)) {
+    score += 22;
+  } else {
+    score += 8;
+  }
+  if (hasPrimaryKeyword) score += 30;
+  if (hasSecondaryKeyword) score += 12;
+  if (hasCtaVerb) score += 13;
+  if (hasValueNumber) score += 10;
+
+  return Math.max(0, Math.min(100, score));
+}
+
+function buildMetaDescriptionCandidates(options: {
+  pageTitle: string;
+  primaryKeyword: string;
+  secondaryKeywords: string[];
+  valueProp: string;
+  cta: string;
+  brandName: string;
+  tone: MetaDescriptionTone;
+  includeYear: boolean;
+}): string[] {
+  const pageTitle = options.pageTitle.trim() || "this page";
+  const primaryKeyword = options.primaryKeyword.trim() || pageTitle;
+  const valueProp = options.valueProp.trim() || `practical insights for ${primaryKeyword}`;
+  const cta = options.cta.trim();
+  const brandName = options.brandName.trim();
+  const secondaryKeywords = options.secondaryKeywords.slice(0, 4);
+  const year = new Date().getFullYear();
+  const keywordWithYear = options.includeYear ? `${primaryKeyword} ${year}` : primaryKeyword;
+
+  const introByTone: Record<MetaDescriptionTone, string[]> = {
+    balanced: ["Practical", "Clear", "Actionable", "Reliable"],
+    benefit: ["Grow faster with", "Improve results using", "Unlock better performance with", "Boost outcomes through"],
+    urgent: ["Move quickly with", "Fix this now using", "Stop wasting time and use", "Launch today with"],
+    authority: ["Expert-backed", "Proven", "Trusted", "Field-tested"],
+  };
+
+  const ctaByTone: Record<MetaDescriptionTone, string[]> = {
+    balanced: ["Read the guide", "Get the full checklist", "See the complete workflow", "Use this step-by-step plan"],
+    benefit: ["Start improving today", "Get better results now", "Put this into action today", "Apply these tactics now"],
+    urgent: ["Act now", "Start now", "Fix it today", "Deploy this today"],
+    authority: ["Use the professional framework", "Adopt this proven approach", "Follow the expert process", "Apply the trusted method"],
+  };
+
+  const activeCtaList = cta ? [cta, ...ctaByTone[options.tone]] : ctaByTone[options.tone];
+  const brandSuffix = brandName ? ` | ${brandName}` : "";
+  const secondary = secondaryKeywords[0] ?? "";
+
+  const candidates: string[] = [];
+  introByTone[options.tone].forEach((intro, index) => {
+    const toneCta = activeCtaList[index % activeCtaList.length];
+    candidates.push(`${intro} ${keywordWithYear}: ${valueProp}. ${toneCta}.${brandSuffix}`);
+    candidates.push(`${pageTitle}: ${valueProp}. ${toneCta} for ${primaryKeyword}.${brandSuffix}`);
+    candidates.push(`${primaryKeyword} guide for ${pageTitle}. ${valueProp}. ${toneCta}.${brandSuffix}`);
+    if (secondary) {
+      candidates.push(`${primaryKeyword} + ${secondary}: ${valueProp}. ${toneCta}.${brandSuffix}`);
+    }
+  });
+
+  if (options.includeYear) {
+    candidates.push(`${pageTitle} in ${year}: ${valueProp}. ${activeCtaList[0]}.${brandSuffix}`);
+  }
+  candidates.push(`${primaryKeyword} explained for teams: ${valueProp}. ${activeCtaList[0]}.${brandSuffix}`);
+  candidates.push(`Need better ${primaryKeyword}? ${valueProp}. ${activeCtaList[0]}.${brandSuffix}`);
+
+  return candidates.map((candidate) => cleanMetaDescriptionSentence(candidate));
+}
+
+function buildMetaDescriptionVariants(options: {
+  pageTitle: string;
+  primaryKeyword: string;
+  secondaryKeywords: string[];
+  valueProp: string;
+  cta: string;
+  brandName: string;
+  tone: MetaDescriptionTone;
+  includeYear: boolean;
+  variantCount: number;
+  maxLength: number;
+}): MetaDescriptionVariant[] {
+  const rawCandidates = buildMetaDescriptionCandidates({
+    pageTitle: options.pageTitle,
+    primaryKeyword: options.primaryKeyword,
+    secondaryKeywords: options.secondaryKeywords,
+    valueProp: options.valueProp,
+    cta: options.cta,
+    brandName: options.brandName,
+    tone: options.tone,
+    includeYear: options.includeYear,
+  });
+
+  const dedupe = new Set<string>();
+  const variants: MetaDescriptionVariant[] = [];
+  rawCandidates.forEach((candidate, index) => {
+    const trimmed = trimMetaDescription(candidate, options.maxLength);
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (!key || dedupe.has(key)) return;
+    dedupe.add(key);
+
+    const length = trimmed.length;
+    const normalized = trimmed.toLowerCase();
+    const hasPrimaryKeyword = options.primaryKeyword.trim()
+      ? normalized.includes(options.primaryKeyword.trim().toLowerCase())
+      : false;
+    const hasSecondaryKeyword = options.secondaryKeywords.some((keyword) => normalized.includes(keyword.toLowerCase()));
+    variants.push({
+      id: `variant-${index}-${key.slice(0, 24)}`,
+      text: trimmed,
+      length,
+      withinLengthRange: length >= 120 && length <= options.maxLength,
+      hasPrimaryKeyword,
+      hasSecondaryKeyword,
+      score: scoreMetaDescription(trimmed, options.primaryKeyword, options.secondaryKeywords, options.maxLength),
+    });
+  });
+
+  return variants
+    .sort((left, right) => right.score - left.score || left.length - right.length)
+    .slice(0, Math.max(2, Math.min(20, options.variantCount)));
+}
+
+function parseMetaDescriptionBulkSeeds(
+  raw: string,
+  defaults: {
+    pageTitle: string;
+    primaryKeyword: string;
+    valueProp: string;
+    cta: string;
+    brandName: string;
+  },
+): MetaDescriptionBulkSeed[] {
+  const lines = raw
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  const seeds: MetaDescriptionBulkSeed[] = [];
+  lines.forEach((line, index) => {
+    const columns = (line.includes("\t") ? line.split("\t") : line.split(",")).map((column) => column.trim());
+    const padded = [...columns];
+    while (padded.length < 6) padded.push("");
+    const [urlRaw, titleRaw, keywordRaw, valueRaw, ctaRaw, brandRaw] = padded;
+    const url = normalizeMetaDescriptionUrl(urlRaw);
+    const title = titleRaw || defaults.pageTitle;
+    const keyword = keywordRaw || defaults.primaryKeyword || title;
+    if (!title.trim() || !keyword.trim()) return;
+    seeds.push({
+      id: `seed-${index + 1}`,
+      url,
+      title,
+      keyword,
+      valueProp: valueRaw || defaults.valueProp,
+      cta: ctaRaw || defaults.cta,
+      brand: brandRaw || defaults.brandName,
+    });
+  });
+
+  return seeds.slice(0, 120);
+}
+
+function ProgrammaticMetaDescriptionGeneratorTool() {
+  const [pageTitle, setPageTitle] = useState("Programmatic SEO Meta Description Guide");
+  const [primaryKeyword, setPrimaryKeyword] = useState("programmatic meta description generator");
+  const [secondaryKeywordsInput, setSecondaryKeywordsInput] = useState("seo snippets, serp optimization, ctr improvement");
+  const [valueProp, setValueProp] = useState("Generate click-worthy snippets at scale with keyword coverage and length control");
+  const [cta, setCta] = useState("Generate optimized descriptions now");
+  const [brandName, setBrandName] = useState("Utiliora");
+  const [tone, setTone] = useState<MetaDescriptionTone>("balanced");
+  const [variantCount, setVariantCount] = useState(8);
+  const [maxLength, setMaxLength] = useState(158);
+  const [includeYear, setIncludeYear] = useState(true);
+  const [bulkInput, setBulkInput] = useState(
+    "https://example.com/programmatic-seo,Programmatic SEO Workflow,programmatic seo,Build scalable SEO pages with consistent quality,Read the workflow,Utiliora\nhttps://example.com/meta-optimization,Meta Description Optimization,meta description optimization,Improve CTR with better snippets,See optimization checklist,Utiliora",
+  );
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("append");
+  const [status, setStatus] = useState("Generate single-page variants and bulk meta descriptions for scale publishing.");
+
+  const secondaryKeywords = useMemo(
+    () => splitMetaDescriptionKeywords(secondaryKeywordsInput),
+    [secondaryKeywordsInput],
+  );
+
+  const singleVariants = useMemo(
+    () =>
+      buildMetaDescriptionVariants({
+        pageTitle,
+        primaryKeyword,
+        secondaryKeywords,
+        valueProp,
+        cta,
+        brandName,
+        tone,
+        includeYear,
+        variantCount,
+        maxLength,
+      }),
+    [brandName, cta, includeYear, maxLength, pageTitle, primaryKeyword, secondaryKeywords, tone, valueProp, variantCount],
+  );
+
+  const bulkSeeds = useMemo(
+    () =>
+      parseMetaDescriptionBulkSeeds(bulkInput, {
+        pageTitle,
+        primaryKeyword,
+        valueProp,
+        cta,
+        brandName,
+      }),
+    [brandName, bulkInput, cta, pageTitle, primaryKeyword, valueProp],
+  );
+
+  const bulkResults = useMemo<MetaDescriptionBulkResult[]>(
+    () =>
+      bulkSeeds.map((seed) => {
+        const best = buildMetaDescriptionVariants({
+          pageTitle: seed.title,
+          primaryKeyword: seed.keyword,
+          secondaryKeywords,
+          valueProp: seed.valueProp,
+          cta: seed.cta,
+          brandName: seed.brand,
+          tone,
+          includeYear,
+          variantCount: 1,
+          maxLength,
+        })[0];
+        const description = best?.text ?? "";
+        const length = description.length;
+        return {
+          ...seed,
+          description,
+          length,
+          score: best?.score ?? 0,
+          withinLengthRange: best?.withinLengthRange ?? false,
+        };
+      }),
+    [bulkSeeds, includeYear, maxLength, secondaryKeywords, tone],
+  );
+
+  const bestVariant = singleVariants[0] ?? null;
+
+  const singleCsvRows = useMemo(
+    () =>
+      singleVariants.map((variant, index) => [
+        String(index + 1),
+        variant.text,
+        String(variant.length),
+        variant.hasPrimaryKeyword ? "Yes" : "No",
+        variant.hasSecondaryKeyword ? "Yes" : "No",
+        String(variant.score),
+      ]),
+    [singleVariants],
+  );
+
+  const bulkCsvRows = useMemo(
+    () =>
+      bulkResults.map((row) => [
+        row.url || "-",
+        row.title,
+        row.keyword,
+        row.description,
+        String(row.length),
+        row.withinLengthRange ? "Yes" : "No",
+        String(row.score),
+      ]),
+    [bulkResults],
+  );
+
+  const handleBulkUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const nextInput =
+          uploadMode === "replace" || !bulkInput.trim()
+            ? normalized
+            : `${bulkInput.trimEnd()}\n${normalized.trimStart()}`;
+        setBulkInput(nextInput);
+        setStatus(`Loaded bulk rows from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load bulk rows.");
+      }
+    },
+    [bulkInput, uploadMode],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Sparkles}
+        title="Programmatic meta description generator"
+        subtitle="Generate high-converting meta descriptions in bulk with keyword checks, scoring, and export-ready output."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Page title</span>
+          <input type="text" value={pageTitle} onChange={(event) => setPageTitle(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Primary keyword</span>
+          <input type="text" value={primaryKeyword} onChange={(event) => setPrimaryKeyword(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Secondary keywords (comma separated)</span>
+          <input
+            type="text"
+            value={secondaryKeywordsInput}
+            onChange={(event) => setSecondaryKeywordsInput(event.target.value)}
+            placeholder="seo snippets, ctr boost, serp optimization"
+          />
+        </label>
+        <label className="field">
+          <span>Value proposition</span>
+          <input type="text" value={valueProp} onChange={(event) => setValueProp(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Call to action</span>
+          <input type="text" value={cta} onChange={(event) => setCta(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Brand name</span>
+          <input type="text" value={brandName} onChange={(event) => setBrandName(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Tone</span>
+          <select value={tone} onChange={(event) => setTone(event.target.value as MetaDescriptionTone)}>
+            <option value="balanced">Balanced</option>
+            <option value="benefit">Benefit-focused</option>
+            <option value="urgent">Urgency</option>
+            <option value="authority">Authority</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Variant count</span>
+          <input
+            type="number"
+            min={2}
+            max={20}
+            step={1}
+            value={variantCount}
+            onChange={(event) => setVariantCount(Math.max(2, Math.min(20, Number(event.target.value) || 8)))}
+          />
+        </label>
+        <label className="field">
+          <span>Max description length ({maxLength})</span>
+          <input
+            type="range"
+            min={130}
+            max={170}
+            step={1}
+            value={maxLength}
+            onChange={(event) => setMaxLength(Math.max(130, Math.min(170, Number(event.target.value) || 158)))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <label className="checkbox">
+          <input type="checkbox" checked={includeYear} onChange={(event) => setIncludeYear(event.target.checked)} />
+          Include current year
+        </label>
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => {
+            setStatus(
+              singleVariants.length
+                ? `Generated ${singleVariants.length} variants. Best score: ${singleVariants[0]?.score ?? 0}/100.`
+                : "Enter title and keyword to generate variants.",
+            );
+            trackEvent("tool_programmatic_meta_description_generate", {
+              variants: singleVariants.length,
+              tone,
+              maxLength,
+            });
+          }}
+        >
+          Generate variants
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(singleVariants.map((variant) => variant.text).join("\n"));
+            setStatus(ok ? "Single-page variants copied." : "No variants available.");
+          }}
+          disabled={!singleVariants.length}
+        >
+          <Copy size={15} />
+          Copy variants
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadCsv("meta-description-variants.csv", ["#", "Description", "Length", "Primary KW", "Secondary KW", "Score"], singleCsvRows)}
+          disabled={!singleVariants.length}
+        >
+          <Download size={15} />
+          CSV variants
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("meta-description-variants.txt", singleVariants.map((variant) => variant.text).join("\n"))}
+          disabled={!singleVariants.length}
+        >
+          <Download size={15} />
+          TXT
+        </button>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "Variants generated", value: formatNumericValue(singleVariants.length) },
+          {
+            label: "Within target length",
+            value: formatNumericValue(singleVariants.filter((variant) => variant.withinLengthRange).length),
+          },
+          {
+            label: "With primary keyword",
+            value: formatNumericValue(singleVariants.filter((variant) => variant.hasPrimaryKeyword).length),
+          },
+          { label: "Best score", value: `${bestVariant?.score ?? 0}/100` },
+        ]}
+      />
+
+      {bestVariant ? (
+        <div className="serp-preview">
+          <small>Best snippet preview</small>
+          <h3>{pageTitle || "Page title preview"}</h3>
+          <p className="serp-url">{normalizeMetaDescriptionUrl("https://example.com/page") || "https://example.com/page"}</p>
+          <p>{bestVariant.text}</p>
+        </div>
+      ) : null}
+
+      {singleVariants.length ? (
+        <div className="mini-panel">
+          <h3>Variant ranking</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Description</th>
+                  <th>Length</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {singleVariants.map((variant, index) => (
+                  <tr key={variant.id}>
+                    <td>{index + 1}</td>
+                    <td>{variant.text}</td>
+                    <td>
+                      {variant.length}
+                      {variant.withinLengthRange ? (
+                        <span className="status-badge ok">Good</span>
+                      ) : (
+                        <span className="status-badge warn">Adjust</span>
+                      )}
+                    </td>
+                    <td>{variant.score}/100</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <h3>Bulk generation (format: url,title,keyword,value proposition,cta,brand)</h3>
+        <label className="field">
+          <span>Bulk rows</span>
+          <textarea value={bulkInput} onChange={(event) => setBulkInput(event.target.value)} rows={8} />
+        </label>
+        <div className="field-grid">
+          <label className="field">
+            <span>Import bulk file</span>
+            <input
+              type="file"
+              accept=".txt,.csv,.tsv,.md"
+              onChange={(event) => void handleBulkUpload(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <label className="field">
+            <span>Import behavior</span>
+            <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+              <option value="append">Append rows</option>
+              <option value="replace">Replace rows</option>
+            </select>
+          </label>
+        </div>
+        <div className="button-row">
+          <button
+            className="action-button"
+            type="button"
+            onClick={() => {
+              setStatus(
+                bulkResults.length
+                  ? `Generated ${bulkResults.length} bulk descriptions.`
+                  : "Add valid rows in the required format.",
+              );
+              trackEvent("tool_programmatic_meta_description_bulk_generate", {
+                rows: bulkResults.length,
+                tone,
+                maxLength,
+              });
+            }}
+          >
+            Generate bulk descriptions
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => downloadCsv("bulk-meta-descriptions.csv", ["URL", "Title", "Keyword", "Description", "Length", "Within Length", "Score"], bulkCsvRows)}
+            disabled={!bulkResults.length}
+          >
+            <Download size={15} />
+            Bulk CSV
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={async () => {
+              const payload = bulkResults
+                .map((row) => `${row.url || row.title}\n${row.description}`)
+                .join("\n\n");
+              const ok = await copyTextToClipboard(payload);
+              setStatus(ok ? "Bulk descriptions copied." : "No bulk descriptions available.");
+            }}
+            disabled={!bulkResults.length}
+          >
+            <Copy size={15} />
+            Copy bulk
+          </button>
+        </div>
+      </div>
+
+      {bulkResults.length ? (
+        <div className="mini-panel">
+          <h3>Bulk output preview</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>URL</th>
+                  <th>Title</th>
+                  <th>Keyword</th>
+                  <th>Description</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bulkResults.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.url || "-"}</td>
+                    <td>{row.title}</td>
+                    <td>{row.keyword}</td>
+                    <td>{row.description}</td>
+                    <td>{row.score}/100</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function OpenGraphGeneratorTool() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -13736,6 +14392,303 @@ function KeywordCannibalizationCheckerTool() {
   );
 }
 
+interface FaqSchemaPair {
+  question: string;
+  answer: string;
+}
+
+function parseFaqSchemaPairs(raw: string): FaqSchemaPair[] {
+  const blocks = raw
+    .replace(/\r\n?/g, "\n")
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const pairs: FaqSchemaPair[] = [];
+  blocks.forEach((block) => {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return;
+
+    const questionLine = lines.find((line) => /^q(uestion)?\s*:/i.test(line));
+    const answerLine = lines.find((line) => /^a(nswer)?\s*:/i.test(line));
+
+    let question = "";
+    let answer = "";
+
+    if (questionLine && answerLine) {
+      question = questionLine.replace(/^q(uestion)?\s*:/i, "").trim();
+      answer = answerLine.replace(/^a(nswer)?\s*:/i, "").trim();
+    } else if (lines.length === 1 && lines[0].includes("|")) {
+      const [left, ...rest] = lines[0].split("|");
+      question = left?.trim() ?? "";
+      answer = rest.join("|").trim();
+    } else {
+      question = lines[0] ?? "";
+      answer = lines.slice(1).join(" ").trim();
+    }
+
+    if (!question || !answer) return;
+    pairs.push({ question, answer });
+  });
+
+  return pairs.slice(0, 60);
+}
+
+function normalizeFaqSchemaUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const normalized = /^[a-zA-Z][\w+.-]*:/.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function FaqSchemaGeneratorTool() {
+  const [pageUrl, setPageUrl] = useState("https://utiliora.cloud/faq");
+  const [pageName, setPageName] = useState("Frequently Asked Questions");
+  const [faqInput, setFaqInput] = useState(
+    "Question: What is Utiliora?\nAnswer: Utiliora is a browser-based toolkit for fast productivity, SEO, and conversion workflows.\n\nQuestion: Is Utiliora free to use?\nAnswer: Core tools are free, with no paid API requirement for most workflows.",
+  );
+  const [uploadMode, setUploadMode] = useState<TextUploadMergeMode>("append");
+  const [status, setStatus] = useState("Build FAQPage schema from question-answer pairs and export JSON-LD.");
+
+  const parsedPairs = useMemo(() => parseFaqSchemaPairs(faqInput), [faqInput]);
+  const normalizedPageUrl = useMemo(() => normalizeFaqSchemaUrl(pageUrl), [pageUrl]);
+
+  const duplicateQuestions = useMemo(() => {
+    const counts = new Map<string, number>();
+    parsedPairs.forEach((pair) => {
+      const key = pair.question.toLowerCase().replace(/\s+/g, " ").trim();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    });
+    return [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([question]) => question);
+  }, [parsedPairs]);
+
+  const schemaObject = useMemo(() => {
+    const mainEntity = parsedPairs.map((pair) => ({
+      "@type": "Question",
+      name: pair.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: pair.answer,
+      },
+    }));
+
+    const payload: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      mainEntity,
+    };
+    if (normalizedPageUrl) payload.url = normalizedPageUrl;
+    if (pageName.trim()) payload.name = pageName.trim();
+    return payload;
+  }, [normalizedPageUrl, pageName, parsedPairs]);
+
+  const schemaJson = useMemo(() => JSON.stringify(schemaObject, null, 2), [schemaObject]);
+  const scriptTag = useMemo(
+    () => `<script type="application/ld+json">\n${schemaJson}\n</script>`,
+    [schemaJson],
+  );
+
+  const handleUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const normalized = normalizeUploadedText(raw);
+        const nextInput =
+          uploadMode === "replace" || !faqInput.trim()
+            ? normalized
+            : `${faqInput.trimEnd()}\n\n${normalized.trimStart()}`;
+        setFaqInput(nextInput);
+        setStatus(`Loaded FAQ entries from ${file.name}.`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import FAQ file.");
+      }
+    },
+    [faqInput, uploadMode],
+  );
+
+  const csvRows = useMemo(
+    () => parsedPairs.map((pair) => [pair.question, pair.answer]),
+    [parsedPairs],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Code2}
+        title="FAQ schema generator"
+        subtitle="Generate valid FAQPage JSON-LD from question-answer content for rich result eligibility."
+      />
+      <div className="field-grid">
+        <label className="field">
+          <span>Page URL (optional)</span>
+          <input
+            type="text"
+            value={pageUrl}
+            onChange={(event) => setPageUrl(event.target.value)}
+            placeholder="https://example.com/faq"
+          />
+        </label>
+        <label className="field">
+          <span>Schema name (optional)</span>
+          <input
+            type="text"
+            value={pageName}
+            onChange={(event) => setPageName(event.target.value)}
+            placeholder="Frequently Asked Questions"
+          />
+        </label>
+      </div>
+
+      <label className="field">
+        <span>FAQ entries (Question/Answer blocks, or `question|answer`)</span>
+        <textarea
+          value={faqInput}
+          onChange={(event) => setFaqInput(event.target.value)}
+          rows={12}
+          placeholder={"Question: What is this?\nAnswer: This is an FAQ schema generator.\n\nQuestion: Is this free?\nAnswer: Yes."}
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Import FAQ file</span>
+          <input type="file" accept=".txt,.md,.csv" onChange={(event) => void handleUpload(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={uploadMode} onChange={(event) => setUploadMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append imported content</option>
+            <option value="replace">Replace current content</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(schemaJson);
+            setStatus(ok ? "FAQ JSON-LD copied." : "Nothing to copy.");
+          }}
+          disabled={!parsedPairs.length}
+        >
+          <Copy size={15} />
+          Copy JSON-LD
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(scriptTag);
+            setStatus(ok ? "Script tag copied." : "Nothing to copy.");
+          }}
+          disabled={!parsedPairs.length}
+        >
+          <Copy size={15} />
+          Copy script tag
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("faq-schema.json", schemaJson, "application/ld+json;charset=utf-8;")}
+          disabled={!parsedPairs.length}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadTextFile("faq-schema.html", scriptTag, "text/html;charset=utf-8;")}
+          disabled={!parsedPairs.length}
+        >
+          <Download size={15} />
+          Script HTML
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => downloadCsv("faq-schema-entries.csv", ["Question", "Answer"], csvRows)}
+          disabled={!parsedPairs.length}
+        >
+          <Download size={15} />
+          CSV
+        </button>
+      </div>
+
+      <p className="supporting-text">{status}</p>
+
+      <ResultList
+        rows={[
+          { label: "FAQ pairs parsed", value: formatNumericValue(parsedPairs.length) },
+          { label: "Duplicate questions", value: formatNumericValue(duplicateQuestions.length) },
+          { label: "JSON length", value: formatNumericValue(schemaJson.length), hint: "characters" },
+          { label: "Page URL valid", value: pageUrl.trim() ? (normalizedPageUrl ? "Yes" : "No") : "Optional" },
+        ]}
+      />
+
+      {duplicateQuestions.length ? (
+        <div className="mini-panel">
+          <h3>Duplicate question warnings</h3>
+          <ul className="plain-list">
+            {duplicateQuestions.map((question) => (
+              <li key={question}>{question}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {parsedPairs.length ? (
+        <div className="mini-panel">
+          <h3>Parsed FAQ preview</h3>
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Question</th>
+                  <th>Answer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parsedPairs.map((pair, index) => (
+                  <tr key={`${pair.question}-${index}`}>
+                    <td>{index + 1}</td>
+                    <td>{pair.question}</td>
+                    <td>{pair.answer}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Generated FAQ JSON-LD</span>
+        <textarea value={schemaJson} rows={16} readOnly />
+      </label>
+      <label className="field">
+        <span>HTML script tag</span>
+        <textarea value={scriptTag} rows={10} readOnly />
+      </label>
+    </section>
+  );
+}
+
 type PolicyDocumentId = "privacy" | "terms" | "cookie" | "disclaimer";
 type PolicyOutputFormat = "markdown" | "html" | "text";
 
@@ -14780,6 +15733,10 @@ function TextTool({ id }: { id: TextToolId }) {
       return <ReadabilityGradeCheckerTool />;
     case "keyword-cannibalization-checker":
       return <KeywordCannibalizationCheckerTool />;
+    case "faq-schema-generator":
+      return <FaqSchemaGeneratorTool />;
+    case "programmatic-meta-description-generator":
+      return <ProgrammaticMetaDescriptionGeneratorTool />;
     case "resume-checker":
       return <ResumeCheckerTool />;
     case "ai-detector":

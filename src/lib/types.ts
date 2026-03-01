@@ -98,6 +98,8 @@ export type TextToolId =
   | "utm-link-builder"
   | "readability-grade-checker"
   | "keyword-cannibalization-checker"
+  | "faq-schema-generator"
+  | "programmatic-meta-description-generator"
   | "resume-checker"
   | "ai-detector"
   | "ai-humanizer"

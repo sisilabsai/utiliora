@@ -714,6 +714,40 @@ const seoTools: ToolDefinition[] = [
     faq: baseFaq("Keyword Cannibalization Checker"),
   },
   {
+    slug: "faq-schema-generator",
+    category: "seo-tools",
+    title: "FAQ Schema Generator",
+    summary: "Generate valid FAQPage JSON-LD markup with copy, validation, and export tools.",
+    description:
+      "Build structured FAQ schema for SEO rich results by creating question-answer pairs, validating required fields, and exporting clean JSON-LD or HTML script tags.",
+    keywords: [
+      "faq schema generator",
+      "json-ld faq builder",
+      "faqpage structured data",
+      "schema markup generator",
+      "rich results faq schema",
+    ],
+    engine: { kind: "text-tool", id: "faq-schema-generator" },
+    faq: baseFaq("FAQ Schema Generator"),
+  },
+  {
+    slug: "programmatic-meta-description-generator",
+    category: "seo-tools",
+    title: "Programmatic Meta Description Generator",
+    summary: "Generate high-performing meta description variants in bulk with length and keyword scoring.",
+    description:
+      "Create SEO-focused meta descriptions using page titles, keywords, value propositions, and CTAs with template-based variant generation, quality scoring, and CSV export.",
+    keywords: [
+      "meta description generator",
+      "bulk meta description tool",
+      "programmatic seo meta descriptions",
+      "serp snippet generator",
+      "meta description optimizer",
+    ],
+    engine: { kind: "text-tool", id: "programmatic-meta-description-generator" },
+    faq: baseFaq("Programmatic Meta Description Generator"),
+  },
+  {
     slug: "resume-checker",
     category: "seo-tools",
     title: "Resume Checker",
