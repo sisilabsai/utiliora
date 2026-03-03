@@ -11,6 +11,7 @@ import {
   Binary,
   Briefcase,
   Calculator,
+  CreditCard,
   Braces,
   Code2,
   Copy,
@@ -38921,9 +38922,1867 @@ function OcrWorkbenchTool() {
   );
 }
 
+type BusinessCardUnit = "mm" | "in";
+type BusinessCardSideId = "front" | "back";
+type BusinessCardElementKind = "text" | "shape" | "image";
+type BusinessCardShapeKind = "rect" | "circle";
+type BusinessCardImageFit = "cover" | "contain";
+type BusinessCardTemplateId = "minimal-clean" | "bold-band" | "executive-dark" | "contact-split";
+
+interface BusinessCardBaseElement {
+  id: string;
+  kind: BusinessCardElementKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  opacity: number;
+  locked: boolean;
+  hidden: boolean;
+}
+
+interface BusinessCardTextElement extends BusinessCardBaseElement {
+  kind: "text";
+  text: string;
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+  fontWeight: "400" | "500" | "600" | "700" | "800";
+  align: "left" | "center" | "right";
+  lineHeight: number;
+}
+
+interface BusinessCardShapeElement extends BusinessCardBaseElement {
+  kind: "shape";
+  shapeKind: BusinessCardShapeKind;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  cornerRadius: number;
+}
+
+interface BusinessCardImageElement extends BusinessCardBaseElement {
+  kind: "image";
+  srcDataUrl: string;
+  fit: BusinessCardImageFit;
+  cornerRadius: number;
+}
+
+type BusinessCardElement = BusinessCardTextElement | BusinessCardShapeElement | BusinessCardImageElement;
+
+interface BusinessCardSideState {
+  background: string;
+  elements: BusinessCardElement[];
+}
+
+interface BusinessCardDocumentState {
+  version: number;
+  templateId: BusinessCardTemplateId;
+  sizePresetId: string;
+  unit: BusinessCardUnit;
+  width: number;
+  height: number;
+  bleedMm: number;
+  safeMm: number;
+  zoom: number;
+  gridSize: number;
+  snapToGrid: boolean;
+  showGrid: boolean;
+  activeSide: BusinessCardSideId;
+  sides: Record<BusinessCardSideId, BusinessCardSideState>;
+}
+
+interface BusinessCardWorkspacePayload {
+  version: number;
+  updatedAt: number;
+  document: BusinessCardDocumentState;
+}
+
+interface BusinessCardSizePreset {
+  id: string;
+  label: string;
+  unit: BusinessCardUnit;
+  width: number;
+  height: number;
+}
+
+interface BusinessCardTemplateOption {
+  id: BusinessCardTemplateId;
+  label: string;
+  hint: string;
+}
+
+interface BusinessCardDragState {
+  elementId: string;
+  side: BusinessCardSideId;
+  startX: number;
+  startY: number;
+  startElementX: number;
+  startElementY: number;
+  elementWidth: number;
+  elementHeight: number;
+}
+
+const BUSINESS_CARD_WORKSPACE_STORAGE_BASE = "utiliora-business-card-studio-doc-v1";
+const BUSINESS_CARD_DOC_VERSION = 1;
+
+const BUSINESS_CARD_SIZE_PRESETS: BusinessCardSizePreset[] = [
+  { id: "us-standard", label: "US standard (3.5 x 2 in)", unit: "in", width: 3.5, height: 2 },
+  { id: "eu-standard", label: "EU standard (85 x 55 mm)", unit: "mm", width: 85, height: 55 },
+  { id: "square", label: "Square (65 x 65 mm)", unit: "mm", width: 65, height: 65 },
+  { id: "slim", label: "Slim (90 x 50 mm)", unit: "mm", width: 90, height: 50 },
+];
+
+const BUSINESS_CARD_TEMPLATE_OPTIONS: BusinessCardTemplateOption[] = [
+  { id: "minimal-clean", label: "Minimal clean", hint: "White balance with clean typography." },
+  { id: "bold-band", label: "Bold band", hint: "Strong accent strip for visible brand tone." },
+  { id: "executive-dark", label: "Executive dark", hint: "Dark premium profile card style." },
+  { id: "contact-split", label: "Contact split", hint: "High-contrast split with contact panel." },
+];
+
+function clampBusinessCardNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function snapBusinessCardNumber(value: number, step: number): number {
+  if (step <= 0) return value;
+  return Math.round(value / step) * step;
+}
+
+function businessCardMmToPx(mm: number): number {
+  return (mm / 25.4) * 96;
+}
+
+function businessCardToPixels(value: number, unit: BusinessCardUnit): number {
+  const normalized = clampBusinessCardNumber(value, 5, 500);
+  return unit === "in" ? normalized * 96 : businessCardMmToPx(normalized);
+}
+
+function convertBusinessCardUnitValue(value: number, from: BusinessCardUnit, to: BusinessCardUnit): number {
+  if (from === to) return value;
+  if (from === "mm" && to === "in") return value / 25.4;
+  return value * 25.4;
+}
+
+function resolveBusinessCardPixelSize(document: Pick<BusinessCardDocumentState, "width" | "height" | "unit">): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: clampBusinessCardNumber(Math.round(businessCardToPixels(document.width, document.unit)), 220, 2200),
+    height: clampBusinessCardNumber(Math.round(businessCardToPixels(document.height, document.unit)), 130, 1400),
+  };
+}
+
+function createBusinessCardElementId(): string {
+  return `business-card-element-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createBusinessCardTextElement(cardWidth: number, cardHeight: number): BusinessCardTextElement {
+  return {
+    id: createBusinessCardElementId(),
+    kind: "text",
+    x: cardWidth * 0.08,
+    y: cardHeight * 0.18,
+    width: cardWidth * 0.62,
+    height: cardHeight * 0.28,
+    rotation: 0,
+    opacity: 1,
+    locked: false,
+    hidden: false,
+    text: "Your Name\nCreative Director",
+    color: "#111827",
+    fontSize: Math.max(14, Math.round(cardHeight * 0.13)),
+    fontFamily: "Geist, Segoe UI, Arial, sans-serif",
+    fontWeight: "700",
+    align: "left",
+    lineHeight: 1.25,
+  };
+}
+
+function createBusinessCardShapeElement(
+  cardWidth: number,
+  cardHeight: number,
+  shapeKind: BusinessCardShapeKind,
+): BusinessCardShapeElement {
+  return {
+    id: createBusinessCardElementId(),
+    kind: "shape",
+    x: cardWidth * 0.05,
+    y: cardHeight * 0.05,
+    width: cardWidth * 0.3,
+    height: cardHeight * 0.16,
+    rotation: 0,
+    opacity: 1,
+    locked: false,
+    hidden: false,
+    shapeKind,
+    fillColor: "#111827",
+    strokeColor: "#111827",
+    strokeWidth: 0,
+    cornerRadius: 10,
+  };
+}
+
+function createBusinessCardImageElement(
+  cardWidth: number,
+  cardHeight: number,
+  dataUrl: string,
+  aspectRatio: number,
+  centerPoint?: { x: number; y: number },
+): BusinessCardImageElement {
+  const baseWidth = Math.max(cardWidth * 0.22, Math.min(cardWidth * 0.42, cardWidth * 0.34));
+  const width = clampBusinessCardNumber(baseWidth, 48, cardWidth * 0.9);
+  const height = clampBusinessCardNumber(width / Math.max(0.2, aspectRatio), 36, cardHeight * 0.88);
+  const x = centerPoint ? centerPoint.x - width / 2 : cardWidth * 0.06;
+  const y = centerPoint ? centerPoint.y - height / 2 : cardHeight * 0.08;
+  return {
+    id: createBusinessCardElementId(),
+    kind: "image",
+    x: clampBusinessCardNumber(x, 0, cardWidth - width),
+    y: clampBusinessCardNumber(y, 0, cardHeight - height),
+    width,
+    height,
+    rotation: 0,
+    opacity: 1,
+    locked: false,
+    hidden: false,
+    srcDataUrl: dataUrl,
+    fit: "contain",
+    cornerRadius: 8,
+  };
+}
+
+function createBusinessCardTemplateSides(
+  templateId: BusinessCardTemplateId,
+  cardWidth: number,
+  cardHeight: number,
+): Record<BusinessCardSideId, BusinessCardSideState> {
+  const leadText = createBusinessCardTextElement(cardWidth, cardHeight);
+  const contactText = createBusinessCardTextElement(cardWidth, cardHeight);
+  contactText.id = createBusinessCardElementId();
+  contactText.text = "email@brand.com\n+256 700 000 000\nKampala, Uganda";
+  contactText.fontSize = Math.max(11, Math.round(cardHeight * 0.1));
+  contactText.fontWeight = "500";
+  contactText.y = cardHeight * 0.2;
+
+  if (templateId === "bold-band") {
+    const accentBand = createBusinessCardShapeElement(cardWidth, cardHeight, "rect");
+    accentBand.width = cardWidth * 0.28;
+    accentBand.height = cardHeight;
+    accentBand.x = 0;
+    accentBand.y = 0;
+    accentBand.fillColor = "#0ea5e9";
+    accentBand.cornerRadius = 0;
+    accentBand.locked = true;
+
+    leadText.x = cardWidth * 0.34;
+    leadText.y = cardHeight * 0.26;
+    leadText.color = "#0f172a";
+
+    contactText.x = cardWidth * 0.1;
+    contactText.y = cardHeight * 0.16;
+    contactText.color = "#ffffff";
+    contactText.width = cardWidth * 0.8;
+    contactText.align = "center";
+
+    return {
+      front: { background: "#f8fafc", elements: [accentBand, leadText] },
+      back: { background: "#0ea5e9", elements: [contactText] },
+    };
+  }
+
+  if (templateId === "executive-dark") {
+    const line = createBusinessCardShapeElement(cardWidth, cardHeight, "rect");
+    line.width = cardWidth * 0.88;
+    line.height = Math.max(2, cardHeight * 0.02);
+    line.x = cardWidth * 0.06;
+    line.y = cardHeight * 0.62;
+    line.fillColor = "#f59e0b";
+    line.cornerRadius = 2;
+    line.locked = true;
+
+    leadText.x = cardWidth * 0.08;
+    leadText.y = cardHeight * 0.22;
+    leadText.color = "#f8fafc";
+    leadText.fontWeight = "600";
+
+    contactText.x = cardWidth * 0.08;
+    contactText.y = cardHeight * 0.22;
+    contactText.width = cardWidth * 0.84;
+    contactText.color = "#f8fafc";
+
+    return {
+      front: { background: "#111827", elements: [leadText, line] },
+      back: { background: "#0f172a", elements: [contactText] },
+    };
+  }
+
+  if (templateId === "contact-split") {
+    const topFill = createBusinessCardShapeElement(cardWidth, cardHeight, "rect");
+    topFill.width = cardWidth;
+    topFill.height = cardHeight * 0.52;
+    topFill.x = 0;
+    topFill.y = 0;
+    topFill.fillColor = "#1d4ed8";
+    topFill.cornerRadius = 0;
+    topFill.locked = true;
+
+    leadText.x = cardWidth * 0.08;
+    leadText.y = cardHeight * 0.13;
+    leadText.color = "#ffffff";
+    leadText.width = cardWidth * 0.84;
+
+    contactText.x = cardWidth * 0.08;
+    contactText.y = cardHeight * 0.58;
+    contactText.width = cardWidth * 0.84;
+    contactText.color = "#0f172a";
+
+    return {
+      front: { background: "#eef2ff", elements: [topFill, leadText, contactText] },
+      back: { background: "#ffffff", elements: [contactText] },
+    };
+  }
+
+  return {
+    front: { background: "#ffffff", elements: [leadText] },
+    back: { background: "#f8fafc", elements: [contactText] },
+  };
+}
+
+function createDefaultBusinessCardDocument(): BusinessCardDocumentState {
+  const preset = BUSINESS_CARD_SIZE_PRESETS[0];
+  const pixelSize = resolveBusinessCardPixelSize({ width: preset.width, height: preset.height, unit: preset.unit });
+  return {
+    version: BUSINESS_CARD_DOC_VERSION,
+    templateId: "minimal-clean",
+    sizePresetId: preset.id,
+    unit: preset.unit,
+    width: preset.width,
+    height: preset.height,
+    bleedMm: 3,
+    safeMm: 4,
+    zoom: 1.8,
+    gridSize: 8,
+    snapToGrid: true,
+    showGrid: true,
+    activeSide: "front",
+    sides: createBusinessCardTemplateSides("minimal-clean", pixelSize.width, pixelSize.height),
+  };
+}
+
+function resizeBusinessCardDocument(
+  previous: BusinessCardDocumentState,
+  nextWidth: number,
+  nextHeight: number,
+  nextUnit: BusinessCardUnit,
+  nextPresetId: string,
+): BusinessCardDocumentState {
+  const prevSize = resolveBusinessCardPixelSize(previous);
+  const nextSize = resolveBusinessCardPixelSize({ width: nextWidth, height: nextHeight, unit: nextUnit });
+  const scaleX = nextSize.width / Math.max(1, prevSize.width);
+  const scaleY = nextSize.height / Math.max(1, prevSize.height);
+
+  const scaleElement = (element: BusinessCardElement): BusinessCardElement => {
+    const scaledBase = {
+      x: clampBusinessCardNumber(element.x * scaleX, 0, nextSize.width),
+      y: clampBusinessCardNumber(element.y * scaleY, 0, nextSize.height),
+      width: clampBusinessCardNumber(element.width * scaleX, 16, nextSize.width),
+      height: clampBusinessCardNumber(element.height * scaleY, 16, nextSize.height),
+    };
+
+    if (element.kind === "text") {
+      return {
+        ...element,
+        ...scaledBase,
+        fontSize: clampBusinessCardNumber(element.fontSize * ((scaleX + scaleY) / 2), 8, 220),
+      };
+    }
+    if (element.kind === "shape") {
+      return {
+        ...element,
+        ...scaledBase,
+        strokeWidth: clampBusinessCardNumber(element.strokeWidth * ((scaleX + scaleY) / 2), 0, 18),
+        cornerRadius: clampBusinessCardNumber(element.cornerRadius * ((scaleX + scaleY) / 2), 0, 120),
+      };
+    }
+    return {
+      ...element,
+      ...scaledBase,
+      cornerRadius: clampBusinessCardNumber(element.cornerRadius * ((scaleX + scaleY) / 2), 0, 120),
+    };
+  };
+
+  return {
+    ...previous,
+    sizePresetId: nextPresetId,
+    width: clampBusinessCardNumber(nextWidth, 20, 500),
+    height: clampBusinessCardNumber(nextHeight, 20, 500),
+    unit: nextUnit,
+    sides: {
+      front: {
+        ...previous.sides.front,
+        elements: previous.sides.front.elements.map(scaleElement),
+      },
+      back: {
+        ...previous.sides.back,
+        elements: previous.sides.back.elements.map(scaleElement),
+      },
+    },
+  };
+}
+
+function drawBusinessCardRoundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void {
+  const resolvedRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  context.beginPath();
+  context.moveTo(x + resolvedRadius, y);
+  context.lineTo(x + width - resolvedRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + resolvedRadius);
+  context.lineTo(x + width, y + height - resolvedRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - resolvedRadius, y + height);
+  context.lineTo(x + resolvedRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - resolvedRadius);
+  context.lineTo(x, y + resolvedRadius);
+  context.quadraticCurveTo(x, y, x + resolvedRadius, y);
+  context.closePath();
+}
+
+function wrapBusinessCardTextLines(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+): string[] {
+  const paragraphs = text.replace(/\r\n?/g, "\n").split("\n");
+  const lines: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      lines.push("");
+      continue;
+    }
+    let currentLine = words[0];
+    for (let index = 1; index < words.length; index += 1) {
+      const candidate = `${currentLine} ${words[index]}`;
+      if (context.measureText(candidate).width <= maxWidth) {
+        currentLine = candidate;
+        continue;
+      }
+      lines.push(currentLine);
+      currentLine = words[index];
+    }
+    lines.push(currentLine);
+  }
+
+  return lines.slice(0, 40);
+}
+
+async function readBusinessCardFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Could not read selected image."));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.onerror = () => reject(new Error("Could not read selected image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderBusinessCardSideToCanvas(
+  cardDocument: BusinessCardDocumentState,
+  sideId: BusinessCardSideId,
+  scale = 3,
+): Promise<HTMLCanvasElement> {
+  const size = resolveBusinessCardPixelSize(cardDocument);
+  const canvas = window.document.createElement("canvas");
+  const exportScale = clampBusinessCardNumber(scale, 1, 6);
+  canvas.width = Math.round(size.width * exportScale);
+  canvas.height = Math.round(size.height * exportScale);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas context is unavailable.");
+
+  const side = cardDocument.sides[sideId];
+  context.fillStyle = side.background || "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const imageCache = new Map<string, HTMLImageElement>();
+  const elements = side.elements.filter((element) => !element.hidden);
+
+  for (const element of elements) {
+    const width = Math.max(1, element.width * exportScale);
+    const height = Math.max(1, element.height * exportScale);
+    const centerX = (element.x + element.width / 2) * exportScale;
+    const centerY = (element.y + element.height / 2) * exportScale;
+
+    context.save();
+    context.globalAlpha = clampBusinessCardNumber(element.opacity, 0, 1);
+    context.translate(centerX, centerY);
+    context.rotate((element.rotation * Math.PI) / 180);
+
+    if (element.kind === "shape") {
+      const x = -width / 2;
+      const y = -height / 2;
+      const radius = element.shapeKind === "circle" ? Math.min(width, height) / 2 : element.cornerRadius * exportScale;
+      drawBusinessCardRoundedRectPath(context, x, y, width, height, radius);
+      context.fillStyle = element.fillColor;
+      context.fill();
+      if (element.strokeWidth > 0) {
+        context.lineWidth = Math.max(1, element.strokeWidth * exportScale);
+        context.strokeStyle = element.strokeColor;
+        context.stroke();
+      }
+      context.restore();
+      continue;
+    }
+
+    if (element.kind === "text") {
+      const fontSize = Math.max(8, element.fontSize * exportScale);
+      context.fillStyle = element.color;
+      context.font = `${element.fontWeight} ${fontSize}px ${element.fontFamily}`;
+      context.textBaseline = "top";
+      context.textAlign = element.align;
+      const lineHeight = fontSize * clampBusinessCardNumber(element.lineHeight, 1, 2.2);
+      const maxTextWidth = Math.max(8, width - 8 * exportScale);
+      const lines = wrapBusinessCardTextLines(context, element.text, maxTextWidth);
+      const startY = -height / 2 + 4 * exportScale;
+      const anchorX =
+        element.align === "left" ? -width / 2 + 4 * exportScale : element.align === "center" ? 0 : width / 2 - 4 * exportScale;
+      context.beginPath();
+      context.rect(-width / 2, -height / 2, width, height);
+      context.clip();
+      lines.forEach((line, index) => {
+        context.fillText(line, anchorX, startY + index * lineHeight, maxTextWidth);
+      });
+      context.restore();
+      continue;
+    }
+
+    const source = element.srcDataUrl;
+    if (!imageCache.has(source)) {
+      const loaded = await loadImage(source);
+      imageCache.set(source, loaded);
+    }
+    const image = imageCache.get(source);
+    if (!image) {
+      context.restore();
+      continue;
+    }
+
+    const x = -width / 2;
+    const y = -height / 2;
+    const radius = element.cornerRadius * exportScale;
+    context.beginPath();
+    drawBusinessCardRoundedRectPath(context, x, y, width, height, radius);
+    context.clip();
+
+    const imageRatio = image.width / Math.max(1, image.height);
+    const boxRatio = width / Math.max(1, height);
+    const useContain = element.fit === "contain";
+    const drawWidth =
+      (useContain ? (imageRatio > boxRatio ? width : height * imageRatio) : imageRatio > boxRatio ? height * imageRatio : width);
+    const drawHeight =
+      (useContain ? (imageRatio > boxRatio ? width / imageRatio : height) : imageRatio > boxRatio ? height : width / imageRatio);
+
+    context.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+    context.restore();
+  }
+
+  return canvas;
+}
+
+function BusinessCardsDesignerTool() {
+  const toolSession = useToolSession({
+    toolKey: "business-card-studio",
+    defaultSessionLabel: "Business card workspace",
+    newSessionPrefix: "card",
+  });
+  const [documentState, setDocumentState] = useState<BusinessCardDocumentState>(() => createDefaultBusinessCardDocument());
+  const [selectedElementId, setSelectedElementId] = useState("");
+  const [status, setStatus] = useState("Choose a template, drag elements, and export print-ready card sides.");
+  const [storageReady, setStorageReady] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isFileHovering, setIsFileHovering] = useState(false);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const imageUploadRef = useRef<HTMLInputElement | null>(null);
+  const dragStateRef = useRef<BusinessCardDragState | null>(null);
+  const workspaceStorageKey = toolSession.storageKey(BUSINESS_CARD_WORKSPACE_STORAGE_BASE);
+
+  const pixelSize = useMemo(
+    () =>
+      resolveBusinessCardPixelSize({
+        width: documentState.width,
+        height: documentState.height,
+        unit: documentState.unit,
+      }),
+    [documentState.width, documentState.height, documentState.unit],
+  );
+  const stageScale = clampBusinessCardNumber(documentState.zoom, 0.8, 4);
+  const stageWidth = Math.round(pixelSize.width * stageScale);
+  const stageHeight = Math.round(pixelSize.height * stageScale);
+  const activeSide = documentState.activeSide;
+  const activeSideState = documentState.sides[activeSide];
+  const selectedElement = useMemo(
+    () => activeSideState.elements.find((element) => element.id === selectedElementId) ?? null,
+    [activeSideState.elements, selectedElementId],
+  );
+
+  const safeInsetPx = useMemo(
+    () => clampBusinessCardNumber(Math.round(businessCardMmToPx(documentState.safeMm)), 0, 120),
+    [documentState.safeMm],
+  );
+  const bleedInsetPx = useMemo(
+    () => clampBusinessCardNumber(Math.round(businessCardMmToPx(documentState.bleedMm)), 0, 80),
+    [documentState.bleedMm],
+  );
+  const activePreset = useMemo(
+    () => BUSINESS_CARD_SIZE_PRESETS.find((preset) => preset.id === documentState.sizePresetId) ?? null,
+    [documentState.sizePresetId],
+  );
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    let loadedDocument: BusinessCardDocumentState | null = null;
+    if (typeof window !== "undefined" && typeof localStorage !== "undefined") {
+      try {
+        const raw = localStorage.getItem(workspaceStorageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Partial<BusinessCardWorkspacePayload>;
+          if (parsed?.document?.version === BUSINESS_CARD_DOC_VERSION) {
+            loadedDocument = parsed.document as BusinessCardDocumentState;
+          }
+        }
+      } catch {
+        loadedDocument = null;
+      }
+    }
+
+    if (loadedDocument) {
+      setDocumentState(loadedDocument);
+      setStatus(`Loaded ${toolSession.sessionLabel}.`);
+    } else {
+      setDocumentState(createDefaultBusinessCardDocument());
+      setStatus("Started a new business card workspace.");
+    }
+    setSelectedElementId("");
+    setStorageReady(true);
+  }, [toolSession.isReady, toolSession.sessionId, toolSession.sessionLabel, workspaceStorageKey]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !storageReady) return;
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    const payload: BusinessCardWorkspacePayload = {
+      version: BUSINESS_CARD_DOC_VERSION,
+      updatedAt: Date.now(),
+      document: documentState,
+    };
+    try {
+      localStorage.setItem(workspaceStorageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [documentState, storageReady, toolSession.isReady, toolSession.sessionId, workspaceStorageKey]);
+
+  const resolveStagePoint = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const stage = stageRef.current;
+      if (!stage) return null;
+      const rect = stage.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      return {
+        x: clampBusinessCardNumber((clientX - rect.left) / stageScale, 0, pixelSize.width),
+        y: clampBusinessCardNumber((clientY - rect.top) / stageScale, 0, pixelSize.height),
+      };
+    },
+    [pixelSize.height, pixelSize.width, stageScale],
+  );
+
+  const updateElementById = useCallback(
+    (
+      sideId: BusinessCardSideId,
+      elementId: string,
+      updater: (element: BusinessCardElement) => BusinessCardElement,
+    ) => {
+      setDocumentState((previous) => {
+        const side = previous.sides[sideId];
+        const index = side.elements.findIndex((element) => element.id === elementId);
+        if (index < 0) return previous;
+        const nextElements = [...side.elements];
+        nextElements[index] = updater(nextElements[index]);
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [sideId]: { ...side, elements: nextElements },
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const setBackgroundColor = useCallback((value: string) => {
+    setDocumentState((previous) => ({
+      ...previous,
+      sides: {
+        ...previous.sides,
+        [previous.activeSide]: {
+          ...previous.sides[previous.activeSide],
+          background: value,
+        },
+      },
+    }));
+  }, []);
+
+  const addElementToActiveSide = useCallback((element: BusinessCardElement) => {
+    setDocumentState((previous) => ({
+      ...previous,
+      sides: {
+        ...previous.sides,
+        [previous.activeSide]: {
+          ...previous.sides[previous.activeSide],
+          elements: [...previous.sides[previous.activeSide].elements, element],
+        },
+      },
+    }));
+    setSelectedElementId(element.id);
+  }, []);
+
+  const addTextElement = useCallback(() => {
+    const element = createBusinessCardTextElement(pixelSize.width, pixelSize.height);
+    addElementToActiveSide(element);
+    setStatus("Added text element.");
+    trackEvent("tool_business_card_add_element", { type: "text" });
+  }, [addElementToActiveSide, pixelSize.height, pixelSize.width]);
+
+  const addShapeElement = useCallback(
+    (shapeKind: BusinessCardShapeKind) => {
+      const element = createBusinessCardShapeElement(pixelSize.width, pixelSize.height, shapeKind);
+      addElementToActiveSide(element);
+      setStatus(`Added ${shapeKind} shape.`);
+      trackEvent("tool_business_card_add_element", { type: `shape-${shapeKind}` });
+    },
+    [addElementToActiveSide, pixelSize.height, pixelSize.width],
+  );
+
+  const addImageFromDataUrl = useCallback(
+    async (dataUrl: string, centerPoint?: { x: number; y: number }) => {
+      let aspectRatio = 1;
+      try {
+        const image = await loadImage(dataUrl);
+        aspectRatio = image.width / Math.max(1, image.height);
+      } catch {
+        aspectRatio = 1;
+      }
+      const element = createBusinessCardImageElement(
+        pixelSize.width,
+        pixelSize.height,
+        dataUrl,
+        aspectRatio,
+        centerPoint,
+      );
+      addElementToActiveSide(element);
+      setStatus("Added image element.");
+      trackEvent("tool_business_card_add_element", { type: "image" });
+    },
+    [addElementToActiveSide, pixelSize.height, pixelSize.width],
+  );
+
+  const importImageFile = useCallback(
+    async (file: File | null, centerPoint?: { x: number; y: number }) => {
+      if (!file) return;
+      if (!file.type.startsWith("image/")) {
+        setStatus("Only image files are supported for card assets.");
+        return;
+      }
+      try {
+        const dataUrl = await readBusinessCardFileAsDataUrl(file);
+        await addImageFromDataUrl(dataUrl, centerPoint);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not load image.");
+      }
+    },
+    [addImageFromDataUrl],
+  );
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const drag = dragStateRef.current;
+      if (!drag) return;
+      const point = resolveStagePoint(event.clientX, event.clientY);
+      if (!point) return;
+      setDocumentState((previous) => {
+        const side = previous.sides[drag.side];
+        const index = side.elements.findIndex((element) => element.id === drag.elementId);
+        if (index < 0) return previous;
+        const element = side.elements[index];
+        if (element.locked) return previous;
+
+        let nextX = drag.startElementX + (point.x - drag.startX);
+        let nextY = drag.startElementY + (point.y - drag.startY);
+        if (previous.snapToGrid) {
+          nextX = snapBusinessCardNumber(nextX, previous.gridSize);
+          nextY = snapBusinessCardNumber(nextY, previous.gridSize);
+        }
+        nextX = clampBusinessCardNumber(nextX, 0, pixelSize.width - drag.elementWidth);
+        nextY = clampBusinessCardNumber(nextY, 0, pixelSize.height - drag.elementHeight);
+
+        if (Math.abs(nextX - element.x) < 0.5 && Math.abs(nextY - element.y) < 0.5) {
+          return previous;
+        }
+
+        const nextElements = [...side.elements];
+        nextElements[index] = { ...element, x: nextX, y: nextY };
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [drag.side]: { ...side, elements: nextElements },
+          },
+        };
+      });
+    };
+
+    const handlePointerUp = () => {
+      if (!dragStateRef.current) return;
+      dragStateRef.current = null;
+      setStatus("Element position updated.");
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [pixelSize.height, pixelSize.width, resolveStagePoint]);
+
+  const beginElementDrag = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, element: BusinessCardElement) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedElementId(element.id);
+      if (element.locked) return;
+      const point = resolveStagePoint(event.clientX, event.clientY);
+      if (!point) return;
+      dragStateRef.current = {
+        elementId: element.id,
+        side: activeSide,
+        startX: point.x,
+        startY: point.y,
+        startElementX: element.x,
+        startElementY: element.y,
+        elementWidth: element.width,
+        elementHeight: element.height,
+      };
+    },
+    [activeSide, resolveStagePoint],
+  );
+
+  const removeSelectedElement = useCallback(() => {
+    if (!selectedElementId) return;
+    setDocumentState((previous) => ({
+      ...previous,
+      sides: {
+        ...previous.sides,
+        [previous.activeSide]: {
+          ...previous.sides[previous.activeSide],
+          elements: previous.sides[previous.activeSide].elements.filter((element) => element.id !== selectedElementId),
+        },
+      },
+    }));
+    setSelectedElementId("");
+    setStatus("Deleted selected element.");
+  }, [selectedElementId]);
+
+  const duplicateSelectedElement = useCallback(() => {
+    if (!selectedElement) return;
+    const cloned = {
+      ...selectedElement,
+      id: createBusinessCardElementId(),
+      x: selectedElement.x + 12,
+      y: selectedElement.y + 12,
+      locked: false,
+      hidden: false,
+    } satisfies BusinessCardElement;
+    addElementToActiveSide(cloned);
+    setStatus("Duplicated selected element.");
+  }, [addElementToActiveSide, selectedElement]);
+
+  const moveSelectedLayer = useCallback(
+    (direction: "up" | "down") => {
+      if (!selectedElementId) return;
+      setDocumentState((previous) => {
+        const side = previous.sides[previous.activeSide];
+        const index = side.elements.findIndex((element) => element.id === selectedElementId);
+        if (index < 0) return previous;
+        const swapIndex = direction === "up" ? index + 1 : index - 1;
+        if (swapIndex < 0 || swapIndex >= side.elements.length) return previous;
+        const nextElements = [...side.elements];
+        [nextElements[index], nextElements[swapIndex]] = [nextElements[swapIndex], nextElements[index]];
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [previous.activeSide]: { ...side, elements: nextElements },
+          },
+        };
+      });
+    },
+    [selectedElementId],
+  );
+
+  const applyTemplate = useCallback(
+    (templateId: BusinessCardTemplateId) => {
+      setDocumentState((previous) => ({
+        ...previous,
+        templateId,
+        activeSide: "front",
+        sides: createBusinessCardTemplateSides(templateId, pixelSize.width, pixelSize.height),
+      }));
+      setSelectedElementId("");
+      setStatus(`Applied ${BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === templateId)?.label ?? "template"}.`);
+      trackEvent("tool_business_card_template_apply", { template: templateId });
+    },
+    [pixelSize.height, pixelSize.width],
+  );
+
+  const applySizePreset = useCallback((presetId: string) => {
+    const preset = BUSINESS_CARD_SIZE_PRESETS.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setDocumentState((previous) =>
+      resizeBusinessCardDocument(previous, preset.width, preset.height, preset.unit, preset.id),
+    );
+    setStatus(`Applied ${preset.label}.`);
+  }, []);
+
+  const exportActivePng = useCallback(async () => {
+    setIsExporting(true);
+    try {
+      const canvas = await renderBusinessCardSideToCanvas(documentState, activeSide, 3);
+      downloadDataUrl(`business-card-${activeSide}.png`, canvas.toDataURL("image/png"));
+      setStatus(`Downloaded ${activeSide} side PNG.`);
+      trackEvent("tool_business_card_export", { format: "png", side: activeSide });
+    } catch {
+      setStatus("Could not export PNG right now.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeSide, documentState]);
+
+  const exportZip = useCallback(async () => {
+    setIsExporting(true);
+    try {
+      const frontCanvas = await renderBusinessCardSideToCanvas(documentState, "front", 3);
+      const backCanvas = await renderBusinessCardSideToCanvas(documentState, "back", 3);
+      const JSZip = await loadJsZipModule();
+      const zip = new JSZip();
+      zip.file("business-card-front.png", frontCanvas.toDataURL("image/png").split(",")[1] ?? "", { base64: true });
+      zip.file("business-card-back.png", backCanvas.toDataURL("image/png").split(",")[1] ?? "", { base64: true });
+      zip.file(
+        "business-card-workspace.json",
+        JSON.stringify(
+          { version: BUSINESS_CARD_DOC_VERSION, exportedAt: new Date().toISOString(), document: documentState },
+          null,
+          2,
+        ),
+      );
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlobFile("business-card-assets.zip", blob);
+      setStatus("Downloaded front/back card bundle ZIP.");
+      trackEvent("tool_business_card_export", { format: "zip", side: "both" });
+    } catch {
+      setStatus("Could not create card ZIP right now.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [documentState]);
+
+  const printProof = useCallback(async () => {
+    setIsExporting(true);
+    try {
+      const frontCanvas = await renderBusinessCardSideToCanvas(documentState, "front", 2);
+      const backCanvas = await renderBusinessCardSideToCanvas(documentState, "back", 2);
+      const opened = openPrintWindow(
+        "Business card proof",
+        `<main class="card-proof">
+  <h1>Business Card Proof</h1>
+  <section class="proof-grid">
+    <article><h2>Front</h2><img src="${escapeHtml(frontCanvas.toDataURL("image/png"))}" alt="Front side" /></article>
+    <article><h2>Back</h2><img src="${escapeHtml(backCanvas.toDataURL("image/png"))}" alt="Back side" /></article>
+  </section>
+</main>`,
+        `
+        .card-proof { max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; }
+        .proof-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+        .proof-grid article { border: 1px solid #d3dbe5; border-radius: 10px; padding: 10px; }
+        .proof-grid img { width: 100%; height: auto; object-fit: contain; }
+        `,
+      );
+      if (!opened) {
+        setStatus("Enable popups to open the print proof.");
+        return;
+      }
+      setStatus("Opened print proof. Choose print/save as PDF.");
+      trackEvent("tool_business_card_export", { format: "print-proof", side: "both" });
+    } catch {
+      setStatus("Could not generate print proof right now.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [documentState]);
+
+  const resetDocument = useCallback(() => {
+    setDocumentState(createDefaultBusinessCardDocument());
+    setSelectedElementId("");
+    setStatus("Reset workspace to default business card template.");
+  }, []);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={CreditCard}
+        title="Business cards designer"
+        subtitle="Advanced drag-and-drop editor with templates, custom card sizing, front/back design, and local workspace sessions."
+      />
+
+      {toolSession.isReady ? (
+        <ToolSessionControls
+          sessionId={toolSession.sessionId}
+          sessionLabel={toolSession.sessionLabel}
+          sessions={toolSession.sessions}
+          description="Each session stores a separate card project in local browser storage."
+          onSelectSession={toolSession.selectSession}
+          onCreateSession={toolSession.createSession}
+          onRenameSession={toolSession.renameSession}
+        />
+      ) : null}
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Size preset</span>
+          <select value={activePreset?.id ?? "custom"} onChange={(event) => applySizePreset(event.target.value)}>
+            <option value="custom">Custom size</option>
+            {BUSINESS_CARD_SIZE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Unit</span>
+          <select
+            value={documentState.unit}
+            onChange={(event) => {
+              const nextUnit = event.target.value as BusinessCardUnit;
+              setDocumentState((previous) => {
+                const convertedWidth = convertBusinessCardUnitValue(previous.width, previous.unit, nextUnit);
+                const convertedHeight = convertBusinessCardUnitValue(previous.height, previous.unit, nextUnit);
+                return resizeBusinessCardDocument(previous, convertedWidth, convertedHeight, nextUnit, "custom");
+              });
+            }}
+          >
+            <option value="mm">Millimeters (mm)</option>
+            <option value="in">Inches (in)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Width ({documentState.unit})</span>
+          <input
+            type="number"
+            min={20}
+            max={500}
+            step={documentState.unit === "in" ? 0.01 : 0.1}
+            value={documentState.width}
+            onChange={(event) => {
+              const nextWidth = clampBusinessCardNumber(Number(event.target.value), 20, 500);
+              setDocumentState((previous) =>
+                resizeBusinessCardDocument(previous, nextWidth, previous.height, previous.unit, "custom"),
+              );
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Height ({documentState.unit})</span>
+          <input
+            type="number"
+            min={20}
+            max={500}
+            step={documentState.unit === "in" ? 0.01 : 0.1}
+            value={documentState.height}
+            onChange={(event) => {
+              const nextHeight = clampBusinessCardNumber(Number(event.target.value), 20, 500);
+              setDocumentState((previous) =>
+                resizeBusinessCardDocument(previous, previous.width, nextHeight, previous.unit, "custom"),
+              );
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Zoom ({stageScale.toFixed(2)}x)</span>
+          <input
+            type="range"
+            min={0.8}
+            max={4}
+            step={0.05}
+            value={documentState.zoom}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                zoom: clampBusinessCardNumber(Number(event.target.value), 0.8, 4),
+              }))
+            }
+          />
+        </label>
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Template starters</h3>
+          <span className="supporting-text">Load a starting layout, then customize everything.</span>
+        </div>
+        <div className="button-row">
+          {BUSINESS_CARD_TEMPLATE_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              className="chip-button"
+              type="button"
+              onClick={() => applyTemplate(option.id)}
+              aria-pressed={documentState.templateId === option.id}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <p className="supporting-text">
+          {BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === documentState.templateId)?.hint ?? ""}
+        </p>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Active side</span>
+          <select
+            value={documentState.activeSide}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                activeSide: event.target.value as BusinessCardSideId,
+              }))
+            }
+          >
+            <option value="front">Front side</option>
+            <option value="back">Back side</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Side background</span>
+          <input type="color" value={activeSideState.background} onChange={(event) => setBackgroundColor(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Grid size ({Math.round(documentState.gridSize)}px)</span>
+          <input
+            type="range"
+            min={4}
+            max={32}
+            step={1}
+            value={documentState.gridSize}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                gridSize: clampBusinessCardNumber(Number(event.target.value), 4, 32),
+              }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Bleed guide (mm)</span>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step={0.5}
+            value={documentState.bleedMm}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                bleedMm: clampBusinessCardNumber(Number(event.target.value), 0, 10),
+              }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Safe zone (mm)</span>
+          <input
+            type="number"
+            min={0}
+            max={14}
+            step={0.5}
+            value={documentState.safeMm}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                safeMm: clampBusinessCardNumber(Number(event.target.value), 0, 14),
+              }))
+            }
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={documentState.snapToGrid}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                snapToGrid: event.target.checked,
+              }))
+            }
+          />
+          Snap to grid
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={documentState.showGrid}
+            onChange={(event) =>
+              setDocumentState((previous) => ({
+                ...previous,
+                showGrid: event.target.checked,
+              }))
+            }
+          />
+          Show grid
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" onClick={addTextElement}>
+          <Plus size={15} />
+          Add text
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => addShapeElement("rect")}>
+          <Plus size={15} />
+          Add rectangle
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => addShapeElement("circle")}>
+          <Plus size={15} />
+          Add circle
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => imageUploadRef.current?.click()}>
+          <Plus size={15} />
+          Add image/logo
+        </button>
+        <button className="action-button secondary" type="button" onClick={duplicateSelectedElement} disabled={!selectedElement}>
+          <Copy size={15} />
+          Duplicate
+        </button>
+        <button className="action-button secondary" type="button" onClick={removeSelectedElement} disabled={!selectedElement}>
+          <Trash2 size={15} />
+          Delete
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => moveSelectedLayer("up")} disabled={!selectedElement}>
+          Move forward
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => moveSelectedLayer("down")} disabled={!selectedElement}>
+          Move backward
+        </button>
+      </div>
+
+      <input
+        ref={imageUploadRef}
+        type="file"
+        hidden
+        accept="image/*"
+        onChange={async (event) => {
+          await importImageFile(event.target.files?.[0] ?? null);
+          event.target.value = "";
+        }}
+      />
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Canvas</h3>
+          <span className="supporting-text">
+            Drag elements directly on canvas. Drop an image file on canvas to insert quickly.
+          </span>
+        </div>
+        <div
+          ref={stageRef}
+          role="presentation"
+          onPointerDown={() => setSelectedElementId("")}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (!isFileHovering) setIsFileHovering(true);
+          }}
+          onDragLeave={() => setIsFileHovering(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setIsFileHovering(false);
+            const point = resolveStagePoint(event.clientX, event.clientY);
+            void importImageFile(event.dataTransfer.files?.[0] ?? null, point ?? undefined);
+          }}
+          style={{
+            width: `${stageWidth}px`,
+            maxWidth: "100%",
+            height: `${stageHeight}px`,
+            margin: "0 auto",
+            position: "relative",
+            overflow: "hidden",
+            borderRadius: 14,
+            border: isFileHovering ? "2px dashed #0ea5e9" : "1px solid #d3dbe5",
+            backgroundColor: activeSideState.background,
+            boxShadow: "0 14px 40px rgba(15, 23, 42, 0.08)",
+            backgroundImage: documentState.showGrid
+              ? `linear-gradient(to right, rgba(15, 23, 42, 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(15, 23, 42, 0.06) 1px, transparent 1px)`
+              : "none",
+            backgroundSize: `${Math.max(6, documentState.gridSize * stageScale)}px ${Math.max(6, documentState.gridSize * stageScale)}px`,
+          }}
+        >
+          {bleedInsetPx > 0 && bleedInsetPx * 2 < pixelSize.width && bleedInsetPx * 2 < pixelSize.height ? (
+            <div
+              style={{
+                position: "absolute",
+                inset: `${Math.round(bleedInsetPx * stageScale)}px`,
+                border: "1px dashed rgba(239, 68, 68, 0.7)",
+                pointerEvents: "none",
+              }}
+            />
+          ) : null}
+          {safeInsetPx > 0 && safeInsetPx * 2 < pixelSize.width && safeInsetPx * 2 < pixelSize.height ? (
+            <div
+              style={{
+                position: "absolute",
+                inset: `${Math.round(safeInsetPx * stageScale)}px`,
+                border: "1px dashed rgba(22, 163, 74, 0.8)",
+                pointerEvents: "none",
+              }}
+            />
+          ) : null}
+          {activeSideState.elements.map((element) => {
+            const isSelected = element.id === selectedElementId;
+            const elementStyle: CSSProperties = {
+              position: "absolute",
+              left: `${Math.round(element.x * stageScale)}px`,
+              top: `${Math.round(element.y * stageScale)}px`,
+              width: `${Math.round(element.width * stageScale)}px`,
+              height: `${Math.round(element.height * stageScale)}px`,
+              transform: `rotate(${element.rotation}deg)`,
+              transformOrigin: "center",
+              opacity: clampBusinessCardNumber(element.opacity, 0, 1),
+              outline: isSelected ? "2px solid rgba(14, 165, 233, 0.95)" : "none",
+              cursor: element.locked ? "not-allowed" : "grab",
+              display: element.hidden ? "none" : "block",
+              overflow: "hidden",
+            };
+
+            return (
+              <div key={element.id} style={elementStyle} onPointerDown={(event) => beginElementDrag(event, element)}>
+                {element.kind === "text" ? (
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      color: element.color,
+                      fontSize: `${Math.max(8, Math.round(element.fontSize * stageScale))}px`,
+                      fontFamily: element.fontFamily,
+                      fontWeight: element.fontWeight,
+                      textAlign: element.align,
+                      lineHeight: element.lineHeight,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      userSelect: "none",
+                    }}
+                  >
+                    {element.text}
+                  </div>
+                ) : null}
+                {element.kind === "shape" ? (
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      borderRadius:
+                        element.shapeKind === "circle"
+                          ? "9999px"
+                          : `${Math.round(clampBusinessCardNumber(element.cornerRadius * stageScale, 0, 120))}px`,
+                      background: element.fillColor,
+                      border:
+                        element.strokeWidth > 0
+                          ? `${Math.max(1, Math.round(element.strokeWidth * stageScale))}px solid ${element.strokeColor}`
+                          : "none",
+                    }}
+                  />
+                ) : null}
+                {element.kind === "image" ? (
+                  <NextImage
+                    src={element.srcDataUrl}
+                    alt="Business card asset"
+                    fill
+                    unoptimized
+                    sizes={`${Math.max(1, Math.round(element.width * stageScale))}px`}
+                    draggable={false}
+                    style={{
+                      objectFit: element.fit,
+                      borderRadius: `${Math.round(clampBusinessCardNumber(element.cornerRadius * stageScale, 0, 120))}px`,
+                      userSelect: "none",
+                      pointerEvents: "none",
+                    }}
+                  />
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Layers ({activeSideState.elements.length})</h3>
+          <span className="supporting-text">Topmost layer appears first in this list.</span>
+        </div>
+        {activeSideState.elements.length ? (
+          <ul className="plain-list">
+            {[...activeSideState.elements]
+              .reverse()
+              .map((element) => (
+                <li key={`layer-${element.id}`}>
+                  <button
+                    className="chip-button"
+                    type="button"
+                    onClick={() => setSelectedElementId(element.id)}
+                    aria-pressed={element.id === selectedElementId}
+                  >
+                    {element.kind.toUpperCase()} {element.locked ? "(Locked)" : ""} {element.hidden ? "(Hidden)" : ""}
+                  </button>
+                </li>
+              ))}
+          </ul>
+        ) : (
+          <p className="supporting-text">No elements yet. Add text, shapes, or image/logo assets.</p>
+        )}
+      </div>
+
+      {selectedElement ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Selected element</h3>
+            <span className="supporting-text">{selectedElement.kind.toUpperCase()} properties</span>
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span>X</span>
+              <input
+                type="number"
+                min={0}
+                max={pixelSize.width}
+                value={Math.round(selectedElement.x)}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    x: clampBusinessCardNumber(Number(event.target.value), 0, Math.max(0, pixelSize.width - element.width)),
+                  }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Y</span>
+              <input
+                type="number"
+                min={0}
+                max={pixelSize.height}
+                value={Math.round(selectedElement.y)}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    y: clampBusinessCardNumber(Number(event.target.value), 0, Math.max(0, pixelSize.height - element.height)),
+                  }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Width</span>
+              <input
+                type="number"
+                min={16}
+                max={pixelSize.width}
+                value={Math.round(selectedElement.width)}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    width: clampBusinessCardNumber(Number(event.target.value), 16, pixelSize.width - element.x),
+                  }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Height</span>
+              <input
+                type="number"
+                min={16}
+                max={pixelSize.height}
+                value={Math.round(selectedElement.height)}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    height: clampBusinessCardNumber(Number(event.target.value), 16, pixelSize.height - element.y),
+                  }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Rotation (deg)</span>
+              <input
+                type="number"
+                min={-180}
+                max={180}
+                value={Math.round(selectedElement.rotation)}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    rotation: clampBusinessCardNumber(Number(event.target.value), -180, 180),
+                  }))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Opacity</span>
+              <input
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.01}
+                value={selectedElement.opacity}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    opacity: clampBusinessCardNumber(Number(event.target.value), 0.1, 1),
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <div className="button-row">
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={selectedElement.locked}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    locked: event.target.checked,
+                  }))
+                }
+              />
+              Lock element
+            </label>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={selectedElement.hidden}
+                onChange={(event) =>
+                  updateElementById(activeSide, selectedElement.id, (element) => ({
+                    ...element,
+                    hidden: event.target.checked,
+                  }))
+                }
+              />
+              Hide element
+            </label>
+          </div>
+
+          {selectedElement.kind === "text" ? (
+            <div className="field-grid">
+              <label className="field">
+                <span>Text content</span>
+                <textarea
+                  rows={4}
+                  value={selectedElement.text}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text" ? { ...element, text: event.target.value } : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Text color</span>
+                <input
+                  type="color"
+                  value={selectedElement.color}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text" ? { ...element, color: event.target.value } : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Font size</span>
+                <input
+                  type="number"
+                  min={8}
+                  max={220}
+                  value={Math.round(selectedElement.fontSize)}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text"
+                        ? { ...element, fontSize: clampBusinessCardNumber(Number(event.target.value), 8, 220) }
+                        : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Font family</span>
+                <select
+                  value={selectedElement.fontFamily}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text" ? { ...element, fontFamily: event.target.value } : element,
+                    )
+                  }
+                >
+                  <option value="Geist, Segoe UI, Arial, sans-serif">Modern sans</option>
+                  <option value="Avenir Next, Segoe UI, Arial, sans-serif">Avenir-style sans</option>
+                  <option value="Georgia, Times New Roman, serif">Editorial serif</option>
+                  <option value="Courier New, monospace">Monospace</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Weight</span>
+                <select
+                  value={selectedElement.fontWeight}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text"
+                        ? {
+                            ...element,
+                            fontWeight: event.target.value as BusinessCardTextElement["fontWeight"],
+                          }
+                        : element,
+                    )
+                  }
+                >
+                  <option value="400">400</option>
+                  <option value="500">500</option>
+                  <option value="600">600</option>
+                  <option value="700">700</option>
+                  <option value="800">800</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Alignment</span>
+                <select
+                  value={selectedElement.align}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "text"
+                        ? { ...element, align: event.target.value as BusinessCardTextElement["align"] }
+                        : element,
+                    )
+                  }
+                >
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
+              </label>
+            </div>
+          ) : null}
+
+          {selectedElement.kind === "shape" ? (
+            <div className="field-grid">
+              <label className="field">
+                <span>Shape type</span>
+                <select
+                  value={selectedElement.shapeKind}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "shape"
+                        ? { ...element, shapeKind: event.target.value as BusinessCardShapeKind }
+                        : element,
+                    )
+                  }
+                >
+                  <option value="rect">Rectangle</option>
+                  <option value="circle">Circle</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Fill color</span>
+                <input
+                  type="color"
+                  value={selectedElement.fillColor}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "shape" ? { ...element, fillColor: event.target.value } : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Stroke color</span>
+                <input
+                  type="color"
+                  value={selectedElement.strokeColor}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "shape" ? { ...element, strokeColor: event.target.value } : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Stroke width</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  step={0.5}
+                  value={selectedElement.strokeWidth}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "shape"
+                        ? {
+                            ...element,
+                            strokeWidth: clampBusinessCardNumber(Number(event.target.value), 0, 24),
+                          }
+                        : element,
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Corner radius</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={selectedElement.cornerRadius}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "shape"
+                        ? {
+                            ...element,
+                            cornerRadius: clampBusinessCardNumber(Number(event.target.value), 0, 120),
+                          }
+                        : element,
+                    )
+                  }
+                />
+              </label>
+            </div>
+          ) : null}
+
+          {selectedElement.kind === "image" ? (
+            <div className="field-grid">
+              <label className="field">
+                <span>Image fit</span>
+                <select
+                  value={selectedElement.fit}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "image"
+                        ? { ...element, fit: event.target.value as BusinessCardImageFit }
+                        : element,
+                    )
+                  }
+                >
+                  <option value="contain">Contain</option>
+                  <option value="cover">Cover</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Corner radius</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={selectedElement.cornerRadius}
+                  onChange={(event) =>
+                    updateElementById(activeSide, selectedElement.id, (element) =>
+                      element.kind === "image"
+                        ? {
+                            ...element,
+                            cornerRadius: clampBusinessCardNumber(Number(event.target.value), 0, 120),
+                          }
+                        : element,
+                    )
+                  }
+                />
+              </label>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={() => void exportActivePng()} disabled={isExporting}>
+          <Download size={15} />
+          Export active PNG
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => void exportZip()} disabled={isExporting}>
+          <Download size={15} />
+          Export front/back ZIP
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => void printProof()} disabled={isExporting}>
+          <Printer size={15} />
+          Print proof
+        </button>
+        <button className="action-button secondary" type="button" onClick={resetDocument} disabled={isExporting}>
+          <RefreshCw size={15} />
+          Reset
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      <ResultList
+        rows={[
+          { label: "Workspace session", value: toolSession.sessionLabel },
+          {
+            label: "Size",
+            value: `${documentState.width.toFixed(documentState.unit === "in" ? 2 : 1)} x ${documentState.height.toFixed(
+              documentState.unit === "in" ? 2 : 1,
+            )} ${documentState.unit}`,
+          },
+          { label: "Canvas pixels", value: `${pixelSize.width} x ${pixelSize.height}` },
+          {
+            label: "Active side elements",
+            value: formatNumericValue(activeSideState.elements.filter((entry) => !entry.hidden).length),
+          },
+          {
+            label: "Template",
+            value:
+              BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === documentState.templateId)?.label ??
+              documentState.templateId,
+          },
+        ]}
+      />
+    </section>
+  );
+}
+
 function ProductivityTool({ id }: { id: ProductivityToolId }) {
   const { t } = useLocale();
   switch (id) {
+    case "business-cards-designer":
+      return <BusinessCardsDesignerTool />;
     case "pomodoro-timer":
       return <PomodoroTool />;
     case "meeting-time-planner":

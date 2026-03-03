@@ -3,6 +3,7 @@ export const CATEGORY_ORDER = [
   "converters",
   "seo-tools",
   "image-tools",
+  "branding-tools",
   "developer-tools",
   "productivity-tools",
 ] as const;
@@ -145,6 +146,7 @@ export type ImageToolId =
   | "pdf-to-jpg";
 
 export type ProductivityToolId =
+  | "business-cards-designer"
   | "pomodoro-timer"
   | "meeting-time-planner"
   | "simple-todo-list"

@@ -26,6 +26,12 @@ export const CATEGORIES: ToolCategory[] = [
     description: "Client-side image and color tools with privacy-friendly workflows.",
   },
   {
+    slug: "branding-tools",
+    title: "Branding Tools",
+    shortTitle: "Branding Tool",
+    description: "Design tools for cards, brand assets, templates, and print-ready creative outputs.",
+  },
+  {
     slug: "developer-tools",
     title: "Developer Tools",
     shortTitle: "Developer Tool",

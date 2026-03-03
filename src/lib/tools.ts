@@ -1251,6 +1251,27 @@ const developerTools: ToolDefinition[] = [
   },
 ];
 
+const brandingTools: ToolDefinition[] = [
+  {
+    slug: "business-cards-design",
+    category: "branding-tools",
+    title: "Business Cards Designer",
+    summary:
+      "Advanced drag-and-drop business card studio with front/back layouts, templates, custom sizing, and local workspace sessions.",
+    description:
+      "Design premium business cards with layered elements, snap-grid positioning, side-by-side front/back editing, template starters, PNG exports, and persistent local session storage.",
+    keywords: [
+      "business card design tool",
+      "business card maker",
+      "brand card template",
+      "drag and drop card designer",
+      "print ready business card",
+    ],
+    engine: { kind: "productivity-tool", id: "business-cards-designer" },
+    faq: baseFaq("Business Cards Designer"),
+  },
+];
+
 const productivityTools: ToolDefinition[] = [
   {
     slug: "pomodoro-timer",
@@ -1396,6 +1417,7 @@ export const TOOLS: ToolDefinition[] = [
   ...converterDefinitions,
   ...seoTools,
   ...imageTools,
+  ...brandingTools,
   ...developerTools,
   ...productivityTools,
 ];

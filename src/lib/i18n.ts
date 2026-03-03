@@ -80,6 +80,11 @@ const EN_MESSAGES: MessageMap = {
   "category.image-tools.short": "Image Tool",
   "category.image-tools.description": "Client-side image and color tools with privacy-friendly workflows.",
 
+  "category.branding-tools.title": "Branding Tools",
+  "category.branding-tools.short": "Branding Tool",
+  "category.branding-tools.description":
+    "Design tools for cards, brand assets, templates, and print-ready creative outputs.",
+
   "category.developer-tools.title": "Developer Tools",
   "category.developer-tools.short": "Developer Tool",
   "category.developer-tools.description": "Practical tools for debugging, formatting, encoding, and diagnostics.",

@@ -1,5 +1,6 @@
 import {
   Calculator,
+  CreditCard,
   Code2,
   Image as ImageIcon,
   Search,
@@ -23,6 +24,8 @@ export function CategoryIcon({ category, size = 16, ...props }: CategoryIconProp
       return <Search size={size} {...props} />;
     case "image-tools":
       return <ImageIcon size={size} {...props} />;
+    case "branding-tools":
+      return <CreditCard size={size} {...props} />;
     case "developer-tools":
       return <Code2 size={size} {...props} />;
     case "productivity-tools":
