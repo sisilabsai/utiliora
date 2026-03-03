@@ -23147,6 +23147,7 @@ type BarcodeEncodeSource = "barcode" | "label";
 type BarcodeTextSource = "none" | "barcode" | "label" | "encoded";
 type BarcodeStylePresetId = "compact" | "retail" | "shipping" | "custom";
 type BarcodeWorkflowPresetId = "scan-code-show-code" | "scan-code-show-label" | "scan-label-show-code" | "custom";
+type BarcodeLabelSheetTemplateId = "free-grid" | "avery-5160" | "avery-5163" | "avery-5167" | "a4-24";
 
 const BARCODE_MAX_ROWS = 40;
 
@@ -23206,6 +23207,75 @@ const BARCODE_WORKFLOW_PRESETS: Array<{
   },
 ];
 
+interface BarcodeLabelSheetTemplate {
+  id: Exclude<BarcodeLabelSheetTemplateId, "free-grid">;
+  label: string;
+  hint: string;
+  pageSizeCss: "Letter" | "A4";
+  columns: number;
+  rows: number;
+  labelWidthMm: number;
+  labelHeightMm: number;
+  columnGapMm: number;
+  rowGapMm: number;
+  pagePaddingMm: [number, number, number, number];
+}
+
+const BARCODE_LABEL_SHEET_TEMPLATES: BarcodeLabelSheetTemplate[] = [
+  {
+    id: "avery-5160",
+    label: "Avery 5160 (30 labels)",
+    hint: "US Letter, 3 x 10, 2.625 x 1 in labels",
+    pageSizeCss: "Letter",
+    columns: 3,
+    rows: 10,
+    labelWidthMm: 66.675,
+    labelHeightMm: 25.4,
+    columnGapMm: 3.175,
+    rowGapMm: 0,
+    pagePaddingMm: [12.7, 4.762, 12.7, 4.762],
+  },
+  {
+    id: "avery-5163",
+    label: "Avery 5163 (10 labels)",
+    hint: "US Letter, 2 x 5, 4 x 2 in labels",
+    pageSizeCss: "Letter",
+    columns: 2,
+    rows: 5,
+    labelWidthMm: 101.6,
+    labelHeightMm: 50.8,
+    columnGapMm: 3.175,
+    rowGapMm: 0,
+    pagePaddingMm: [12.7, 4.762, 12.7, 4.762],
+  },
+  {
+    id: "avery-5167",
+    label: "Avery 5167 (80 labels)",
+    hint: "US Letter, 4 x 20, 1.75 x 0.5 in labels",
+    pageSizeCss: "Letter",
+    columns: 4,
+    rows: 20,
+    labelWidthMm: 44.45,
+    labelHeightMm: 12.7,
+    columnGapMm: 3.175,
+    rowGapMm: 0,
+    pagePaddingMm: [12.7, 6.35, 12.7, 6.35],
+  },
+  {
+    id: "a4-24",
+    label: "A4 24-up (63.5 x 33.9mm)",
+    hint: "A4, 3 x 8 shipping/product sticker sheet",
+    pageSizeCss: "A4",
+    columns: 3,
+    rows: 8,
+    labelWidthMm: 63.5,
+    labelHeightMm: 33.9,
+    columnGapMm: 2.5,
+    rowGapMm: 0,
+    pagePaddingMm: [12, 6.75, 12, 6.75],
+  },
+];
+
 interface BarcodeInputRow {
   id: string;
   rowIndex: number;
@@ -23232,6 +23302,16 @@ interface BarcodeNormalizationResult {
   normalizedValue?: string;
   warning?: string;
   error?: string;
+}
+
+interface BarcodeCsvRow {
+  barcodeValue: string;
+  labelValue: string;
+}
+
+interface BarcodeCsvImportResult {
+  rows: BarcodeCsvRow[];
+  usedHeaderMapping: boolean;
 }
 
 function sanitizeBarcodeFilePart(value: string): string {
@@ -23269,6 +23349,132 @@ function parseBarcodeRows(rawValues: string, mode: BarcodeInputMode): BarcodeInp
         labelValue: mapped.labelValue,
       };
     });
+}
+
+function parseDelimitedTable(value: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const nextChar = value[index + 1];
+
+    if (char === "\r") {
+      continue;
+    }
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (nextChar === '"') {
+          currentCell += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        currentCell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+      continue;
+    }
+
+    if (char === delimiter) {
+      currentRow.push(currentCell.trim());
+      currentCell = "";
+      continue;
+    }
+
+    if (char === "\n") {
+      currentRow.push(currentCell.trim());
+      rows.push(currentRow);
+      currentRow = [];
+      currentCell = "";
+      continue;
+    }
+
+    currentCell += char;
+  }
+
+  currentRow.push(currentCell.trim());
+  rows.push(currentRow);
+
+  return rows.filter((row) => row.some((cell) => cell.trim().length > 0));
+}
+
+function detectTableDelimiter(value: string): string | null {
+  const sample = splitNonEmptyLines(value)[0] ?? "";
+  if (!sample) return null;
+
+  const delimiters = [",", ";", "\t", "|"];
+  const ranked = delimiters
+    .map((delimiter) => ({
+      delimiter,
+      count: (sample.match(new RegExp(escapeRegExp(delimiter), "g")) ?? []).length,
+    }))
+    .sort((left, right) => right.count - left.count);
+
+  return ranked[0]?.count ? ranked[0].delimiter : null;
+}
+
+function findHeaderColumnIndex(headers: string[], hints: string[]): number {
+  return headers.findIndex((header) => hints.some((hint) => header.includes(hint)));
+}
+
+function parseBarcodeCsvImport(raw: string): BarcodeCsvImportResult {
+  const delimiter = detectTableDelimiter(raw);
+  if (!delimiter) {
+    const rows = splitNonEmptyLines(raw)
+      .slice(0, BARCODE_MAX_ROWS)
+      .map((line) => ({ barcodeValue: line.trim(), labelValue: "" }));
+    return { rows, usedHeaderMapping: false };
+  }
+
+  const table = parseDelimitedTable(raw, delimiter);
+  if (!table.length) {
+    return { rows: [], usedHeaderMapping: false };
+  }
+
+  const normalizedHeaders = table[0].map((cell) => cell.trim().toLowerCase());
+  const barcodeHeaderIndex = findHeaderColumnIndex(normalizedHeaders, [
+    "barcode",
+    "barcode value",
+    "code",
+    "gtin",
+    "upc",
+    "ean",
+    "item code",
+    "product code",
+    "id",
+    "number",
+  ]);
+  const labelHeaderIndex = findHeaderColumnIndex(normalizedHeaders, ["label", "name", "sku", "product", "title", "description", "item"]);
+  const hasHeader = barcodeHeaderIndex >= 0 || labelHeaderIndex >= 0;
+  const dataRows = hasHeader ? table.slice(1) : table;
+
+  const resolvedBarcodeIndex = barcodeHeaderIndex >= 0 ? barcodeHeaderIndex : 0;
+  const fallbackLabelIndex = table[0].length > 1 ? 1 : -1;
+  const resolvedLabelIndex =
+    labelHeaderIndex >= 0 && labelHeaderIndex !== resolvedBarcodeIndex
+      ? labelHeaderIndex
+      : fallbackLabelIndex !== resolvedBarcodeIndex
+        ? fallbackLabelIndex
+        : -1;
+
+  const rows = dataRows
+    .map((row) => ({
+      barcodeValue: (row[resolvedBarcodeIndex] ?? "").trim(),
+      labelValue: (resolvedLabelIndex >= 0 ? row[resolvedLabelIndex] : "").trim(),
+    }))
+    .filter((row) => row.barcodeValue || row.labelValue)
+    .slice(0, BARCODE_MAX_ROWS);
+
+  return { rows, usedHeaderMapping: hasHeader };
 }
 
 function normalizeBarcodeValueForFormat(value: string, format: BarcodeFormat): BarcodeNormalizationResult {
@@ -23325,10 +23531,12 @@ function normalizeBarcodeValueForFormat(value: string, format: BarcodeFormat): B
 function BarcodeGeneratorTool() {
   const [rawValues, setRawValues] = useState("123456789012|SKU-BLUE-TEE-M\n123456789019|SKU-BLACK-TEE-L");
   const [inputMode, setInputMode] = useState<BarcodeInputMode>("mapped");
+  const [importMode, setImportMode] = useState<TextUploadMergeMode>("append");
   const [format, setFormat] = useState<BarcodeFormat>("CODE128");
   const [encodeSource, setEncodeSource] = useState<BarcodeEncodeSource>("barcode");
   const [textSource, setTextSource] = useState<BarcodeTextSource>("barcode");
   const [workflowPreset, setWorkflowPreset] = useState<BarcodeWorkflowPresetId>("scan-code-show-code");
+  const [labelSheetTemplate, setLabelSheetTemplate] = useState<BarcodeLabelSheetTemplateId>("free-grid");
 
   const [barWidth, setBarWidth] = useState(2);
   const [barHeight, setBarHeight] = useState(110);
@@ -23547,28 +23755,108 @@ function BarcodeGeneratorTool() {
     setStatus("Barcode JSON report exported.");
   };
 
+  const handleCsvUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const raw = await readTextFileWithLimit(file);
+        const parsed = parseBarcodeCsvImport(raw);
+        if (!parsed.rows.length) {
+          setStatus("No usable rows were found in the uploaded file.");
+          return;
+        }
+
+        const importedRaw = parsed.rows
+          .map((row) => (row.labelValue ? `${row.barcodeValue}\t${row.labelValue}` : row.barcodeValue))
+          .join("\n");
+        const mergedRaw =
+          importMode === "replace" || !rawValues.trim()
+            ? importedRaw
+            : `${rawValues.trimEnd()}\n${importedRaw.trimStart()}`;
+        const totalRows = splitNonEmptyLines(mergedRaw).length;
+
+        setRawValues(mergedRaw);
+        setInputMode("mapped");
+        setStatus(
+          `Imported ${formatNumericValue(parsed.rows.length)} row(s) from ${file.name}${parsed.usedHeaderMapping ? " with header mapping" : ""}.${
+            totalRows > BARCODE_MAX_ROWS ? ` Preview uses the first ${BARCODE_MAX_ROWS} rows.` : ""
+          }`,
+        );
+        trackEvent("tool_barcode_import", {
+          rows: parsed.rows.length,
+          mode: importMode,
+          headerMapping: parsed.usedHeaderMapping ? 1 : 0,
+        });
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not import barcode CSV.");
+      }
+    },
+    [importMode, rawValues],
+  );
+
+  const exportZip = async () => {
+    if (!successfulItems.length) {
+      setStatus("Generate at least one successful barcode before downloading ZIP.");
+      return;
+    }
+    try {
+      const JSZip = await loadJsZipModule();
+      const zip = new JSZip();
+
+      successfulItems.forEach((item, index) => {
+        const base = item.barcodeValue || item.labelValue || item.encodedValue || `barcode-${item.rowIndex}`;
+        const fileStem = `${sanitizeBarcodeFilePart(base)}-${format.toLowerCase()}-${String(index + 1).padStart(2, "0")}`;
+        const base64Data = item.dataUrl.split(",")[1] ?? "";
+        zip.file(`${fileStem}.png`, base64Data, { base64: true });
+      });
+
+      const manifest = successfulItems.map((item, index) => ({
+        index: index + 1,
+        row: item.rowIndex,
+        barcodeValue: item.barcodeValue,
+        labelValue: item.labelValue,
+        encodedValue: item.encodedValue ?? "",
+        printedText: item.printedText ?? "",
+        width: item.width ?? 0,
+        height: item.height ?? 0,
+        warning: item.warning ?? "",
+      }));
+      zip.file("barcode-manifest.json", JSON.stringify(manifest, null, 2));
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlobFile(`barcodes-${format.toLowerCase()}-bundle.zip`, blob);
+      setStatus(`Downloaded ZIP bundle with ${successfulItems.length} barcode PNG file(s).`);
+      trackEvent("tool_barcode_zip_download", { format, count: successfulItems.length });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not export ZIP bundle.");
+    }
+  };
+
   const printSheet = () => {
     if (!successfulItems.length) {
       setStatus("Generate at least one successful barcode before printing.");
       return;
     }
-    const cardsHtml = successfulItems
-      .map((item) => {
-        const label = item.labelValue || item.barcodeValue || `Row ${item.rowIndex}`;
-        const encoded = item.encodedValue || "-";
-        const printed = textSource === "none" ? "Hidden" : item.printedText || "-";
-        return `<article class="barcode-card">
+
+    const selectedTemplate = BARCODE_LABEL_SHEET_TEMPLATES.find((template) => template.id === labelSheetTemplate);
+    if (!selectedTemplate) {
+      const cardsHtml = successfulItems
+        .map((item) => {
+          const label = item.labelValue || item.barcodeValue || `Row ${item.rowIndex}`;
+          const encoded = item.encodedValue || "-";
+          const printed = textSource === "none" ? "Hidden" : item.printedText || "-";
+          return `<article class="barcode-card">
   <img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(`Barcode row ${item.rowIndex}`)}" />
   <h3>${escapeHtml(label)}</h3>
   <p><strong>Encoded (scan output):</strong> ${escapeHtml(encoded)}</p>
   <p><strong>Printed text:</strong> ${escapeHtml(printed)}</p>
 </article>`;
-      })
-      .join("");
-    const opened = openPrintWindow(
-      "Barcode sheet",
-      `<main class="barcode-sheet"><header><h1>Barcode Sheet</h1><p>Format: ${escapeHtml(format)} | Count: ${successfulItems.length}</p></header><section class="barcode-grid">${cardsHtml}</section></main>`,
-      `
+        })
+        .join("");
+      const opened = openPrintWindow(
+        "Barcode sheet",
+        `<main class="barcode-sheet"><header><h1>Barcode Sheet</h1><p>Format: ${escapeHtml(format)} | Count: ${successfulItems.length}</p></header><section class="barcode-grid">${cardsHtml}</section></main>`,
+        `
       .barcode-sheet { max-width: 1100px; margin: 0 auto; display: grid; gap: 12px; }
       .barcode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
       .barcode-card { border: 1px solid #d3dbe5; border-radius: 10px; padding: 10px; break-inside: avoid; }
@@ -23576,12 +23864,97 @@ function BarcodeGeneratorTool() {
       .barcode-card h3 { margin: 0 0 6px; font-size: 14px; }
       .barcode-card p { margin: 2px 0; font-size: 12px; }
       `,
+      );
+      if (!opened) {
+        setStatus("Enable popups to open the print sheet.");
+        return;
+      }
+      setStatus("Print sheet opened. Use print dialog to print labels or save as PDF.");
+      trackEvent("tool_barcode_print_sheet", { format, template: "free-grid", count: successfulItems.length });
+      return;
+    }
+
+    const labelsPerPage = selectedTemplate.columns * selectedTemplate.rows;
+    const pageCount = Math.max(1, Math.ceil(successfulItems.length / labelsPerPage));
+    const pages = Array.from({ length: pageCount }, (_, pageIndex) =>
+      successfulItems.slice(pageIndex * labelsPerPage, (pageIndex + 1) * labelsPerPage),
+    );
+
+    const pagesHtml = pages
+      .map((pageItems, pageIndex) => {
+        const slots = Array.from({ length: labelsPerPage }, (_, slotIndex) => pageItems[slotIndex] ?? null);
+        const labelsHtml = slots
+          .map((item) => {
+            if (!item) return '<article class="sheet-label empty"></article>';
+            const caption =
+              textSource === "none"
+                ? item.encodedValue || item.barcodeValue || item.labelValue
+                : item.printedText || item.labelValue || item.encodedValue || item.barcodeValue;
+            return `<article class="sheet-label">
+  <img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(`Barcode row ${item.rowIndex}`)}" />
+  <p>${escapeHtml(caption ?? "")}</p>
+</article>`;
+          })
+          .join("");
+        return `<section class="sheet-page${pageIndex < pages.length - 1 ? " break" : ""}">
+  <div class="sheet-grid">${labelsHtml}</div>
+</section>`;
+      })
+      .join("");
+
+    const [top, right, bottom, left] = selectedTemplate.pagePaddingMm;
+    const opened = openPrintWindow(
+      "Barcode label sheet",
+      `<main class="sheet-doc">${pagesHtml}</main>`,
+      `
+      @page { size: ${selectedTemplate.pageSizeCss}; margin: 0; }
+      body { margin: 0; padding: 0; background: #ffffff; }
+      .sheet-page {
+        box-sizing: border-box;
+        padding: ${top}mm ${right}mm ${bottom}mm ${left}mm;
+        width: 100%;
+        min-height: 100%;
+      }
+      .sheet-page.break { page-break-after: always; }
+      .sheet-grid {
+        display: grid;
+        grid-template-columns: repeat(${selectedTemplate.columns}, ${selectedTemplate.labelWidthMm}mm);
+        grid-auto-rows: ${selectedTemplate.labelHeightMm}mm;
+        column-gap: ${selectedTemplate.columnGapMm}mm;
+        row-gap: ${selectedTemplate.rowGapMm}mm;
+      }
+      .sheet-label {
+        box-sizing: border-box;
+        overflow: hidden;
+        border: 0;
+        padding: 1.2mm;
+        display: grid;
+        grid-template-rows: 1fr auto;
+        align-items: center;
+      }
+      .sheet-label.empty { visibility: hidden; }
+      .sheet-label img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .sheet-label p {
+        margin: 0;
+        font-size: ${selectedTemplate.id === "avery-5167" ? "7px" : "10px"};
+        line-height: 1.1;
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      `,
     );
     if (!opened) {
       setStatus("Enable popups to open the print sheet.");
       return;
     }
-    setStatus("Print sheet opened. Use print dialog to print labels or save as PDF.");
+    setStatus(`Opened ${selectedTemplate.label} print layout (${labelsPerPage} labels/page).`);
+    trackEvent("tool_barcode_print_sheet", { format, template: selectedTemplate.id, count: successfulItems.length });
   };
 
   return (
@@ -23678,6 +24051,43 @@ function BarcodeGeneratorTool() {
         <textarea value={rawValues} onChange={(event) => setRawValues(event.target.value)} rows={6} />
         {inputMode === "mapped" ? <small className="supporting-text">Use `barcode|label` to print barcode numbers while encoding SKU names or vice versa.</small> : null}
       </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Import CSV/TXT</span>
+          <input
+            type="file"
+            accept=".csv,.txt,.tsv"
+            onChange={(event) => {
+              void handleCsvUpload(event.target.files?.[0] ?? null);
+              event.target.value = "";
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Import behavior</span>
+          <select value={importMode} onChange={(event) => setImportMode(event.target.value as TextUploadMergeMode)}>
+            <option value="append">Append imported rows</option>
+            <option value="replace">Replace current rows</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Label-sheet template (print)</span>
+          <select value={labelSheetTemplate} onChange={(event) => setLabelSheetTemplate(event.target.value as BarcodeLabelSheetTemplateId)}>
+            <option value="free-grid">Free grid (auto)</option>
+            {BARCODE_LABEL_SHEET_TEMPLATES.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.label}
+              </option>
+            ))}
+          </select>
+          <small className="supporting-text">
+            {labelSheetTemplate === "free-grid"
+              ? "Flexible print grid for general use."
+              : BARCODE_LABEL_SHEET_TEMPLATES.find((template) => template.id === labelSheetTemplate)?.hint ?? ""}
+          </small>
+        </label>
+      </div>
 
       <div className="mini-panel">
         <div className="panel-head">
@@ -23824,6 +24234,10 @@ function BarcodeGeneratorTool() {
           <Download size={15} />
           Download all
         </button>
+        <button className="action-button secondary" type="button" disabled={!successfulItems.length} onClick={() => void exportZip()}>
+          <Download size={15} />
+          ZIP bundle
+        </button>
       </div>
 
       {status ? <p className="supporting-text">{status}</p> : null}
@@ -23844,6 +24258,13 @@ function BarcodeGeneratorTool() {
                   : textSource === "label"
                     ? "Label column"
                     : "Encoded value",
+          },
+          {
+            label: "Print template",
+            value:
+              labelSheetTemplate === "free-grid"
+                ? "Free grid"
+                : BARCODE_LABEL_SHEET_TEMPLATES.find((template) => template.id === labelSheetTemplate)?.label ?? "Free grid",
           },
         ]}
       />
