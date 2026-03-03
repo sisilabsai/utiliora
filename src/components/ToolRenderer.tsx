@@ -23199,7 +23199,7 @@ const BARCODE_WORKFLOW_PRESETS: Array<{
   },
   {
     id: "scan-label-show-code",
-    label: "Lookup labels",
+    label: "Scan SKU, show number",
     hint: "Scanner returns SKU/name while printed text shows barcode number.",
     encodeSource: "label",
     textSource: "barcode",
@@ -23495,7 +23495,13 @@ function normalizeBarcodeValueForFormat(value: string, format: BarcodeFormat): B
     return upper === trimmed ? { normalizedValue: upper } : { normalizedValue: upper, warning: "Converted CODE39 value to uppercase." };
   }
 
-  const digits = trimmed.replace(/\D+/g, "");
+  if (/[A-Za-z]/.test(trimmed)) {
+    return {
+      error: `${format} supports numeric payloads only. Use CODE128 to scan alphanumeric SKU values.`,
+    };
+  }
+
+  const digits = trimmed.replace(/[^\d]+/g, "");
   const warnings: string[] = [];
   if (digits !== trimmed) {
     warnings.push("Removed non-digit characters for this numeric format.");
@@ -23984,6 +23990,30 @@ function BarcodeGeneratorTool() {
             ? "Custom workflow active."
             : BARCODE_WORKFLOW_PRESETS.find((preset) => preset.id === workflowPreset)?.hint ?? ""}
         </p>
+        <div className="button-row">
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => applyWorkflowPreset("scan-label-show-code")}
+          >
+            Scanner returns SKU + print number
+          </button>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              setFormat("CODE128");
+              setEncodeSource("label");
+              setTextSource("none");
+              setWorkflowPreset("custom");
+            }}
+          >
+            Scanner returns SKU + hide text
+          </button>
+        </div>
+        <p className="supporting-text">
+          If SKU has letters, use CODE128 format so scanners return full SKU correctly.
+        </p>
       </div>
 
       <div className="field-grid">
@@ -24015,6 +24045,9 @@ function BarcodeGeneratorTool() {
               </option>
             ))}
           </select>
+          {encodeSource === "label" && ["EAN13", "EAN8", "UPC", "ITF14"].includes(format) ? (
+            <small className="supporting-text">This format is numeric only. Use CODE128 for SKU scan output.</small>
+          ) : null}
         </label>
         <label className="field">
           <span>Encoded source (scanner output)</span>
