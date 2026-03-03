@@ -24363,8 +24363,7 @@ function BarcodeGeneratorTool() {
               : BARCODE_LABEL_SHEET_TEMPLATES.find((template) => template.id === labelSheetTemplate)?.hint ?? ""}
           </small>
         </label>
-      </div>
-
+        </div>
       <div className="mini-panel">
         <div className="panel-head">
           <h3>Style presets</h3>
@@ -39332,19 +39331,48 @@ interface BusinessCardPrintSheetTemplate {
 interface BusinessCardDragState {
   elementId: string;
   side: BusinessCardSideId;
+  mode: "move" | "resize";
+  selectedElementIds: string[];
+  selectedElementsSnapshot: Array<{
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
   startX: number;
   startY: number;
   startElementX: number;
   startElementY: number;
   elementWidth: number;
   elementHeight: number;
+  startAspectRatio: number;
+  keepAspectRatio: boolean;
 }
+
+interface BusinessCardContextMenuState {
+  side: BusinessCardSideId;
+  elementId: string;
+  x: number;
+  y: number;
+}
+
+interface BusinessCardInlineTextEditorState {
+  side: BusinessCardSideId;
+  elementId: string;
+  value: string;
+  originalValue: string;
+}
+
+type BusinessCardAlignMode = "left" | "center" | "right" | "top" | "middle" | "bottom";
+type BusinessCardDistributeMode = "horizontal" | "vertical";
 
 const BUSINESS_CARD_WORKSPACE_STORAGE_BASE = "utiliora-business-card-studio-doc-v1";
 const BUSINESS_CARD_DOC_VERSION = 1;
 const BUSINESS_CARD_TEMPLATE_LIBRARY_STORAGE_KEY = "utiliora-business-card-template-library-v1";
 const BUSINESS_CARD_TEMPLATE_LIBRARY_VERSION = 1;
 const BUSINESS_CARD_BULK_MAX_ROWS = 200;
+const BUSINESS_CARD_HISTORY_LIMIT = 80;
 
 const BUSINESS_CARD_SIZE_PRESETS: BusinessCardSizePreset[] = [
   { id: "us-standard", label: "US standard (3.5 x 2 in)", unit: "in", width: 3.5, height: 2 },
@@ -39799,7 +39827,7 @@ function normalizeBusinessCardMergeFieldKey(value: string): string {
 }
 
 function extractBusinessCardMergeFields(document: BusinessCardDocumentState): string[] {
-  const tokenPattern = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+  const tokenPattern = /{{\s*([^{}]+?)\s*}}/g;
   const keys = new Set<string>();
   (["front", "back"] as BusinessCardSideId[]).forEach((sideId) => {
     document.sides[sideId].elements.forEach((element) => {
@@ -39822,7 +39850,7 @@ function replaceBusinessCardMergeTokens(text: string, fields: Record<string, str
     normalizedLookup.set(normalizeBusinessCardMergeFieldKey(key), value);
     normalizedLookup.set(key.trim(), value);
   });
-  return text.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, token: string) => {
+  return text.replace(/{{\s*([^{}]+?)\s*}}/g, (_, token: string) => {
     const trimmed = token.trim();
     if (typeof fields[trimmed] === "string") return fields[trimmed];
     return normalizedLookup.get(normalizeBusinessCardMergeFieldKey(trimmed)) ?? "";
@@ -39933,7 +39961,7 @@ function parseBusinessCardBulkCsv(raw: string): BusinessCardBulkCsvParseResult {
   }
 
   const firstRow = table[0] ?? [];
-  const hasHeader = firstRow.some((cell) => /[a-z]/i.test(cell));
+  const hasHeader = table.length > 1 && firstRow.some((cell) => /[a-z]/i.test(cell));
   const headerSource = hasHeader ? firstRow : firstRow.map((_, index) => `field_${index + 1}`);
   const headerCounts = new Map<string, number>();
   const headers = headerSource.map((header, index) => {
@@ -40125,6 +40153,11 @@ function wrapBusinessCardTextLines(
   return lines.slice(0, 40);
 }
 
+function isTextInputLikeTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable=\"true\"]"));
+}
+
 async function readBusinessCardFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -40242,6 +40275,18 @@ async function renderBusinessCardSideToCanvas(
   return canvas;
 }
 
+function cloneBusinessCardDocumentState(document: BusinessCardDocumentState): BusinessCardDocumentState {
+  return JSON.parse(JSON.stringify(document)) as BusinessCardDocumentState;
+}
+
+function normalizeBusinessCardSelectionOrder(
+  selectedIds: string[],
+  elements: BusinessCardElement[],
+): string[] {
+  const lookup = new Set(selectedIds);
+  return elements.filter((element) => lookup.has(element.id)).map((element) => element.id);
+}
+
 function BusinessCardsDesignerTool() {
   const toolSession = useToolSession({
     toolKey: "business-card-studio",
@@ -40250,6 +40295,7 @@ function BusinessCardsDesignerTool() {
   });
   const [documentState, setDocumentState] = useState<BusinessCardDocumentState>(() => createDefaultBusinessCardDocument());
   const [selectedElementId, setSelectedElementId] = useState("");
+  const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
   const [status, setStatus] = useState("Choose a template, drag elements, and export print-ready card sides.");
   const [storageReady, setStorageReady] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -40262,9 +40308,17 @@ function BusinessCardsDesignerTool() {
   const [sheetTemplateId, setSheetTemplateId] = useState<BusinessCardLabelSheetTemplateId>("free-grid");
   const [sheetSide, setSheetSide] = useState<BusinessCardSideId>("front");
   const [repeatSingleDesign, setRepeatSingleDesign] = useState(true);
+  const [previewRowId, setPreviewRowId] = useState<string>("none");
+  const [contextMenu, setContextMenu] = useState<BusinessCardContextMenuState | null>(null);
+  const [inlineTextEditor, setInlineTextEditor] = useState<BusinessCardInlineTextEditorState | null>(null);
+  const [activeStudioPane, setActiveStudioPane] = useState<"design" | "templates" | "bulk">("design");
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const dragStateRef = useRef<BusinessCardDragState | null>(null);
+  const undoStackRef = useRef<BusinessCardDocumentState[]>([]);
+  const redoStackRef = useRef<BusinessCardDocumentState[]>([]);
+  const lastTouchTapRef = useRef<{ elementId: string; timestamp: number } | null>(null);
+  const [historyVersion, setHistoryVersion] = useState(0);
   const workspaceStorageKey = toolSession.storageKey(BUSINESS_CARD_WORKSPACE_STORAGE_BASE);
 
   const pixelSize = useMemo(
@@ -40285,6 +40339,16 @@ function BusinessCardsDesignerTool() {
     () => activeSideState.elements.find((element) => element.id === selectedElementId) ?? null,
     [activeSideState.elements, selectedElementId],
   );
+  const normalizedSelectedElementIds = useMemo(
+    () => normalizeBusinessCardSelectionOrder(selectedElementIds, activeSideState.elements),
+    [activeSideState.elements, selectedElementIds],
+  );
+  const selectedCount = normalizedSelectedElementIds.length;
+  const selectedElements = useMemo(
+    () => activeSideState.elements.filter((element) => normalizedSelectedElementIds.includes(element.id)),
+    [activeSideState.elements, normalizedSelectedElementIds],
+  );
+  const hasMultiSelection = selectedElements.length > 1;
 
   const safeInsetPx = useMemo(
     () => clampBusinessCardNumber(Math.round(businessCardMmToPx(documentState.safeMm)), 0, 120),
@@ -40311,6 +40375,28 @@ function BusinessCardsDesignerTool() {
     () => mergeFieldTokens.filter((field) => !bulkParseResult.headers.includes(field)),
     [bulkParseResult.headers, mergeFieldTokens],
   );
+  const previewRow = useMemo(
+    () => bulkParseResult.rows.find((row) => row.id === previewRowId) ?? null,
+    [bulkParseResult.rows, previewRowId],
+  );
+  const previewFields = previewRow?.fields ?? null;
+  const previewTextByElementId = useMemo(() => {
+    if (!previewFields) return new Map<string, string>();
+    const mergedDocument = mergeBusinessCardDocumentWithFields(documentState, previewFields);
+    const lookup = new Map<string, string>();
+    (["front", "back"] as BusinessCardSideId[]).forEach((sideId) => {
+      mergedDocument.sides[sideId].elements.forEach((element) => {
+        if (element.kind !== "text") return;
+        lookup.set(element.id, element.text);
+      });
+    });
+    return lookup;
+  }, [documentState, previewFields]);
+  const contextMenuElement = useMemo(() => {
+    if (!contextMenu) return null;
+    const sideElements = documentState.sides[contextMenu.side]?.elements ?? [];
+    return sideElements.find((entry) => entry.id === contextMenu.elementId) ?? null;
+  }, [contextMenu, documentState.sides]);
   const selectedSheetTemplate = useMemo(
     () => BUSINESS_CARD_PRINT_SHEET_TEMPLATES.find((template) => template.id === sheetTemplateId) ?? null,
     [sheetTemplateId],
@@ -40322,6 +40408,81 @@ function BusinessCardsDesignerTool() {
         : { errors: [], warnings: [] },
     [documentState, selectedSheetTemplate],
   );
+  const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
+  const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
+
+  const resetSelection = useCallback(() => {
+    setSelectedElementId("");
+    setSelectedElementIds([]);
+  }, []);
+
+  const selectSingleElement = useCallback((elementId: string) => {
+    setSelectedElementId(elementId);
+    setSelectedElementIds([elementId]);
+  }, []);
+
+  const toggleElementSelection = useCallback(
+    (elementId: string) => {
+      setSelectedElementIds((current) => {
+        const exists = current.includes(elementId);
+        const next = exists ? current.filter((id) => id !== elementId) : [...current, elementId];
+        const normalized = normalizeBusinessCardSelectionOrder(next, activeSideState.elements);
+        if (!normalized.length) {
+          setSelectedElementId("");
+          return [];
+        }
+        setSelectedElementId(normalized[normalized.length - 1]);
+        return normalized;
+      });
+    },
+    [activeSideState.elements],
+  );
+
+  const pushUndoSnapshot = useCallback(
+    (snapshot?: BusinessCardDocumentState) => {
+      const baseSnapshot = snapshot ?? documentState;
+      undoStackRef.current = [...undoStackRef.current, cloneBusinessCardDocumentState(baseSnapshot)].slice(
+        -BUSINESS_CARD_HISTORY_LIMIT,
+      );
+      redoStackRef.current = [];
+      setHistoryVersion((current) => current + 1);
+    },
+    [documentState],
+  );
+
+  const clearHistory = useCallback(() => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setHistoryVersion((current) => current + 1);
+  }, []);
+
+  const undoDocumentChange = useCallback(() => {
+    if (!undoStackRef.current.length) return;
+    const previous = undoStackRef.current.pop();
+    if (!previous) return;
+    redoStackRef.current = [...redoStackRef.current, cloneBusinessCardDocumentState(documentState)].slice(
+      -BUSINESS_CARD_HISTORY_LIMIT,
+    );
+    setDocumentState(previous);
+    setInlineTextEditor(null);
+    setContextMenu(null);
+    setStatus("Undo applied.");
+    setHistoryVersion((current) => current + 1);
+  }, [documentState]);
+
+  const redoDocumentChange = useCallback(() => {
+    if (!redoStackRef.current.length) return;
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current = [...undoStackRef.current, cloneBusinessCardDocumentState(documentState)].slice(
+      -BUSINESS_CARD_HISTORY_LIMIT,
+    );
+    setDocumentState(next);
+    setInlineTextEditor(null);
+    setContextMenu(null);
+    setStatus("Redo applied.");
+    setHistoryVersion((current) => current + 1);
+  }, [documentState]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof localStorage === "undefined") return;
@@ -40418,9 +40579,14 @@ function BusinessCardsDesignerTool() {
     setSheetTemplateId(loadedSheetTemplateId);
     setSheetSide(loadedSheetSide);
     setRepeatSingleDesign(loadedRepeatSingleDesign);
+    setPreviewRowId("none");
     setSelectedElementId("");
+    setSelectedElementIds([]);
+    setContextMenu(null);
+    setInlineTextEditor(null);
+    clearHistory();
     setStorageReady(true);
-  }, [toolSession.isReady, toolSession.sessionId, toolSession.sessionLabel, workspaceStorageKey]);
+  }, [clearHistory, toolSession.isReady, toolSession.sessionId, toolSession.sessionLabel, workspaceStorageKey]);
 
   useEffect(() => {
     if (!toolSession.isReady || !storageReady) return;
@@ -40454,6 +40620,39 @@ function BusinessCardsDesignerTool() {
     toolSession.sessionId,
     workspaceStorageKey,
   ]);
+
+  useEffect(() => {
+    if (previewRowId === "none") return;
+    if (bulkParseResult.rows.some((row) => row.id === previewRowId)) return;
+    setPreviewRowId("none");
+  }, [bulkParseResult.rows, previewRowId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("click", closeMenu);
+    return () => {
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("click", closeMenu);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    const normalized = normalizeBusinessCardSelectionOrder(selectedElementIds, activeSideState.elements);
+    if (normalized.length !== selectedElementIds.length || normalized.some((id, index) => id !== selectedElementIds[index])) {
+      setSelectedElementIds(normalized);
+    }
+    if (!normalized.length) {
+      if (selectedElementId) setSelectedElementId("");
+      return;
+    }
+    if (!normalized.includes(selectedElementId)) {
+      setSelectedElementId(normalized[normalized.length - 1]);
+    }
+  }, [activeSideState.elements, selectedElementId, selectedElementIds]);
 
   const resolveStagePoint = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -40494,6 +40693,7 @@ function BusinessCardsDesignerTool() {
   );
 
   const setBackgroundColor = useCallback((value: string) => {
+    pushUndoSnapshot();
     setDocumentState((previous) => ({
       ...previous,
       sides: {
@@ -40504,9 +40704,10 @@ function BusinessCardsDesignerTool() {
         },
       },
     }));
-  }, []);
+  }, [pushUndoSnapshot]);
 
   const addElementToActiveSide = useCallback((element: BusinessCardElement) => {
+    pushUndoSnapshot();
     setDocumentState((previous) => ({
       ...previous,
       sides: {
@@ -40518,7 +40719,8 @@ function BusinessCardsDesignerTool() {
       },
     }));
     setSelectedElementId(element.id);
-  }, []);
+    setSelectedElementIds([element.id]);
+  }, [pushUndoSnapshot]);
 
   const addTextElement = useCallback(() => {
     const element = createBusinessCardTextElement(pixelSize.width, pixelSize.height);
@@ -40577,6 +40779,92 @@ function BusinessCardsDesignerTool() {
     [addImageFromDataUrl],
   );
 
+  const startInlineTextEditing = useCallback(
+    (targetElementId: string) => {
+      const target = activeSideState.elements.find((entry) => entry.id === targetElementId);
+      if (!target || target.kind !== "text" || target.locked) return;
+      selectSingleElement(target.id);
+      setInlineTextEditor({
+        side: activeSide,
+        elementId: target.id,
+        value: target.text,
+        originalValue: target.text,
+      });
+      setContextMenu(null);
+      setStatus("Inline text editing started. Press Enter to save, Esc to cancel.");
+    },
+    [activeSide, activeSideState.elements, selectSingleElement],
+  );
+
+  const commitInlineTextEditing = useCallback(() => {
+    if (!inlineTextEditor) return;
+    const nextValue = inlineTextEditor.value;
+    if (nextValue !== inlineTextEditor.originalValue) {
+      pushUndoSnapshot();
+    }
+    updateElementById(inlineTextEditor.side, inlineTextEditor.elementId, (element) =>
+      element.kind === "text" ? { ...element, text: nextValue } : element,
+    );
+    setInlineTextEditor(null);
+    setStatus("Text layer updated.");
+  }, [inlineTextEditor, pushUndoSnapshot, updateElementById]);
+
+  const cancelInlineTextEditing = useCallback(() => {
+    if (!inlineTextEditor) return;
+    setInlineTextEditor(null);
+    setStatus("Canceled inline text edit.");
+  }, [inlineTextEditor]);
+
+  const nudgeSelectedElement = useCallback(
+    (deltaX: number, deltaY: number) => {
+      if (!selectedElements.length) return;
+      const selectionLookup = new Set(selectedElements.map((element) => element.id));
+      setDocumentState((previous) => {
+        const side = previous.sides[activeSide];
+        const nextElements = side.elements.map((element) => {
+          if (!selectionLookup.has(element.id)) return element;
+          const nextX = clampBusinessCardNumber(element.x + deltaX, 0, Math.max(0, pixelSize.width - element.width));
+          const nextY = clampBusinessCardNumber(element.y + deltaY, 0, Math.max(0, pixelSize.height - element.height));
+          return { ...element, x: nextX, y: nextY };
+        });
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [activeSide]: { ...side, elements: nextElements },
+          },
+        };
+      });
+    },
+    [activeSide, pixelSize.height, pixelSize.width, selectedElements],
+  );
+
+  const resizeSelectedElement = useCallback(
+    (deltaWidth: number, deltaHeight: number) => {
+      if (!selectedElements.length) return;
+      const selectionLookup = new Set(selectedElements.map((element) => element.id));
+      setDocumentState((previous) => {
+        const side = previous.sides[activeSide];
+        const nextElements = side.elements.map((element) => {
+          if (!selectionLookup.has(element.id)) return element;
+          return {
+            ...element,
+            width: clampBusinessCardNumber(element.width + deltaWidth, 16, Math.max(16, pixelSize.width - element.x)),
+            height: clampBusinessCardNumber(element.height + deltaHeight, 16, Math.max(16, pixelSize.height - element.y)),
+          };
+        });
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [activeSide]: { ...side, elements: nextElements },
+          },
+        };
+      });
+    },
+    [activeSide, pixelSize.height, pixelSize.width, selectedElements],
+  );
+
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
       const drag = dragStateRef.current;
@@ -40589,22 +40877,72 @@ function BusinessCardsDesignerTool() {
         if (index < 0) return previous;
         const element = side.elements[index];
         if (element.locked) return previous;
-
-        let nextX = drag.startElementX + (point.x - drag.startX);
-        let nextY = drag.startElementY + (point.y - drag.startY);
-        if (previous.snapToGrid) {
-          nextX = snapBusinessCardNumber(nextX, previous.gridSize);
-          nextY = snapBusinessCardNumber(nextY, previous.gridSize);
-        }
-        nextX = clampBusinessCardNumber(nextX, 0, pixelSize.width - drag.elementWidth);
-        nextY = clampBusinessCardNumber(nextY, 0, pixelSize.height - drag.elementHeight);
-
-        if (Math.abs(nextX - element.x) < 0.5 && Math.abs(nextY - element.y) < 0.5) {
-          return previous;
-        }
-
         const nextElements = [...side.elements];
-        nextElements[index] = { ...element, x: nextX, y: nextY };
+        if (drag.mode === "move") {
+          let deltaX = point.x - drag.startX;
+          let deltaY = point.y - drag.startY;
+          if (previous.snapToGrid) {
+            deltaX = snapBusinessCardNumber(deltaX, previous.gridSize);
+            deltaY = snapBusinessCardNumber(deltaY, previous.gridSize);
+          }
+          const selectionLookup = new Set(drag.selectedElementIds);
+          let hasAnyMove = false;
+          const movedElements = side.elements.map((entry) => {
+            if (!selectionLookup.has(entry.id) || entry.locked) return entry;
+            const source = drag.selectedElementsSnapshot.find((item) => item.id === entry.id);
+            if (!source) return entry;
+            const nextX = clampBusinessCardNumber(source.x + deltaX, 0, pixelSize.width - source.width);
+            const nextY = clampBusinessCardNumber(source.y + deltaY, 0, pixelSize.height - source.height);
+            if (Math.abs(nextX - entry.x) >= 0.5 || Math.abs(nextY - entry.y) >= 0.5) {
+              hasAnyMove = true;
+            }
+            return { ...entry, x: nextX, y: nextY };
+          });
+          if (!hasAnyMove) return previous;
+          return {
+            ...previous,
+            sides: {
+              ...previous.sides,
+              [drag.side]: { ...side, elements: movedElements },
+            },
+          };
+        } else {
+          let nextWidth = drag.elementWidth + (point.x - drag.startX);
+          let nextHeight = drag.elementHeight + (point.y - drag.startY);
+          if (drag.keepAspectRatio && drag.startAspectRatio > 0) {
+            const widthDrivenHeight = nextWidth / drag.startAspectRatio;
+            const heightDrivenWidth = nextHeight * drag.startAspectRatio;
+            if (Math.abs(nextWidth - drag.elementWidth) >= Math.abs(nextHeight - drag.elementHeight)) {
+              nextHeight = widthDrivenHeight;
+            } else {
+              nextWidth = heightDrivenWidth;
+            }
+          }
+          if (previous.snapToGrid) {
+            nextWidth = snapBusinessCardNumber(nextWidth, previous.gridSize);
+            nextHeight = snapBusinessCardNumber(nextHeight, previous.gridSize);
+          }
+          nextWidth = clampBusinessCardNumber(nextWidth, 16, Math.max(16, pixelSize.width - element.x));
+          nextHeight = clampBusinessCardNumber(nextHeight, 16, Math.max(16, pixelSize.height - element.y));
+
+          if (Math.abs(nextWidth - element.width) < 0.5 && Math.abs(nextHeight - element.height) < 0.5) {
+            return previous;
+          }
+          nextElements[index] =
+            element.kind === "text"
+              ? {
+                  ...element,
+                  width: nextWidth,
+                  height: nextHeight,
+                  fontSize: clampBusinessCardNumber(
+                    element.fontSize *
+                      ((nextWidth / Math.max(1, element.width) + nextHeight / Math.max(1, element.height)) / 2),
+                    8,
+                    220,
+                  ),
+                }
+              : { ...element, width: nextWidth, height: nextHeight };
+        }
         return {
           ...previous,
           sides: {
@@ -40616,9 +40954,18 @@ function BusinessCardsDesignerTool() {
     };
 
     const handlePointerUp = () => {
-      if (!dragStateRef.current) return;
+      const drag = dragStateRef.current;
+      if (!drag) return;
       dragStateRef.current = null;
-      setStatus("Element position updated.");
+      if (drag.mode === "resize") {
+        setStatus("Element size updated.");
+        return;
+      }
+      setStatus(
+        drag.selectedElementIds.length > 1
+          ? `Updated positions for ${drag.selectedElementIds.length} elements.`
+          : "Element position updated.",
+      );
     };
 
     window.addEventListener("pointermove", handlePointerMove);
@@ -40633,65 +40980,166 @@ function BusinessCardsDesignerTool() {
     (event: React.PointerEvent<HTMLDivElement>, element: BusinessCardElement) => {
       event.preventDefault();
       event.stopPropagation();
-      setSelectedElementId(element.id);
+      setContextMenu(null);
+      const isToggleSelect = event.shiftKey || event.ctrlKey || event.metaKey;
+      const currentSelection = normalizeBusinessCardSelectionOrder(selectedElementIds, activeSideState.elements);
+      let activeSelection = currentSelection;
+      if (isToggleSelect) {
+        const exists = currentSelection.includes(element.id);
+        activeSelection = normalizeBusinessCardSelectionOrder(
+          exists ? currentSelection.filter((id) => id !== element.id) : [...currentSelection, element.id],
+          activeSideState.elements,
+        );
+        setSelectedElementIds(activeSelection);
+        setSelectedElementId(activeSelection[activeSelection.length - 1] ?? "");
+      } else if (!currentSelection.includes(element.id)) {
+        activeSelection = [element.id];
+        selectSingleElement(element.id);
+      }
+      if (!activeSelection.length) return;
       if (element.locked) return;
       const point = resolveStagePoint(event.clientX, event.clientY);
       if (!point) return;
+      const selectedElementsSnapshot = activeSideState.elements
+        .filter((entry) => activeSelection.includes(entry.id))
+        .map((entry) => ({
+          id: entry.id,
+          x: entry.x,
+          y: entry.y,
+          width: entry.width,
+          height: entry.height,
+        }));
+      pushUndoSnapshot();
       dragStateRef.current = {
         elementId: element.id,
         side: activeSide,
+        mode: "move",
+        selectedElementIds: activeSelection,
+        selectedElementsSnapshot,
         startX: point.x,
         startY: point.y,
         startElementX: element.x,
         startElementY: element.y,
         elementWidth: element.width,
         elementHeight: element.height,
+        startAspectRatio: element.width / Math.max(1, element.height),
+        keepAspectRatio: event.shiftKey || element.kind === "image",
       };
     },
-    [activeSide, resolveStagePoint],
+    [activeSide, activeSideState.elements, pushUndoSnapshot, resolveStagePoint, selectSingleElement, selectedElementIds],
+  );
+
+  const beginElementResize = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>, element: BusinessCardElement) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setContextMenu(null);
+      selectSingleElement(element.id);
+      if (element.locked) return;
+      const point = resolveStagePoint(event.clientX, event.clientY);
+      if (!point) return;
+      pushUndoSnapshot();
+      dragStateRef.current = {
+        elementId: element.id,
+        side: activeSide,
+        mode: "resize",
+        selectedElementIds: [element.id],
+        selectedElementsSnapshot: [
+          {
+            id: element.id,
+            x: element.x,
+            y: element.y,
+            width: element.width,
+            height: element.height,
+          },
+        ],
+        startX: point.x,
+        startY: point.y,
+        startElementX: element.x,
+        startElementY: element.y,
+        elementWidth: element.width,
+        elementHeight: element.height,
+        startAspectRatio: element.width / Math.max(1, element.height),
+        keepAspectRatio: event.shiftKey || element.kind === "image",
+      };
+    },
+    [activeSide, pushUndoSnapshot, resolveStagePoint, selectSingleElement],
   );
 
   const removeSelectedElement = useCallback(() => {
-    if (!selectedElementId) return;
+    if (!normalizedSelectedElementIds.length) return;
+    pushUndoSnapshot();
+    const removalLookup = new Set(normalizedSelectedElementIds);
     setDocumentState((previous) => ({
       ...previous,
       sides: {
         ...previous.sides,
         [previous.activeSide]: {
           ...previous.sides[previous.activeSide],
-          elements: previous.sides[previous.activeSide].elements.filter((element) => element.id !== selectedElementId),
+          elements: previous.sides[previous.activeSide].elements.filter((element) => !removalLookup.has(element.id)),
         },
       },
     }));
-    setSelectedElementId("");
-    setStatus("Deleted selected element.");
-  }, [selectedElementId]);
+    setInlineTextEditor((current) =>
+      current && removalLookup.has(current.elementId) && current.side === activeSide ? null : current,
+    );
+    resetSelection();
+    setStatus(
+      normalizedSelectedElementIds.length > 1
+        ? `Deleted ${normalizedSelectedElementIds.length} selected elements.`
+        : "Deleted selected element.",
+    );
+  }, [activeSide, normalizedSelectedElementIds, pushUndoSnapshot, resetSelection]);
 
   const duplicateSelectedElement = useCallback(() => {
-    if (!selectedElement) return;
-    const cloned = {
-      ...selectedElement,
+    if (!selectedElements.length) return;
+    pushUndoSnapshot();
+    const clones = selectedElements.map((element) => ({
+      ...element,
       id: createBusinessCardElementId(),
-      x: selectedElement.x + 12,
-      y: selectedElement.y + 12,
+      x: element.x + 12,
+      y: element.y + 12,
       locked: false,
       hidden: false,
-    } satisfies BusinessCardElement;
-    addElementToActiveSide(cloned);
-    setStatus("Duplicated selected element.");
-  }, [addElementToActiveSide, selectedElement]);
+    })) as BusinessCardElement[];
+    setDocumentState((previous) => ({
+      ...previous,
+      sides: {
+        ...previous.sides,
+        [previous.activeSide]: {
+          ...previous.sides[previous.activeSide],
+          elements: [...previous.sides[previous.activeSide].elements, ...clones],
+        },
+      },
+    }));
+    const nextSelection = clones.map((entry) => entry.id);
+    setSelectedElementIds(nextSelection);
+    setSelectedElementId(nextSelection[nextSelection.length - 1] ?? "");
+    setStatus(clones.length > 1 ? `Duplicated ${clones.length} selected elements.` : "Duplicated selected element.");
+  }, [pushUndoSnapshot, selectedElements]);
 
   const moveSelectedLayer = useCallback(
     (direction: "up" | "down") => {
-      if (!selectedElementId) return;
+      if (!normalizedSelectedElementIds.length) return;
+      pushUndoSnapshot();
       setDocumentState((previous) => {
         const side = previous.sides[previous.activeSide];
-        const index = side.elements.findIndex((element) => element.id === selectedElementId);
-        if (index < 0) return previous;
-        const swapIndex = direction === "up" ? index + 1 : index - 1;
-        if (swapIndex < 0 || swapIndex >= side.elements.length) return previous;
         const nextElements = [...side.elements];
-        [nextElements[index], nextElements[swapIndex]] = [nextElements[swapIndex], nextElements[index]];
+        const selectionLookup = new Set(normalizedSelectedElementIds);
+        const indexes =
+          direction === "up"
+            ? [...nextElements.keys()].reverse()
+            : [...nextElements.keys()];
+        let moved = false;
+        indexes.forEach((index) => {
+          if (!selectionLookup.has(nextElements[index].id)) return;
+          const swapIndex = direction === "up" ? index + 1 : index - 1;
+          if (swapIndex < 0 || swapIndex >= nextElements.length) return;
+          if (selectionLookup.has(nextElements[swapIndex].id)) return;
+          [nextElements[index], nextElements[swapIndex]] = [nextElements[swapIndex], nextElements[index]];
+          moved = true;
+        });
+        if (!moved) return previous;
         return {
           ...previous,
           sides: {
@@ -40700,43 +41148,365 @@ function BusinessCardsDesignerTool() {
           },
         };
       });
+      setStatus(
+        normalizedSelectedElementIds.length > 1
+          ? `Moved ${normalizedSelectedElementIds.length} layers ${direction === "up" ? "forward" : "backward"}.`
+          : `Moved layer ${direction === "up" ? "forward" : "backward"}.`,
+      );
     },
-    [selectedElementId],
+    [normalizedSelectedElementIds, pushUndoSnapshot],
   );
+
+  const alignSelectedElements = useCallback(
+    (mode: BusinessCardAlignMode) => {
+      if (selectedElements.length < 2) return;
+      const minX = Math.min(...selectedElements.map((element) => element.x));
+      const maxX = Math.max(...selectedElements.map((element) => element.x + element.width));
+      const minY = Math.min(...selectedElements.map((element) => element.y));
+      const maxY = Math.max(...selectedElements.map((element) => element.y + element.height));
+      const midX = (minX + maxX) / 2;
+      const midY = (minY + maxY) / 2;
+      const selectionLookup = new Set(selectedElements.map((element) => element.id));
+
+      pushUndoSnapshot();
+      setDocumentState((previous) => {
+        const side = previous.sides[activeSide];
+        const nextElements = side.elements.map((element) => {
+          if (!selectionLookup.has(element.id)) return element;
+          if (mode === "left") return { ...element, x: minX };
+          if (mode === "right") return { ...element, x: maxX - element.width };
+          if (mode === "center") return { ...element, x: midX - element.width / 2 };
+          if (mode === "top") return { ...element, y: minY };
+          if (mode === "bottom") return { ...element, y: maxY - element.height };
+          return { ...element, y: midY - element.height / 2 };
+        });
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [activeSide]: { ...side, elements: nextElements },
+          },
+        };
+      });
+      setStatus(`Aligned ${selectedElements.length} elements (${mode}).`);
+    },
+    [activeSide, pushUndoSnapshot, selectedElements],
+  );
+
+  const distributeSelectedElements = useCallback(
+    (mode: BusinessCardDistributeMode) => {
+      if (selectedElements.length < 3) return;
+      const sorted = [...selectedElements].sort((left, right) =>
+        mode === "horizontal" ? left.x - right.x : left.y - right.y,
+      );
+      const first = sorted[0];
+      const last = sorted[sorted.length - 1];
+      if (!first || !last) return;
+      const gaps = sorted.length - 1;
+      const totalSpan =
+        mode === "horizontal" ? last.x - first.x : last.y - first.y;
+      const step = totalSpan / Math.max(1, gaps);
+      const targetMap = new Map<string, number>();
+      sorted.forEach((element, index) => {
+        targetMap.set(element.id, (mode === "horizontal" ? first.x : first.y) + index * step);
+      });
+
+      pushUndoSnapshot();
+      setDocumentState((previous) => {
+        const side = previous.sides[activeSide];
+        const nextElements = side.elements.map((element) => {
+          const target = targetMap.get(element.id);
+          if (typeof target !== "number") return element;
+          return mode === "horizontal" ? { ...element, x: target } : { ...element, y: target };
+        });
+        return {
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [activeSide]: { ...side, elements: nextElements },
+          },
+        };
+      });
+      setStatus(`Distributed ${selectedElements.length} elements (${mode}).`);
+    },
+    [activeSide, pushUndoSnapshot, selectedElements],
+  );
+
+  const runContextMenuAction = useCallback(
+    (action: "edit-text" | "duplicate" | "forward" | "backward" | "toggle-lock" | "toggle-hidden" | "delete") => {
+      if (!contextMenu) return;
+      const target = documentState.sides[contextMenu.side].elements.find((element) => element.id === contextMenu.elementId);
+      if (!target) return;
+
+      selectSingleElement(target.id);
+      if (action === "edit-text") {
+        if (target.kind === "text") {
+          startInlineTextEditing(target.id);
+        }
+        setContextMenu(null);
+        return;
+      }
+      if (action === "duplicate") {
+        pushUndoSnapshot();
+        const cloned = {
+          ...target,
+          id: createBusinessCardElementId(),
+          x: target.x + 12,
+          y: target.y + 12,
+          locked: false,
+          hidden: false,
+        } satisfies BusinessCardElement;
+        setDocumentState((previous) => ({
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [contextMenu.side]: {
+              ...previous.sides[contextMenu.side],
+              elements: [...previous.sides[contextMenu.side].elements, cloned],
+            },
+          },
+        }));
+        setSelectedElementIds([cloned.id]);
+        setSelectedElementId(cloned.id);
+        setStatus("Duplicated selected element.");
+      }
+      if (action === "forward" || action === "backward") {
+        pushUndoSnapshot();
+        setDocumentState((previous) => {
+          const side = previous.sides[contextMenu.side];
+          const index = side.elements.findIndex((element) => element.id === target.id);
+          if (index < 0) return previous;
+          const swapIndex = action === "forward" ? index + 1 : index - 1;
+          if (swapIndex < 0 || swapIndex >= side.elements.length) return previous;
+          const nextElements = [...side.elements];
+          [nextElements[index], nextElements[swapIndex]] = [nextElements[swapIndex], nextElements[index]];
+          return {
+            ...previous,
+            sides: {
+              ...previous.sides,
+              [contextMenu.side]: { ...side, elements: nextElements },
+            },
+          };
+        });
+      }
+      if (action === "toggle-lock") {
+        pushUndoSnapshot();
+        updateElementById(contextMenu.side, target.id, (element) => ({ ...element, locked: !element.locked }));
+      }
+      if (action === "toggle-hidden") {
+        pushUndoSnapshot();
+        updateElementById(contextMenu.side, target.id, (element) => ({ ...element, hidden: !element.hidden }));
+      }
+      if (action === "delete") {
+        pushUndoSnapshot();
+        setDocumentState((previous) => ({
+          ...previous,
+          sides: {
+            ...previous.sides,
+            [contextMenu.side]: {
+              ...previous.sides[contextMenu.side],
+              elements: previous.sides[contextMenu.side].elements.filter((element) => element.id !== target.id),
+            },
+          },
+        }));
+        resetSelection();
+        setInlineTextEditor((current) =>
+          current && current.elementId === target.id && current.side === contextMenu.side ? null : current,
+        );
+        setStatus("Deleted selected element.");
+      }
+      setContextMenu(null);
+    },
+    [contextMenu, documentState.sides, pushUndoSnapshot, resetSelection, selectSingleElement, startInlineTextEditing, updateElementById],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTextInputLikeTarget(event.target)) return;
+
+      if (event.key === "Escape") {
+        if (inlineTextEditor) {
+          event.preventDefault();
+          cancelInlineTextEditing();
+          return;
+        }
+        if (contextMenu) {
+          event.preventDefault();
+          setContextMenu(null);
+          return;
+        }
+      }
+
+      const modifier = event.ctrlKey || event.metaKey;
+      if (modifier && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redoDocumentChange();
+          return;
+        }
+        undoDocumentChange();
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redoDocumentChange();
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        const allIds = activeSideState.elements.filter((element) => !element.hidden).map((element) => element.id);
+        setSelectedElementIds(allIds);
+        setSelectedElementId(allIds[allIds.length - 1] ?? "");
+        setStatus(allIds.length ? `Selected ${allIds.length} elements.` : "No visible elements to select.");
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "d" && selectedCount) {
+        event.preventDefault();
+        duplicateSelectedElement();
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedCount) {
+        event.preventDefault();
+        removeSelectedElement();
+        return;
+      }
+      if (event.key === "Enter" && selectedElement?.kind === "text") {
+        event.preventDefault();
+        startInlineTextEditing(selectedElement.id);
+        return;
+      }
+      if (event.key.toLowerCase() === "t" && !modifier) {
+        event.preventDefault();
+        addTextElement();
+        return;
+      }
+      if (event.key.toLowerCase() === "r" && !modifier) {
+        event.preventDefault();
+        addShapeElement("rect");
+        return;
+      }
+      if (event.key.toLowerCase() === "o" && !modifier) {
+        event.preventDefault();
+        addShapeElement("circle");
+        return;
+      }
+      if ((event.key === "]" || event.key === "[") && selectedCount) {
+        event.preventDefault();
+        moveSelectedLayer(event.key === "]" ? "up" : "down");
+        return;
+      }
+      if (modifier && event.shiftKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        alignSelectedElements("left");
+        return;
+      }
+      if (modifier && event.shiftKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        alignSelectedElements("right");
+        return;
+      }
+      if (modifier && event.shiftKey && event.key === "ArrowUp") {
+        event.preventDefault();
+        alignSelectedElements("top");
+        return;
+      }
+      if (modifier && event.shiftKey && event.key === "ArrowDown") {
+        event.preventDefault();
+        alignSelectedElements("bottom");
+        return;
+      }
+      if (event.key.startsWith("Arrow") && selectedCount) {
+        event.preventDefault();
+        const step = event.shiftKey ? 10 : 1;
+        const directionMap: Record<string, [number, number]> = {
+          ArrowUp: [0, -step],
+          ArrowDown: [0, step],
+          ArrowLeft: [-step, 0],
+          ArrowRight: [step, 0],
+        };
+        const direction = directionMap[event.key];
+        if (!direction) return;
+        pushUndoSnapshot();
+        if (event.altKey) {
+          resizeSelectedElement(direction[0], direction[1]);
+          return;
+        }
+        nudgeSelectedElement(direction[0], direction[1]);
+      }
+      if (modifier && event.shiftKey && event.key.toLowerCase() === "h") {
+        event.preventDefault();
+        distributeSelectedElements("horizontal");
+        return;
+      }
+      if (modifier && event.shiftKey && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        distributeSelectedElements("vertical");
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    addShapeElement,
+    addTextElement,
+    activeSideState.elements,
+    alignSelectedElements,
+    cancelInlineTextEditing,
+    contextMenu,
+    duplicateSelectedElement,
+    distributeSelectedElements,
+    inlineTextEditor,
+    moveSelectedLayer,
+    nudgeSelectedElement,
+    pushUndoSnapshot,
+    redoDocumentChange,
+    removeSelectedElement,
+    resizeSelectedElement,
+    selectedCount,
+    selectedElement,
+    startInlineTextEditing,
+    undoDocumentChange,
+  ]);
 
   const applyTemplate = useCallback(
     (templateId: BusinessCardTemplateId) => {
+      pushUndoSnapshot();
       setDocumentState((previous) => ({
         ...previous,
         templateId,
         activeSide: "front",
         sides: createBusinessCardTemplateSides(templateId, pixelSize.width, pixelSize.height),
       }));
-      setSelectedElementId("");
+      resetSelection();
+      setInlineTextEditor(null);
+      setContextMenu(null);
       setStatus(`Applied ${BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === templateId)?.label ?? "template"}.`);
       trackEvent("tool_business_card_template_apply", { template: templateId });
     },
-    [pixelSize.height, pixelSize.width],
+    [pixelSize.height, pixelSize.width, pushUndoSnapshot, resetSelection],
   );
 
   const applyMarketplaceTemplate = useCallback(
     (templateId: BusinessCardMarketplaceTemplateId) => {
       const selectedTemplate = BUSINESS_CARD_MARKETPLACE_TEMPLATES.find((entry) => entry.id === templateId);
       if (!selectedTemplate) return;
+      pushUndoSnapshot();
       setDocumentState((previous) => ({
         ...previous,
         templateId: selectedTemplate.baseTemplateId,
         activeSide: "front",
         sides: createBusinessCardMarketplaceSides(selectedTemplate, pixelSize.width, pixelSize.height),
       }));
-      setSelectedElementId("");
+      resetSelection();
+      setInlineTextEditor(null);
+      setContextMenu(null);
       setStatus(`Applied marketplace template: ${selectedTemplate.label}.`);
       trackEvent("tool_business_card_marketplace_apply", {
         template: templateId,
         pack: selectedTemplate.packId,
       });
     },
-    [pixelSize.height, pixelSize.width],
+    [pixelSize.height, pixelSize.width, pushUndoSnapshot, resetSelection],
   );
 
   const saveCurrentAsCustomTemplate = useCallback(() => {
@@ -40761,12 +41531,15 @@ function BusinessCardsDesignerTool() {
   const applySavedTemplate = useCallback((templateId: string) => {
     const saved = savedTemplates.find((entry) => entry.id === templateId);
     if (!saved) return;
+    pushUndoSnapshot();
     const snapshot = JSON.parse(JSON.stringify(saved.document)) as BusinessCardDocumentState;
     setDocumentState(snapshot);
-    setSelectedElementId("");
+    resetSelection();
+    setInlineTextEditor(null);
+    setContextMenu(null);
     setStatus(`Loaded custom template "${saved.name}".`);
     trackEvent("tool_business_card_template_apply", { template: "custom-template" });
-  }, [savedTemplates]);
+  }, [pushUndoSnapshot, resetSelection, savedTemplates]);
 
   const deleteSavedTemplate = useCallback((templateId: string) => {
     setSavedTemplates((current) => current.filter((entry) => entry.id !== templateId));
@@ -40801,11 +41574,12 @@ function BusinessCardsDesignerTool() {
   const applySizePreset = useCallback((presetId: string) => {
     const preset = BUSINESS_CARD_SIZE_PRESETS.find((entry) => entry.id === presetId);
     if (!preset) return;
+    pushUndoSnapshot();
     setDocumentState((previous) =>
       resizeBusinessCardDocument(previous, preset.width, preset.height, preset.unit, preset.id),
     );
     setStatus(`Applied ${preset.label}.`);
-  }, []);
+  }, [pushUndoSnapshot]);
 
   const exportActivePng = useCallback(async () => {
     setIsExporting(true);
@@ -41107,17 +41881,21 @@ function BusinessCardsDesignerTool() {
   ]);
 
   const resetDocument = useCallback(() => {
+    pushUndoSnapshot();
     setDocumentState(createDefaultBusinessCardDocument());
-    setSelectedElementId("");
+    resetSelection();
+    setInlineTextEditor(null);
+    setContextMenu(null);
+    setPreviewRowId("none");
     setStatus("Reset workspace to default business card template.");
-  }, []);
+  }, [pushUndoSnapshot, resetSelection]);
 
   return (
-    <section className="tool-surface">
+    <section className="tool-surface business-card-studio-surface">
       <ToolHeading
         icon={CreditCard}
         title="Business cards designer"
-        subtitle="Advanced drag-and-drop editor with templates, custom card sizing, front/back design, and local workspace sessions."
+        subtitle="Studio workspace with drag-resize layers, inline text editing, keyboard shortcuts, context actions, and merge previews."
       />
 
       {toolSession.isReady ? (
@@ -41132,6 +41910,34 @@ function BusinessCardsDesignerTool() {
         />
       ) : null}
 
+      <div className="mini-panel business-card-shortcuts-panel">
+        <div className="panel-head">
+          <h3>Studio controls</h3>
+          <span className="supporting-text">
+            Shortcuts: `T` text, `R` rectangle, `O` circle, `Cmd/Ctrl+Z/Y` undo/redo, `Cmd/Ctrl+Shift+arrows` align, `Cmd/Ctrl+Shift+H/V` distribute.
+          </span>
+        </div>
+        <div className="button-row">
+          <button className="chip-button" type="button" aria-pressed={activeStudioPane === "design"} onClick={() => setActiveStudioPane("design")}>
+            Design studio
+          </button>
+          <button className="chip-button" type="button" aria-pressed={activeStudioPane === "templates"} onClick={() => setActiveStudioPane("templates")}>
+            Templates
+          </button>
+          <button className="chip-button" type="button" aria-pressed={activeStudioPane === "bulk"} onClick={() => setActiveStudioPane("bulk")}>
+            Bulk and print
+          </button>
+        </div>
+        <p className="supporting-text">
+          Right-click any layer for quick actions. Double-click or double-tap text layers to edit inline. Hold Shift/Ctrl/Cmd to multi-select.
+        </p>
+      </div>
+
+      <div className="business-card-studio-layout">
+        <div className="business-card-studio-controls">
+
+      {activeStudioPane === "design" ? (
+      <>
       <div className="field-grid">
         <label className="field">
           <span>Size preset</span>
@@ -41210,7 +42016,11 @@ function BusinessCardsDesignerTool() {
           />
         </label>
       </div>
+      </>
+      ) : null}
 
+      {activeStudioPane === "templates" ? (
+      <>
       <div className="mini-panel">
         <div className="panel-head">
           <h3>Template starters</h3>
@@ -41321,7 +42131,11 @@ function BusinessCardsDesignerTool() {
           <p className="supporting-text">No saved custom templates yet.</p>
         )}
       </div>
+      </>
+      ) : null}
 
+      {activeStudioPane === "design" ? (
+      <>
       <div className="field-grid">
         <label className="field">
           <span>Active side</span>
@@ -41438,20 +42252,102 @@ function BusinessCardsDesignerTool() {
           <Plus size={15} />
           Add image/logo
         </button>
-        <button className="action-button secondary" type="button" onClick={duplicateSelectedElement} disabled={!selectedElement}>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={duplicateSelectedElement}
+          disabled={!normalizedSelectedElementIds.length}
+        >
           <Copy size={15} />
           Duplicate
         </button>
-        <button className="action-button secondary" type="button" onClick={removeSelectedElement} disabled={!selectedElement}>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={removeSelectedElement}
+          disabled={!normalizedSelectedElementIds.length}
+        >
           <Trash2 size={15} />
           Delete
         </button>
-        <button className="action-button secondary" type="button" onClick={() => moveSelectedLayer("up")} disabled={!selectedElement}>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => moveSelectedLayer("up")}
+          disabled={!normalizedSelectedElementIds.length}
+        >
           Move forward
         </button>
-        <button className="action-button secondary" type="button" onClick={() => moveSelectedLayer("down")} disabled={!selectedElement}>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => moveSelectedLayer("down")}
+          disabled={!normalizedSelectedElementIds.length}
+        >
           Move backward
         </button>
+      </div>
+
+      <div className="mini-panel business-card-command-panel">
+        <div className="panel-head">
+          <h3>Selection tools</h3>
+          <span className="supporting-text">
+            {normalizedSelectedElementIds.length
+              ? `${normalizedSelectedElementIds.length} selected on ${activeSide}.`
+              : "Select one or more elements to align, distribute, and edit as a group."}
+          </span>
+        </div>
+        <div className="button-row business-card-command-row">
+          <button className="action-button secondary" type="button" onClick={undoDocumentChange} disabled={!canUndo}>
+            Undo
+          </button>
+          <button className="action-button secondary" type="button" onClick={redoDocumentChange} disabled={!canRedo}>
+            Redo
+          </button>
+          <button className="action-button secondary" type="button" onClick={resetSelection} disabled={!normalizedSelectedElementIds.length}>
+            Clear selection
+          </button>
+        </div>
+        <div className="button-row business-card-command-row">
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("left")} disabled={!hasMultiSelection}>
+            Align left
+          </button>
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("center")} disabled={!hasMultiSelection}>
+            Align center
+          </button>
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("right")} disabled={!hasMultiSelection}>
+            Align right
+          </button>
+        </div>
+        <div className="button-row business-card-command-row">
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("top")} disabled={!hasMultiSelection}>
+            Align top
+          </button>
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("middle")} disabled={!hasMultiSelection}>
+            Align middle
+          </button>
+          <button className="chip-button" type="button" onClick={() => alignSelectedElements("bottom")} disabled={!hasMultiSelection}>
+            Align bottom
+          </button>
+        </div>
+        <div className="button-row business-card-command-row">
+          <button
+            className="chip-button"
+            type="button"
+            onClick={() => distributeSelectedElements("horizontal")}
+            disabled={normalizedSelectedElementIds.length < 3}
+          >
+            Distribute H
+          </button>
+          <button
+            className="chip-button"
+            type="button"
+            onClick={() => distributeSelectedElements("vertical")}
+            disabled={normalizedSelectedElementIds.length < 3}
+          >
+            Distribute V
+          </button>
+        </div>
       </div>
 
       <input
@@ -41464,7 +42360,11 @@ function BusinessCardsDesignerTool() {
           event.target.value = "";
         }}
       />
+      </>
+      ) : null}
 
+      {activeStudioPane === "bulk" ? (
+      <>
       <div className="mini-panel">
         <div className="panel-head">
           <h3>Bulk generation</h3>
@@ -41491,6 +42391,20 @@ function BusinessCardsDesignerTool() {
               <option value="replace">Replace current rows</option>
               <option value="append">Append imported rows</option>
             </select>
+          </label>
+          <label className="field">
+            <span>Canvas merge preview</span>
+            <select value={previewRowId} onChange={(event) => setPreviewRowId(event.target.value)}>
+              <option value="none">Show raw template tokens</option>
+              {bulkParseResult.rows.slice(0, 120).map((row) => (
+                <option key={`preview-row-${row.id}`} value={row.id}>
+                  Row {row.rowIndex}: {row.displayLabel}
+                </option>
+              ))}
+            </select>
+            <small className="supporting-text">
+              {previewRow ? `Previewing row ${previewRow.rowIndex}: ${previewRow.displayLabel}` : "Select a row to preview merged text directly on canvas."}
+            </small>
           </label>
         </div>
         <label className="field">
@@ -41567,7 +42481,13 @@ function BusinessCardsDesignerTool() {
         ) : null}
       </div>
 
-      <div className="mini-panel">
+      </>
+      ) : null}
+
+      </div>
+      <div className="business-card-studio-workspace">
+
+      <div className="mini-panel business-card-canvas-panel">
         <div className="panel-head">
           <h3>Canvas</h3>
           <span className="supporting-text">
@@ -41576,8 +42496,16 @@ function BusinessCardsDesignerTool() {
         </div>
         <div
           ref={stageRef}
+          className={`business-card-stage ${isFileHovering ? "is-hovering-file" : ""}`}
           role="presentation"
-          onPointerDown={() => setSelectedElementId("")}
+          onPointerDown={() => {
+            resetSelection();
+            setContextMenu(null);
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setContextMenu(null);
+          }}
           onDragOver={(event) => {
             event.preventDefault();
             if (!isFileHovering) setIsFileHovering(true);
@@ -41593,15 +42521,9 @@ function BusinessCardsDesignerTool() {
             width: `${stageWidth}px`,
             maxWidth: "100%",
             height: `${stageHeight}px`,
-            margin: "0 auto",
-            position: "relative",
-            overflow: "hidden",
-            borderRadius: 14,
-            border: isFileHovering ? "2px dashed #0ea5e9" : "1px solid #d3dbe5",
             backgroundColor: activeSideState.background,
-            boxShadow: "0 14px 40px rgba(15, 23, 42, 0.08)",
             backgroundImage: documentState.showGrid
-              ? `linear-gradient(to right, rgba(15, 23, 42, 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(15, 23, 42, 0.06) 1px, transparent 1px)`
+              ? "linear-gradient(to right, rgba(15, 23, 42, 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(15, 23, 42, 0.06) 1px, transparent 1px)"
               : "none",
             backgroundSize: `${Math.max(6, documentState.gridSize * stageScale)}px ${Math.max(6, documentState.gridSize * stageScale)}px`,
           }}
@@ -41627,7 +42549,10 @@ function BusinessCardsDesignerTool() {
             />
           ) : null}
           {activeSideState.elements.map((element) => {
-            const isSelected = element.id === selectedElementId;
+            const isSelected = normalizedSelectedElementIds.includes(element.id);
+            const isEditingInlineText =
+              inlineTextEditor?.elementId === element.id && inlineTextEditor.side === activeSide && element.kind === "text";
+            const renderedText = previewTextByElementId.get(element.id) ?? (element.kind === "text" ? element.text : "");
             const elementStyle: CSSProperties = {
               position: "absolute",
               left: `${Math.round(element.x * stageScale)}px`,
@@ -41637,32 +42562,93 @@ function BusinessCardsDesignerTool() {
               transform: `rotate(${element.rotation}deg)`,
               transformOrigin: "center",
               opacity: clampBusinessCardNumber(element.opacity, 0, 1),
-              outline: isSelected ? "2px solid rgba(14, 165, 233, 0.95)" : "none",
               cursor: element.locked ? "not-allowed" : "grab",
               display: element.hidden ? "none" : "block",
               overflow: "hidden",
             };
 
             return (
-              <div key={element.id} style={elementStyle} onPointerDown={(event) => beginElementDrag(event, element)}>
+              <div
+                key={element.id}
+                className={`business-card-stage-element ${isSelected ? "is-selected" : ""} ${element.locked ? "is-locked" : ""}`}
+                style={elementStyle}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (!normalizedSelectedElementIds.includes(element.id)) {
+                    selectSingleElement(element.id);
+                  }
+                  setContextMenu({ side: activeSide, elementId: element.id, x: event.clientX, y: event.clientY });
+                }}
+                onPointerDown={(event) => {
+                  if (isEditingInlineText) return;
+                  beginElementDrag(event, element);
+                }}
+              >
                 {element.kind === "text" ? (
-                  <div
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      color: element.color,
-                      fontSize: `${Math.max(8, Math.round(element.fontSize * stageScale))}px`,
-                      fontFamily: element.fontFamily,
-                      fontWeight: element.fontWeight,
-                      textAlign: element.align,
-                      lineHeight: element.lineHeight,
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      userSelect: "none",
-                    }}
-                  >
-                    {element.text}
-                  </div>
+                  isEditingInlineText ? (
+                    <textarea
+                      className="business-card-inline-text-editor"
+                      value={inlineTextEditor.value}
+                      autoFocus
+                      rows={3}
+                      onChange={(event) =>
+                        setInlineTextEditor((current) =>
+                          current ? { ...current, value: event.target.value.slice(0, 1200) } : current,
+                        )
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      onBlur={commitInlineTextEditing}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelInlineTextEditing();
+                          return;
+                        }
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          commitInlineTextEditing();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div
+                      className="business-card-text-node"
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        startInlineTextEditing(element.id);
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.pointerType !== "touch") return;
+                        const now = Date.now();
+                        const previousTap = lastTouchTapRef.current;
+                        if (previousTap && previousTap.elementId === element.id && now - previousTap.timestamp <= 320) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          startInlineTextEditing(element.id);
+                          lastTouchTapRef.current = null;
+                          return;
+                        }
+                        lastTouchTapRef.current = { elementId: element.id, timestamp: now };
+                      }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        color: element.color,
+                        fontSize: `${Math.max(8, Math.round(element.fontSize * stageScale))}px`,
+                        fontFamily: element.fontFamily,
+                        fontWeight: element.fontWeight,
+                        textAlign: element.align,
+                        lineHeight: element.lineHeight,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                        userSelect: "none",
+                      }}
+                    >
+                      {renderedText}
+                    </div>
+                  )
                 ) : null}
                 {element.kind === "shape" ? (
                   <div
@@ -41697,10 +42683,49 @@ function BusinessCardsDesignerTool() {
                     }}
                   />
                 ) : null}
+                {isSelected && !element.locked ? (
+                  <button
+                    className="business-card-resize-handle"
+                    type="button"
+                    aria-label="Resize element"
+                    onPointerDown={(event) => beginElementResize(event, element)}
+                  />
+                ) : null}
               </div>
             );
           })}
         </div>
+        {contextMenu && contextMenuElement ? (
+          <div
+            className="business-card-context-menu"
+            style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {contextMenuElement.kind === "text" ? (
+              <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("edit-text")}>
+                Edit text
+              </button>
+            ) : null}
+            <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("duplicate")}>
+              Duplicate
+            </button>
+            <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("forward")}>
+              Bring forward
+            </button>
+            <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("backward")}>
+              Send backward
+            </button>
+            <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("toggle-lock")}>
+              {contextMenuElement.locked ? "Unlock" : "Lock"}
+            </button>
+            <button className="business-card-context-menu-item" type="button" onClick={() => runContextMenuAction("toggle-hidden")}>
+              {contextMenuElement.hidden ? "Show" : "Hide"}
+            </button>
+            <button className="business-card-context-menu-item danger" type="button" onClick={() => runContextMenuAction("delete")}>
+              Delete
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="mini-panel">
@@ -41709,16 +42734,22 @@ function BusinessCardsDesignerTool() {
           <span className="supporting-text">Topmost layer appears first in this list.</span>
         </div>
         {activeSideState.elements.length ? (
-          <ul className="plain-list">
+          <ul className="plain-list business-card-layer-list">
             {[...activeSideState.elements]
               .reverse()
               .map((element) => (
                 <li key={`layer-${element.id}`}>
                   <button
-                    className="chip-button"
+                    className={`chip-button business-card-layer-chip ${normalizedSelectedElementIds.includes(element.id) ? "is-active" : ""}`}
                     type="button"
-                    onClick={() => setSelectedElementId(element.id)}
-                    aria-pressed={element.id === selectedElementId}
+                    onClick={(event) => {
+                      if (event.shiftKey || event.ctrlKey || event.metaKey) {
+                        toggleElementSelection(element.id);
+                        return;
+                      }
+                      selectSingleElement(element.id);
+                    }}
+                    aria-pressed={normalizedSelectedElementIds.includes(element.id)}
                   >
                     {element.kind.toUpperCase()} {element.locked ? "(Locked)" : ""} {element.hidden ? "(Hidden)" : ""}
                   </button>
@@ -41871,6 +42902,29 @@ function BusinessCardsDesignerTool() {
                     )
                   }
                 />
+                {bulkParseResult.headers.length ? (
+                  <div className="chip-list">
+                    {bulkParseResult.headers.slice(0, 10).map((header) => (
+                      <button
+                        key={`insert-token-${header}`}
+                        className="chip-button"
+                        type="button"
+                        onClick={() =>
+                          updateElementById(activeSide, selectedElement.id, (element) =>
+                            element.kind === "text"
+                              ? {
+                                  ...element,
+                                  text: `${element.text}${element.text.trim().length ? " " : ""}{{${header}}}`,
+                                }
+                              : element,
+                          )
+                        }
+                      >
+                        {`+ {{${header}}}`}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </label>
               <label className="field">
                 <span>Text color</span>
@@ -42140,6 +43194,7 @@ function BusinessCardsDesignerTool() {
           { label: "Marketplace pack", value: BUSINESS_CARD_INDUSTRY_PACKS.find((entry) => entry.id === activePackId)?.label ?? activePackId },
           { label: "Saved templates", value: formatNumericValue(savedTemplates.length) },
           { label: "Bulk rows", value: formatNumericValue(bulkParseResult.rows.length) },
+          { label: "Merge preview", value: previewRow ? `Row ${previewRow.rowIndex} (${previewRow.displayLabel})` : "Raw template tokens" },
           { label: "CSV headers", value: bulkParseResult.headers.length ? bulkParseResult.headers.join(", ") : "-" },
           { label: "Missing merge fields", value: missingMergeHeaders.length ? missingMergeHeaders.join(", ") : "None" },
           {
@@ -42148,6 +43203,8 @@ function BusinessCardsDesignerTool() {
           },
         ]}
       />
+      </div>
+      </div>
     </section>
   );
 }

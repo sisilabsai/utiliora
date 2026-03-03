@@ -1458,6 +1458,165 @@ textarea {
   margin-top: 0.8rem;
 }
 
+.business-card-studio-surface {
+  background:
+    radial-gradient(1000px 420px at 10% -20%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 58%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, #f4f7fb 8%), var(--surface));
+}
+
+.business-card-shortcuts-panel {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border) 65%);
+}
+
+.business-card-command-panel {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border) 72%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #ffffff 4%), var(--surface));
+}
+
+.business-card-command-row .chip-button,
+.business-card-command-row .action-button {
+  min-width: 0;
+}
+
+.business-card-studio-layout {
+  margin-top: 0.85rem;
+  display: grid;
+  grid-template-columns: minmax(290px, 0.95fr) minmax(0, 1.35fr);
+  gap: 0.95rem;
+  align-items: start;
+}
+
+.business-card-studio-controls,
+.business-card-studio-workspace {
+  display: grid;
+  gap: 0.72rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.business-card-canvas-panel {
+  position: relative;
+  isolation: isolate;
+}
+
+.business-card-stage {
+  margin: 0 auto;
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, #8ca0b5 18%);
+  box-shadow:
+    0 16px 42px rgba(15, 23, 42, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  transition: border-color 130ms ease, box-shadow 130ms ease;
+  touch-action: none;
+}
+
+.business-card-stage.is-hovering-file {
+  border: 2px dashed color-mix(in srgb, var(--accent) 72%, #0b67a8 28%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.business-card-stage-element {
+  border-radius: 2px;
+}
+
+.business-card-stage-element.is-selected {
+  outline: 2px solid color-mix(in srgb, var(--accent) 90%, #0b67a8 10%);
+  outline-offset: 0;
+  z-index: 4;
+}
+
+.business-card-stage-element.is-locked {
+  cursor: not-allowed;
+}
+
+.business-card-text-node {
+  width: 100%;
+  height: 100%;
+}
+
+.business-card-inline-text-editor {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border) 45%);
+  border-radius: 6px;
+  background: color-mix(in srgb, #ffffff 90%, var(--surface-soft) 10%);
+  padding: 0.22rem 0.28rem;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.business-card-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  inline-size: 14px;
+  block-size: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px 0 0 0;
+  background:
+    linear-gradient(135deg, transparent 42%, color-mix(in srgb, var(--accent) 88%, #0b67a8 12%) 42% 58%, transparent 58%),
+    color-mix(in srgb, #ffffff 68%, var(--accent) 32%);
+  cursor: nwse-resize;
+}
+
+.business-card-resize-handle:hover {
+  filter: brightness(0.97);
+}
+
+.business-card-context-menu {
+  position: fixed;
+  z-index: 55;
+  width: min(240px, 86vw);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.35rem;
+  background: color-mix(in srgb, var(--surface) 96%, #eef2f7 4%);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+  display: grid;
+  gap: 0.22rem;
+}
+
+.business-card-context-menu-item {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.86rem;
+}
+
+.business-card-context-menu-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border) 66%);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+
+.business-card-context-menu-item.danger {
+  color: #a02a2a;
+}
+
+.business-card-layer-list {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.business-card-layer-chip {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.business-card-layer-chip.is-active {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border) 44%);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface) 86%);
+}
+
 .notes-list-panel {
   max-height: 620px;
   overflow-y: auto;
@@ -2238,6 +2397,19 @@ textarea {
   .invoice-identity-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.7rem;
+  }
+
+  .business-card-studio-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.72rem;
+  }
+
+  .business-card-context-menu {
+    width: min(88vw, 220px);
+  }
+
+  .business-card-layer-list {
+    max-height: 240px;
   }
 
   .field span {
