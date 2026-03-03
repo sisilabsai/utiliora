@@ -23151,6 +23151,9 @@ type BarcodeWorkflowPresetId = "scan-code-show-code" | "scan-code-show-label" | 
 type BarcodeLabelSheetTemplateId = "free-grid" | "avery-5160" | "avery-5163" | "avery-5167" | "a4-24";
 
 const BARCODE_MAX_ROWS = 40;
+const BARCODE_WORKSPACE_VERSION = 1;
+const BARCODE_WORKSPACE_STORAGE_BASE = "utiliora-barcode-workspace-v1";
+const BARCODE_DEFAULT_RAW_VALUES = "123456789012|SKU-BLUE-TEE-M\n123456789019|SKU-BLACK-TEE-L";
 
 const BARCODE_FORMAT_OPTIONS: Array<{ value: BarcodeFormat; label: string; hint: string }> = [
   { value: "CODE128", label: "CODE128", hint: "General-purpose alphanumeric labels" },
@@ -23313,6 +23316,137 @@ interface BarcodeCsvRow {
 interface BarcodeCsvImportResult {
   rows: BarcodeCsvRow[];
   usedHeaderMapping: boolean;
+}
+
+interface BarcodeWorkspaceState {
+  rawValues: string;
+  inputMode: BarcodeInputMode;
+  importMode: TextUploadMergeMode;
+  format: BarcodeFormat;
+  encodeSource: BarcodeEncodeSource;
+  textSource: BarcodeTextSource;
+  workflowPreset: BarcodeWorkflowPresetId;
+  labelSheetTemplate: BarcodeLabelSheetTemplateId;
+  barWidth: number;
+  barHeight: number;
+  margin: number;
+  lineColor: string;
+  background: string;
+  fontSize: number;
+  textMargin: number;
+  stylePreset: BarcodeStylePresetId;
+  autoPreview: boolean;
+}
+
+interface BarcodeWorkspacePayload extends BarcodeWorkspaceState {
+  version: number;
+  updatedAt: number;
+}
+
+const BARCODE_DEFAULT_WORKSPACE_STATE: BarcodeWorkspaceState = {
+  rawValues: BARCODE_DEFAULT_RAW_VALUES,
+  inputMode: "mapped",
+  importMode: "append",
+  format: "CODE128",
+  encodeSource: "barcode",
+  textSource: "barcode",
+  workflowPreset: "scan-code-show-code",
+  labelSheetTemplate: "free-grid",
+  barWidth: 2,
+  barHeight: 110,
+  margin: 10,
+  lineColor: "#111111",
+  background: "#ffffff",
+  fontSize: 20,
+  textMargin: 6,
+  stylePreset: "retail",
+  autoPreview: true,
+};
+
+function createDefaultBarcodeWorkspaceState(): BarcodeWorkspaceState {
+  return { ...BARCODE_DEFAULT_WORKSPACE_STATE };
+}
+
+function sanitizeBarcodeWorkspaceState(candidate: unknown): BarcodeWorkspaceState | null {
+  if (!candidate || typeof candidate !== "object") return null;
+  const payload = candidate as Partial<BarcodeWorkspacePayload>;
+  if (payload.version !== BARCODE_WORKSPACE_VERSION) return null;
+
+  const defaults = BARCODE_DEFAULT_WORKSPACE_STATE;
+  const safeRawValues =
+    typeof payload.rawValues === "string"
+      ? payload.rawValues.replace(/\u0000/g, "").slice(0, 12000)
+      : defaults.rawValues;
+  const safeInputMode: BarcodeInputMode = payload.inputMode === "single" ? "single" : "mapped";
+  const safeImportMode: TextUploadMergeMode = payload.importMode === "replace" ? "replace" : "append";
+  const safeFormat: BarcodeFormat = BARCODE_FORMAT_OPTIONS.some((option) => option.value === payload.format)
+    ? (payload.format as BarcodeFormat)
+    : defaults.format;
+  const safeEncodeSource: BarcodeEncodeSource = payload.encodeSource === "label" ? "label" : "barcode";
+  const safeTextSource: BarcodeTextSource =
+    payload.textSource === "none" ||
+    payload.textSource === "barcode" ||
+    payload.textSource === "label" ||
+    payload.textSource === "encoded"
+      ? payload.textSource
+      : defaults.textSource;
+  const safeWorkflowPreset: BarcodeWorkflowPresetId =
+    payload.workflowPreset === "scan-code-show-code" ||
+    payload.workflowPreset === "scan-code-show-label" ||
+    payload.workflowPreset === "scan-label-show-code" ||
+    payload.workflowPreset === "custom"
+      ? payload.workflowPreset
+      : defaults.workflowPreset;
+  const safeLabelSheetTemplate: BarcodeLabelSheetTemplateId =
+    payload.labelSheetTemplate === "free-grid" ||
+    BARCODE_LABEL_SHEET_TEMPLATES.some((template) => template.id === payload.labelSheetTemplate)
+      ? (payload.labelSheetTemplate as BarcodeLabelSheetTemplateId)
+      : defaults.labelSheetTemplate;
+  const safeStylePreset: BarcodeStylePresetId =
+    payload.stylePreset === "compact" ||
+    payload.stylePreset === "retail" ||
+    payload.stylePreset === "shipping" ||
+    payload.stylePreset === "custom"
+      ? payload.stylePreset
+      : defaults.stylePreset;
+
+  return {
+    rawValues: safeRawValues,
+    inputMode: safeInputMode,
+    importMode: safeImportMode,
+    format: safeFormat,
+    encodeSource: safeEncodeSource,
+    textSource: safeTextSource,
+    workflowPreset: safeWorkflowPreset,
+    labelSheetTemplate: safeLabelSheetTemplate,
+    barWidth:
+      typeof payload.barWidth === "number"
+        ? clampInteger(payload.barWidth, 1, 6)
+        : defaults.barWidth,
+    barHeight:
+      typeof payload.barHeight === "number"
+        ? clampInteger(payload.barHeight, 40, 260)
+        : defaults.barHeight,
+    margin: typeof payload.margin === "number" ? clampInteger(payload.margin, 0, 40) : defaults.margin,
+    lineColor:
+      typeof payload.lineColor === "string"
+        ? normalizeHexColor(payload.lineColor, defaults.lineColor)
+        : defaults.lineColor,
+    background:
+      typeof payload.background === "string"
+        ? normalizeHexColor(payload.background, defaults.background)
+        : defaults.background,
+    fontSize:
+      typeof payload.fontSize === "number"
+        ? clampInteger(payload.fontSize, 8, 48)
+        : defaults.fontSize,
+    textMargin:
+      typeof payload.textMargin === "number"
+        ? clampInteger(payload.textMargin, 0, 24)
+        : defaults.textMargin,
+    stylePreset: safeStylePreset,
+    autoPreview: typeof payload.autoPreview === "boolean" ? payload.autoPreview : defaults.autoPreview,
+  };
 }
 
 function sanitizeBarcodeFilePart(value: string): string {
@@ -23536,7 +23670,14 @@ function normalizeBarcodeValueForFormat(value: string, format: BarcodeFormat): B
 }
 
 function BarcodeGeneratorTool() {
-  const [rawValues, setRawValues] = useState("123456789012|SKU-BLUE-TEE-M\n123456789019|SKU-BLACK-TEE-L");
+  const toolSession = useToolSession({
+    toolKey: "barcode-generator",
+    defaultSessionLabel: "Barcode workspace",
+    newSessionPrefix: "barcode",
+  });
+  const workspaceStorageKey = toolSession.storageKey(BARCODE_WORKSPACE_STORAGE_BASE);
+  const [storageReady, setStorageReady] = useState(false);
+  const [rawValues, setRawValues] = useState(BARCODE_DEFAULT_RAW_VALUES);
   const [inputMode, setInputMode] = useState<BarcodeInputMode>("mapped");
   const [importMode, setImportMode] = useState<TextUploadMergeMode>("append");
   const [format, setFormat] = useState<BarcodeFormat>("CODE128");
@@ -23557,6 +23698,95 @@ function BarcodeGeneratorTool() {
   const [autoPreview, setAutoPreview] = useState(true);
   const [status, setStatus] = useState("Configure scan/text behavior, then generate barcodes.");
   const [items, setItems] = useState<BarcodePreviewItem[]>([]);
+
+  useEffect(() => {
+    if (!toolSession.isReady) return;
+    setStorageReady(false);
+    let loadedState: BarcodeWorkspaceState | null = null;
+    if (typeof window !== "undefined" && typeof localStorage !== "undefined") {
+      try {
+        const raw = localStorage.getItem(workspaceStorageKey);
+        if (raw) {
+          loadedState = sanitizeBarcodeWorkspaceState(JSON.parse(raw));
+        }
+      } catch {
+        loadedState = null;
+      }
+    }
+    const nextState = loadedState ?? createDefaultBarcodeWorkspaceState();
+    setRawValues(nextState.rawValues);
+    setInputMode(nextState.inputMode);
+    setImportMode(nextState.importMode);
+    setFormat(nextState.format);
+    setEncodeSource(nextState.encodeSource);
+    setTextSource(nextState.textSource);
+    setWorkflowPreset(nextState.workflowPreset);
+    setLabelSheetTemplate(nextState.labelSheetTemplate);
+    setBarWidth(nextState.barWidth);
+    setBarHeight(nextState.barHeight);
+    setMargin(nextState.margin);
+    setLineColor(nextState.lineColor);
+    setBackground(nextState.background);
+    setFontSize(nextState.fontSize);
+    setTextMargin(nextState.textMargin);
+    setStylePreset(nextState.stylePreset);
+    setAutoPreview(nextState.autoPreview);
+    setItems([]);
+    setStatus(loadedState ? `Loaded ${toolSession.sessionLabel}.` : "Started a new barcode workspace.");
+    setStorageReady(true);
+  }, [toolSession.isReady, toolSession.sessionId, toolSession.sessionLabel, workspaceStorageKey]);
+
+  useEffect(() => {
+    if (!toolSession.isReady || !storageReady) return;
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    const payload: BarcodeWorkspacePayload = {
+      version: BARCODE_WORKSPACE_VERSION,
+      updatedAt: Date.now(),
+      rawValues,
+      inputMode,
+      importMode,
+      format,
+      encodeSource,
+      textSource,
+      workflowPreset,
+      labelSheetTemplate,
+      barWidth,
+      barHeight,
+      margin,
+      lineColor: normalizeHexColor(lineColor, BARCODE_DEFAULT_WORKSPACE_STATE.lineColor),
+      background: normalizeHexColor(background, BARCODE_DEFAULT_WORKSPACE_STATE.background),
+      fontSize,
+      textMargin,
+      stylePreset,
+      autoPreview,
+    };
+    try {
+      localStorage.setItem(workspaceStorageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [
+    autoPreview,
+    background,
+    barHeight,
+    barWidth,
+    encodeSource,
+    fontSize,
+    format,
+    importMode,
+    inputMode,
+    labelSheetTemplate,
+    lineColor,
+    margin,
+    rawValues,
+    storageReady,
+    stylePreset,
+    textMargin,
+    textSource,
+    toolSession.isReady,
+    workflowPreset,
+    workspaceStorageKey,
+  ]);
 
   const rows = useMemo(() => parseBarcodeRows(rawValues, inputMode), [rawValues, inputMode]);
   const successfulItems = useMemo(
@@ -23968,6 +24198,18 @@ function BarcodeGeneratorTool() {
     <section className="tool-surface">
       <ToolHeading icon={Hash} title="Barcode design studio" subtitle="Design scan-ready barcode labels with mapped data, text rules, style presets, and export workflows." />
 
+      {toolSession.isReady ? (
+        <ToolSessionControls
+          sessionId={toolSession.sessionId}
+          sessionLabel={toolSession.sessionLabel}
+          sessions={toolSession.sessions}
+          description="Each session stores a separate barcode workspace in local browser storage."
+          onSelectSession={toolSession.selectSession}
+          onCreateSession={toolSession.createSession}
+          onRenameSession={toolSession.renameSession}
+        />
+      ) : null}
+
       <div className="mini-panel">
         <div className="panel-head">
           <h3>Workflow presets</h3>
@@ -24277,6 +24519,7 @@ function BarcodeGeneratorTool() {
       {status ? <p className="supporting-text">{status}</p> : null}
       <ResultList
         rows={[
+          { label: "Session", value: toolSession.sessionLabel },
           { label: "Input rows", value: formatNumericValue(rows.length) },
           { label: "Generated", value: formatNumericValue(successfulItems.length) },
           { label: "Failed", value: formatNumericValue(items.length - successfulItems.length) },
