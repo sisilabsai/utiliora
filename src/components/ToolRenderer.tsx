@@ -23142,6 +23142,13 @@ function ImageCropperTool({ incomingFile }: { incomingFile?: ImageWorkflowIncomi
 }
 
 type BarcodeFormat = "CODE128" | "CODE39" | "EAN13" | "EAN8" | "UPC" | "ITF14";
+type BarcodeInputMode = "single" | "mapped";
+type BarcodeEncodeSource = "barcode" | "label";
+type BarcodeTextSource = "none" | "barcode" | "label" | "encoded";
+type BarcodeStylePresetId = "compact" | "retail" | "shipping" | "custom";
+type BarcodeWorkflowPresetId = "scan-code-show-code" | "scan-code-show-label" | "scan-label-show-code" | "custom";
+
+const BARCODE_MAX_ROWS = 40;
 
 const BARCODE_FORMAT_OPTIONS: Array<{ value: BarcodeFormat; label: string; hint: string }> = [
   { value: "CODE128", label: "CODE128", hint: "General-purpose alphanumeric labels" },
@@ -23152,12 +23159,78 @@ const BARCODE_FORMAT_OPTIONS: Array<{ value: BarcodeFormat; label: string; hint:
   { value: "ITF14", label: "ITF-14", hint: "Shipping carton identifiers" },
 ];
 
+const BARCODE_STYLE_PRESETS: Array<{
+  id: Exclude<BarcodeStylePresetId, "custom">;
+  label: string;
+  hint: string;
+  width: number;
+  height: number;
+  margin: number;
+  fontSize: number;
+  textMargin: number;
+}> = [
+  { id: "compact", label: "Compact", hint: "Tight labels and shelf tags", width: 1, height: 84, margin: 8, fontSize: 14, textMargin: 4 },
+  { id: "retail", label: "Retail", hint: "Balanced for product labels", width: 2, height: 110, margin: 10, fontSize: 20, textMargin: 6 },
+  { id: "shipping", label: "Shipping", hint: "Long-distance scan reliability", width: 3, height: 140, margin: 14, fontSize: 22, textMargin: 8 },
+];
+
+const BARCODE_WORKFLOW_PRESETS: Array<{
+  id: Exclude<BarcodeWorkflowPresetId, "custom">;
+  label: string;
+  hint: string;
+  encodeSource: BarcodeEncodeSource;
+  textSource: BarcodeTextSource;
+  format?: BarcodeFormat;
+}> = [
+  {
+    id: "scan-code-show-code",
+    label: "Standard labels",
+    hint: "Scanner returns barcode number and the same number is printed.",
+    encodeSource: "barcode",
+    textSource: "barcode",
+  },
+  {
+    id: "scan-code-show-label",
+    label: "SKU text labels",
+    hint: "Scanner returns barcode number while printed text shows SKU/name.",
+    encodeSource: "barcode",
+    textSource: "label",
+  },
+  {
+    id: "scan-label-show-code",
+    label: "Lookup labels",
+    hint: "Scanner returns SKU/name while printed text shows barcode number.",
+    encodeSource: "label",
+    textSource: "barcode",
+    format: "CODE128",
+  },
+];
+
+interface BarcodeInputRow {
+  id: string;
+  rowIndex: number;
+  rawLine: string;
+  barcodeValue: string;
+  labelValue: string;
+}
+
 interface BarcodePreviewItem {
   id: string;
-  value: string;
+  rowIndex: number;
+  barcodeValue: string;
+  labelValue: string;
+  encodedValue?: string;
+  printedText?: string;
   dataUrl?: string;
   width?: number;
   height?: number;
+  warning?: string;
+  error?: string;
+}
+
+interface BarcodeNormalizationResult {
+  normalizedValue?: string;
+  warning?: string;
   error?: string;
 }
 
@@ -23170,40 +23243,198 @@ function sanitizeBarcodeFilePart(value: string): string {
   return cleaned || "barcode";
 }
 
+function parseMappedBarcodeRow(line: string): Pick<BarcodeInputRow, "barcodeValue" | "labelValue"> {
+  const delimiters = ["\t", "|", ";", ","];
+  const delimiter = delimiters.find((entry) => line.includes(entry));
+  if (!delimiter) {
+    return { barcodeValue: line.trim(), labelValue: "" };
+  }
+  const parts = line.split(delimiter).map((part) => part.trim());
+  const barcodeValue = parts[0] ?? "";
+  const joiner = delimiter === "\t" ? " " : delimiter;
+  const labelValue = parts.slice(1).join(joiner).trim();
+  return { barcodeValue, labelValue };
+}
+
+function parseBarcodeRows(rawValues: string, mode: BarcodeInputMode): BarcodeInputRow[] {
+  return splitNonEmptyLines(rawValues)
+    .slice(0, BARCODE_MAX_ROWS)
+    .map((rawLine, index) => {
+      const mapped = mode === "mapped" ? parseMappedBarcodeRow(rawLine) : { barcodeValue: rawLine.trim(), labelValue: "" };
+      return {
+        id: `barcode-row-${index + 1}`,
+        rowIndex: index + 1,
+        rawLine,
+        barcodeValue: mapped.barcodeValue,
+        labelValue: mapped.labelValue,
+      };
+    });
+}
+
+function normalizeBarcodeValueForFormat(value: string, format: BarcodeFormat): BarcodeNormalizationResult {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { error: "Missing encoded value for this row." };
+  }
+
+  if (format === "CODE128") {
+    return { normalizedValue: trimmed };
+  }
+
+  if (format === "CODE39") {
+    const upper = trimmed.toUpperCase();
+    if (!/^[0-9A-Z \-.$/+%]+$/.test(upper)) {
+      return { error: "CODE39 supports A-Z, 0-9, space, and - . $ / + % only." };
+    }
+    return upper === trimmed ? { normalizedValue: upper } : { normalizedValue: upper, warning: "Converted CODE39 value to uppercase." };
+  }
+
+  const digits = trimmed.replace(/\D+/g, "");
+  const warnings: string[] = [];
+  if (digits !== trimmed) {
+    warnings.push("Removed non-digit characters for this numeric format.");
+  }
+  if (!digits) {
+    return { error: `${format} accepts numeric digits only.` };
+  }
+
+  if (format === "EAN13") {
+    if (digits.length !== 12 && digits.length !== 13) return { error: "EAN13 requires 12 or 13 digits." };
+    if (digits.length === 12) warnings.push("Using 12 digits; checksum may be calculated by the barcode engine.");
+    return { normalizedValue: digits, warning: warnings.join(" ") || undefined };
+  }
+  if (format === "EAN8") {
+    if (digits.length !== 7 && digits.length !== 8) return { error: "EAN8 requires 7 or 8 digits." };
+    if (digits.length === 7) warnings.push("Using 7 digits; checksum may be calculated by the barcode engine.");
+    return { normalizedValue: digits, warning: warnings.join(" ") || undefined };
+  }
+  if (format === "UPC") {
+    if (digits.length !== 11 && digits.length !== 12) return { error: "UPC-A requires 11 or 12 digits." };
+    if (digits.length === 11) warnings.push("Using 11 digits; checksum may be calculated by the barcode engine.");
+    return { normalizedValue: digits, warning: warnings.join(" ") || undefined };
+  }
+  if (format === "ITF14") {
+    if (digits.length !== 13 && digits.length !== 14) return { error: "ITF-14 requires 13 or 14 digits." };
+    if (digits.length === 13) warnings.push("Using 13 digits; checksum may be calculated by the barcode engine.");
+    return { normalizedValue: digits, warning: warnings.join(" ") || undefined };
+  }
+
+  return { normalizedValue: trimmed };
+}
+
 function BarcodeGeneratorTool() {
-  const [rawValues, setRawValues] = useState("UTILIORA-001");
+  const [rawValues, setRawValues] = useState("123456789012|SKU-BLUE-TEE-M\n123456789019|SKU-BLACK-TEE-L");
+  const [inputMode, setInputMode] = useState<BarcodeInputMode>("mapped");
   const [format, setFormat] = useState<BarcodeFormat>("CODE128");
+  const [encodeSource, setEncodeSource] = useState<BarcodeEncodeSource>("barcode");
+  const [textSource, setTextSource] = useState<BarcodeTextSource>("barcode");
+  const [workflowPreset, setWorkflowPreset] = useState<BarcodeWorkflowPresetId>("scan-code-show-code");
+
   const [barWidth, setBarWidth] = useState(2);
   const [barHeight, setBarHeight] = useState(110);
   const [margin, setMargin] = useState(10);
   const [lineColor, setLineColor] = useState("#111111");
   const [background, setBackground] = useState("#ffffff");
-  const [displayValue, setDisplayValue] = useState(true);
   const [fontSize, setFontSize] = useState(20);
   const [textMargin, setTextMargin] = useState(6);
+  const [stylePreset, setStylePreset] = useState<BarcodeStylePresetId>("retail");
+
   const [autoPreview, setAutoPreview] = useState(true);
-  const [status, setStatus] = useState("Enter one value per line and generate barcodes.");
+  const [status, setStatus] = useState("Configure scan/text behavior, then generate barcodes.");
   const [items, setItems] = useState<BarcodePreviewItem[]>([]);
 
-  const values = useMemo(() => splitNonEmptyLines(rawValues).slice(0, 25), [rawValues]);
+  const rows = useMemo(() => parseBarcodeRows(rawValues, inputMode), [rawValues, inputMode]);
   const successfulItems = useMemo(
     () => items.filter((item): item is BarcodePreviewItem & { dataUrl: string } => Boolean(item.dataUrl)),
     [items],
   );
   const firstItem = successfulItems[0];
 
+  const applyWorkflowPreset = useCallback((presetId: Exclude<BarcodeWorkflowPresetId, "custom">) => {
+    const preset = BARCODE_WORKFLOW_PRESETS.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setWorkflowPreset(preset.id);
+    setEncodeSource(preset.encodeSource);
+    setTextSource(preset.textSource);
+    if (preset.format) {
+      setFormat(preset.format);
+    }
+  }, []);
+
+  const applyStylePreset = useCallback((presetId: Exclude<BarcodeStylePresetId, "custom">) => {
+    const preset = BARCODE_STYLE_PRESETS.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setStylePreset(preset.id);
+    setBarWidth(preset.width);
+    setBarHeight(preset.height);
+    setMargin(preset.margin);
+    setFontSize(preset.fontSize);
+    setTextMargin(preset.textMargin);
+  }, []);
+
+  const markCustomWorkflow = useCallback(() => setWorkflowPreset("custom"), []);
+  const markCustomStyle = useCallback(() => setStylePreset("custom"), []);
+
   const generate = useCallback(
     (trigger: "manual" | "auto") => {
-      if (!values.length) {
+      if (!rows.length) {
         setItems([]);
-        setStatus("Add at least one value to generate.");
+        setStatus("Add at least one row to generate.");
         return;
       }
 
-      const nextItems = values.map((value, index) => {
+      const nextItems = rows.map((row) => {
+        const warnings: string[] = [];
+        const barcodeValue = row.barcodeValue.trim();
+        const labelValue = row.labelValue.trim();
+        const encodedCandidate = encodeSource === "label" ? labelValue || barcodeValue : barcodeValue || labelValue;
+        if (!encodedCandidate) {
+          return {
+            id: row.id,
+            rowIndex: row.rowIndex,
+            barcodeValue,
+            labelValue,
+            error: "Row has no value to encode. Fill barcode value or label.",
+          } satisfies BarcodePreviewItem;
+        }
+        if (encodeSource === "label" && !labelValue && barcodeValue) {
+          warnings.push("Label was empty, so encoded value fell back to barcode column.");
+        }
+        if (encodeSource === "barcode" && !barcodeValue && labelValue) {
+          warnings.push("Barcode value was empty, so encoded value fell back to label column.");
+        }
+
+        const normalization = normalizeBarcodeValueForFormat(encodedCandidate, format);
+        if (!normalization.normalizedValue) {
+          return {
+            id: row.id,
+            rowIndex: row.rowIndex,
+            barcodeValue,
+            labelValue,
+            error: normalization.error ?? "Invalid value for selected format.",
+          } satisfies BarcodePreviewItem;
+        }
+        if (normalization.warning) {
+          warnings.push(normalization.warning);
+        }
+
+        const encodedValue = normalization.normalizedValue;
+        const displayValue = textSource !== "none";
+        const printedText =
+          textSource === "none"
+            ? ""
+            : textSource === "barcode"
+              ? barcodeValue || encodedValue
+              : textSource === "label"
+                ? labelValue || barcodeValue || encodedValue
+                : encodedValue;
+        if (textSource === "label" && !labelValue) {
+          warnings.push("Label text missing; printed text fell back to barcode value.");
+        }
+
         const canvas = document.createElement("canvas");
         try {
-          JsBarcode(canvas, value, {
+          JsBarcode(canvas, encodedValue, {
             format,
             width: Math.max(1, Math.min(6, Math.round(barWidth))),
             height: Math.max(40, Math.min(260, Math.round(barHeight))),
@@ -23213,18 +23444,29 @@ function BarcodeGeneratorTool() {
             displayValue,
             fontSize: Math.max(8, Math.min(48, Math.round(fontSize))),
             textMargin: Math.max(0, Math.min(24, Math.round(textMargin))),
+            ...(displayValue ? { text: printedText } : {}),
           });
           return {
-            id: `${value}-${index}`,
-            value,
+            id: row.id,
+            rowIndex: row.rowIndex,
+            barcodeValue,
+            labelValue,
+            encodedValue,
+            printedText: displayValue ? printedText : "",
             dataUrl: canvas.toDataURL("image/png"),
             width: canvas.width,
             height: canvas.height,
+            warning: warnings.join(" ") || undefined,
           } satisfies BarcodePreviewItem;
         } catch (error) {
           return {
-            id: `${value}-${index}`,
-            value,
+            id: row.id,
+            rowIndex: row.rowIndex,
+            barcodeValue,
+            labelValue,
+            encodedValue,
+            printedText: displayValue ? printedText : "",
+            warning: warnings.join(" ") || undefined,
             error: error instanceof Error ? error.message : "Invalid value for selected format.",
           } satisfies BarcodePreviewItem;
         }
@@ -23232,10 +23474,18 @@ function BarcodeGeneratorTool() {
 
       const successCount = nextItems.filter((item) => item.dataUrl).length;
       setItems(nextItems);
-      setStatus(`${successCount}/${nextItems.length} generated (${trigger} run).`);
-      trackEvent("tool_barcode_generate", { format, count: nextItems.length, successes: successCount, trigger });
+      setStatus(`${successCount}/${nextItems.length} generated (${trigger} run). Scanners return the encoded value shown in each card.`);
+      trackEvent("tool_barcode_generate", {
+        format,
+        count: nextItems.length,
+        successes: successCount,
+        trigger,
+        inputMode,
+        encodeSource,
+        textSource,
+      });
     },
-    [background, barHeight, barWidth, displayValue, fontSize, format, lineColor, margin, textMargin, values],
+    [background, barHeight, barWidth, encodeSource, fontSize, format, inputMode, lineColor, margin, rows, textMargin, textSource],
   );
 
   useEffect(() => {
@@ -23247,94 +23497,395 @@ function BarcodeGeneratorTool() {
     background,
     barHeight,
     barWidth,
-    displayValue,
+    encodeSource,
     fontSize,
     format,
     generate,
+    inputMode,
     lineColor,
     margin,
     rawValues,
     textMargin,
+    textSource,
   ]);
 
   const exportCsv = () => {
-    const rows = items.map((item) => [
-      item.value,
+    const rowsForCsv = items.map((item) => [
+      String(item.rowIndex),
+      item.barcodeValue,
+      item.labelValue,
+      item.encodedValue ?? "",
+      item.printedText ?? "",
       item.error ? "error" : "ok",
       item.width ? String(item.width) : "",
       item.height ? String(item.height) : "",
+      item.warning ?? "",
       item.error ?? "",
     ]);
-    downloadCsv("barcode-report.csv", ["Value", "Status", "Width", "Height", "Error"], rows);
+    downloadCsv(
+      "barcode-report.csv",
+      ["Row", "Barcode value", "Label value", "Encoded value", "Printed text", "Status", "Width", "Height", "Warning", "Error"],
+      rowsForCsv,
+    );
+    setStatus("Barcode CSV report exported.");
+  };
+
+  const exportJson = () => {
+    const payload = items.map((item) => ({
+      rowIndex: item.rowIndex,
+      barcodeValue: item.barcodeValue,
+      labelValue: item.labelValue,
+      encodedValue: item.encodedValue ?? "",
+      printedText: item.printedText ?? "",
+      status: item.error ? "error" : "ok",
+      warning: item.warning ?? "",
+      error: item.error ?? "",
+      width: item.width ?? 0,
+      height: item.height ?? 0,
+    }));
+    downloadTextFile("barcode-report.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8;");
+    setStatus("Barcode JSON report exported.");
+  };
+
+  const printSheet = () => {
+    if (!successfulItems.length) {
+      setStatus("Generate at least one successful barcode before printing.");
+      return;
+    }
+    const cardsHtml = successfulItems
+      .map((item) => {
+        const label = item.labelValue || item.barcodeValue || `Row ${item.rowIndex}`;
+        const encoded = item.encodedValue || "-";
+        const printed = textSource === "none" ? "Hidden" : item.printedText || "-";
+        return `<article class="barcode-card">
+  <img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(`Barcode row ${item.rowIndex}`)}" />
+  <h3>${escapeHtml(label)}</h3>
+  <p><strong>Encoded (scan output):</strong> ${escapeHtml(encoded)}</p>
+  <p><strong>Printed text:</strong> ${escapeHtml(printed)}</p>
+</article>`;
+      })
+      .join("");
+    const opened = openPrintWindow(
+      "Barcode sheet",
+      `<main class="barcode-sheet"><header><h1>Barcode Sheet</h1><p>Format: ${escapeHtml(format)} | Count: ${successfulItems.length}</p></header><section class="barcode-grid">${cardsHtml}</section></main>`,
+      `
+      .barcode-sheet { max-width: 1100px; margin: 0 auto; display: grid; gap: 12px; }
+      .barcode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+      .barcode-card { border: 1px solid #d3dbe5; border-radius: 10px; padding: 10px; break-inside: avoid; }
+      .barcode-card img { width: 100%; height: auto; object-fit: contain; margin-bottom: 8px; }
+      .barcode-card h3 { margin: 0 0 6px; font-size: 14px; }
+      .barcode-card p { margin: 2px 0; font-size: 12px; }
+      `,
+    );
+    if (!opened) {
+      setStatus("Enable popups to open the print sheet.");
+      return;
+    }
+    setStatus("Print sheet opened. Use print dialog to print labels or save as PDF.");
   };
 
   return (
     <section className="tool-surface">
-      <ToolHeading icon={Hash} title="Barcode generator" subtitle="Generate multiple barcode formats with batch input, styling, and PNG export." />
+      <ToolHeading icon={Hash} title="Barcode design studio" subtitle="Design scan-ready barcode labels with mapped data, text rules, style presets, and export workflows." />
 
-      <label className="field">
-        <span>Values (one per line, up to 25)</span>
-        <textarea value={rawValues} onChange={(event) => setRawValues(event.target.value)} rows={5} />
-      </label>
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Workflow presets</h3>
+          <span className="supporting-text">Choose how scan output and printed text should behave.</span>
+        </div>
+        <div className="button-row">
+          {BARCODE_WORKFLOW_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              className="chip-button"
+              type="button"
+              onClick={() => applyWorkflowPreset(preset.id)}
+              aria-pressed={workflowPreset === preset.id}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <p className="supporting-text">
+          {workflowPreset === "custom"
+            ? "Custom workflow active."
+            : BARCODE_WORKFLOW_PRESETS.find((preset) => preset.id === workflowPreset)?.hint ?? ""}
+        </p>
+      </div>
 
       <div className="field-grid">
-        <label className="field"><span>Format</span><select value={format} onChange={(event) => setFormat(event.target.value as BarcodeFormat)}>{BARCODE_FORMAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label} - {option.hint}</option>)}</select></label>
-        <label className="field"><span>Bar width</span><input type="number" min={1} max={6} value={barWidth} onChange={(event) => setBarWidth(Number(event.target.value))} /></label>
-        <label className="field"><span>Bar height</span><input type="number" min={40} max={260} value={barHeight} onChange={(event) => setBarHeight(Number(event.target.value))} /></label>
-        <label className="field"><span>Margin</span><input type="number" min={0} max={40} value={margin} onChange={(event) => setMargin(Number(event.target.value))} /></label>
-        <label className="field"><span>Line color</span><input type="color" value={lineColor} onChange={(event) => setLineColor(event.target.value)} /></label>
-        <label className="field"><span>Background</span><input type="color" value={background} onChange={(event) => setBackground(event.target.value)} /></label>
-        <label className="field"><span>Font size</span><input type="number" min={8} max={48} value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /></label>
-        <label className="field"><span>Text margin</span><input type="number" min={0} max={24} value={textMargin} onChange={(event) => setTextMargin(Number(event.target.value))} /></label>
+        <label className="field">
+          <span>Input mode</span>
+          <select
+            value={inputMode}
+            onChange={(event) => {
+              setInputMode(event.target.value as BarcodeInputMode);
+              markCustomWorkflow();
+            }}
+          >
+            <option value="single">Single column (one barcode value per line)</option>
+            <option value="mapped">Mapped rows (barcode|label, barcode,label, or tab-separated)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Format</span>
+          <select
+            value={format}
+            onChange={(event) => {
+              setFormat(event.target.value as BarcodeFormat);
+              markCustomWorkflow();
+            }}
+          >
+            {BARCODE_FORMAT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} - {option.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Encoded source (scanner output)</span>
+          <select
+            value={encodeSource}
+            onChange={(event) => {
+              setEncodeSource(event.target.value as BarcodeEncodeSource);
+              markCustomWorkflow();
+            }}
+          >
+            <option value="barcode">Barcode column</option>
+            <option value="label">Label column (SKU/name)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Printed text under bars</span>
+          <select
+            value={textSource}
+            onChange={(event) => {
+              setTextSource(event.target.value as BarcodeTextSource);
+              markCustomWorkflow();
+            }}
+          >
+            <option value="barcode">Barcode column</option>
+            <option value="label">Label column</option>
+            <option value="encoded">Encoded value</option>
+            <option value="none">Hide text</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="field">
+        <span>Rows (up to {BARCODE_MAX_ROWS})</span>
+        <textarea value={rawValues} onChange={(event) => setRawValues(event.target.value)} rows={6} />
+        {inputMode === "mapped" ? <small className="supporting-text">Use `barcode|label` to print barcode numbers while encoding SKU names or vice versa.</small> : null}
+      </label>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Style presets</h3>
+          <span className="supporting-text">Tune label density for shelves, retail tags, or shipping stickers.</span>
+        </div>
+        <div className="button-row">
+          {BARCODE_STYLE_PRESETS.map((preset) => (
+            <button key={preset.id} className="chip-button" type="button" onClick={() => applyStylePreset(preset.id)} aria-pressed={stylePreset === preset.id}>
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <p className="supporting-text">
+          {stylePreset === "custom" ? "Custom style active." : BARCODE_STYLE_PRESETS.find((preset) => preset.id === stylePreset)?.hint ?? ""}
+        </p>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Bar width</span>
+          <input
+            type="number"
+            min={1}
+            max={6}
+            value={barWidth}
+            onChange={(event) => {
+              setBarWidth(Number(event.target.value));
+              markCustomStyle();
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Bar height</span>
+          <input
+            type="number"
+            min={40}
+            max={260}
+            value={barHeight}
+            onChange={(event) => {
+              setBarHeight(Number(event.target.value));
+              markCustomStyle();
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Margin</span>
+          <input
+            type="number"
+            min={0}
+            max={40}
+            value={margin}
+            onChange={(event) => {
+              setMargin(Number(event.target.value));
+              markCustomStyle();
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Font size</span>
+          <input
+            type="number"
+            min={8}
+            max={48}
+            value={fontSize}
+            onChange={(event) => {
+              setFontSize(Number(event.target.value));
+              markCustomStyle();
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Text margin</span>
+          <input
+            type="number"
+            min={0}
+            max={24}
+            value={textMargin}
+            onChange={(event) => {
+              setTextMargin(Number(event.target.value));
+              markCustomStyle();
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Line color</span>
+          <input type="color" value={lineColor} onChange={(event) => setLineColor(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Background</span>
+          <input type="color" value={background} onChange={(event) => setBackground(event.target.value)} />
+        </label>
       </div>
 
       <div className="button-row">
-        <label className="checkbox"><input type="checkbox" checked={displayValue} onChange={(event) => setDisplayValue(event.target.checked)} />Show value text</label>
-        <label className="checkbox"><input type="checkbox" checked={autoPreview} onChange={(event) => setAutoPreview(event.target.checked)} />Auto preview</label>
+        <label className="checkbox">
+          <input type="checkbox" checked={autoPreview} onChange={(event) => setAutoPreview(event.target.checked)} />
+          Auto preview
+        </label>
       </div>
 
       <div className="button-row">
-        <button className="action-button" type="button" onClick={() => generate("manual")}>Generate barcodes</button>
-        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!items.length}><Download size={15} />Export CSV</button>
-        <button className="action-button secondary" type="button" disabled={!firstItem} onClick={() => {
-          if (!firstItem) return;
-          downloadDataUrl(`${sanitizeBarcodeFilePart(firstItem.value)}-${format.toLowerCase()}.png`, firstItem.dataUrl);
-        }}><Download size={15} />Download first</button>
-        <button className="action-button secondary" type="button" disabled={!successfulItems.length} onClick={() => {
-          successfulItems.forEach((item, index) => {
-            setTimeout(() => {
-              downloadDataUrl(`${sanitizeBarcodeFilePart(item.value)}-${format.toLowerCase()}-${index + 1}.png`, item.dataUrl);
-            }, index * 120);
-          });
-        }}><Download size={15} />Download all</button>
+        <button className="action-button" type="button" onClick={() => generate("manual")}>
+          Generate barcodes
+        </button>
+        <button className="action-button secondary" type="button" onClick={exportCsv} disabled={!items.length}>
+          <Download size={15} />
+          Export CSV
+        </button>
+        <button className="action-button secondary" type="button" onClick={exportJson} disabled={!items.length}>
+          <Download size={15} />
+          Export JSON
+        </button>
+        <button className="action-button secondary" type="button" onClick={printSheet} disabled={!successfulItems.length}>
+          <Printer size={15} />
+          Print sheet
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!firstItem}
+          onClick={() => {
+            if (!firstItem?.dataUrl) return;
+            const base = firstItem.barcodeValue || firstItem.labelValue || firstItem.encodedValue || "barcode";
+            downloadDataUrl(`${sanitizeBarcodeFilePart(base)}-${format.toLowerCase()}.png`, firstItem.dataUrl);
+          }}
+        >
+          <Download size={15} />
+          Download first
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!successfulItems.length}
+          onClick={() => {
+            successfulItems.forEach((item, index) => {
+              setTimeout(() => {
+                const base = item.barcodeValue || item.labelValue || item.encodedValue || `barcode-${item.rowIndex}`;
+                downloadDataUrl(`${sanitizeBarcodeFilePart(base)}-${format.toLowerCase()}-${index + 1}.png`, item.dataUrl);
+              }, index * 120);
+            });
+          }}
+        >
+          <Download size={15} />
+          Download all
+        </button>
       </div>
 
       {status ? <p className="supporting-text">{status}</p> : null}
-      <ResultList rows={[{ label: "Input rows", value: formatNumericValue(values.length) }, { label: "Generated", value: formatNumericValue(successfulItems.length) }, { label: "Failed", value: formatNumericValue(items.length - successfulItems.length) }, { label: "Format", value: format }]} />
+      <ResultList
+        rows={[
+          { label: "Input rows", value: formatNumericValue(rows.length) },
+          { label: "Generated", value: formatNumericValue(successfulItems.length) },
+          { label: "Failed", value: formatNumericValue(items.length - successfulItems.length) },
+          { label: "Format", value: format },
+          { label: "Scanner output source", value: encodeSource === "barcode" ? "Barcode column" : "Label column" },
+          {
+            label: "Printed text source",
+            value:
+              textSource === "none"
+                ? "Hidden"
+                : textSource === "barcode"
+                  ? "Barcode column"
+                  : textSource === "label"
+                    ? "Label column"
+                    : "Encoded value",
+          },
+        ]}
+      />
 
       {items.length ? (
         <div className="image-compare-grid">
-          {items.map((item) => (
-            <article key={item.id} className="image-card">
-              <h3>{item.value}</h3>
-              <div className="image-frame">
+          {items.map((item) => {
+            const cardTitle = item.labelValue || item.barcodeValue || `Row ${item.rowIndex}`;
+            const fileBase = item.barcodeValue || item.labelValue || item.encodedValue || `barcode-${item.rowIndex}`;
+            return (
+              <article key={item.id} className="image-card">
+                <h3>{cardTitle}</h3>
+                <div className="image-frame">
+                  {item.dataUrl ? (
+                    <NextImage
+                      src={item.dataUrl}
+                      alt={`Barcode preview for row ${item.rowIndex}`}
+                      width={item.width ?? 640}
+                      height={item.height ?? 220}
+                      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                      unoptimized
+                    />
+                  ) : (
+                    <p className="image-placeholder">Generation failed</p>
+                  )}
+                </div>
+                <p className="supporting-text">
+                  <strong>Encoded (scan output):</strong> {item.encodedValue ?? "-"}
+                </p>
+                <p className="supporting-text">
+                  <strong>Printed text:</strong> {textSource === "none" ? "Hidden" : item.printedText || "-"}
+                </p>
+                {item.warning ? <p className="status-badge warn">{item.warning}</p> : null}
+                {item.error ? <p className="error-text">{item.error}</p> : null}
                 {item.dataUrl ? (
-                  <NextImage
-                    src={item.dataUrl}
-                    alt={`Barcode preview for ${item.value}`}
-                    width={item.width ?? 640}
-                    height={item.height ?? 220}
-                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                    unoptimized
-                  />
-                ) : (
-                  <p className="image-placeholder">Generation failed</p>
-                )}
-              </div>
-              {item.error ? <p className="error-text">{item.error}</p> : null}
-              {item.dataUrl ? <button className="action-button secondary" type="button" onClick={() => downloadDataUrl(`${sanitizeBarcodeFilePart(item.value)}-${format.toLowerCase()}.png`, item.dataUrl ?? "")}>Download</button> : null}
-            </article>
-          ))}
+                  <button className="action-button secondary" type="button" onClick={() => downloadDataUrl(`${sanitizeBarcodeFilePart(fileBase)}-${format.toLowerCase()}.png`, item.dataUrl ?? "")}>
+                    Download
+                  </button>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
       ) : null}
     </section>

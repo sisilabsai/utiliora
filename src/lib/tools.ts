@@ -986,10 +986,10 @@ const imageTools: ToolDefinition[] = [
     slug: "barcode-generator",
     category: "image-tools",
     title: "Barcode Generator",
-    summary: "Generate barcodes in multiple formats with batch input and export controls.",
+    summary: "Design barcode labels with scan/text mapping, style presets, and batch exports.",
     description:
-      "Create production-ready barcodes for products, labels, and logistics with format options, styling controls, and downloadable PNG output.",
-    keywords: ["barcode generator", "code128 generator", "ean13 barcode", "upc barcode"],
+      "Build production-ready barcode sheets with configurable scanner payloads, printed text sources, format-aware validation, and export options for labels and logistics.",
+    keywords: ["barcode generator", "sku barcode", "code128 generator", "ean13 barcode", "upc barcode", "barcode label maker"],
     engine: { kind: "image-tool", id: "barcode-generator" },
     faq: baseFaq("Barcode Generator"),
   },
