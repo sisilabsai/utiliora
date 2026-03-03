@@ -38928,6 +38928,17 @@ type BusinessCardElementKind = "text" | "shape" | "image";
 type BusinessCardShapeKind = "rect" | "circle";
 type BusinessCardImageFit = "cover" | "contain";
 type BusinessCardTemplateId = "minimal-clean" | "bold-band" | "executive-dark" | "contact-split";
+type BusinessCardIndustryPackId = "all" | "retail" | "beauty" | "corporate" | "hospitality" | "logistics" | "healthcare";
+type BusinessCardMarketplaceTemplateId =
+  | "retail-modern"
+  | "retail-boutique"
+  | "beauty-salon"
+  | "corporate-consulting"
+  | "corporate-finance"
+  | "hospitality-cafe"
+  | "logistics-warehouse"
+  | "healthcare-clinic";
+type BusinessCardLabelSheetTemplateId = "free-grid" | "avery-5371" | "avery-c32011" | "herma-8855" | "herma-4279";
 
 interface BusinessCardBaseElement {
   id: string;
@@ -38997,6 +39008,12 @@ interface BusinessCardWorkspacePayload {
   version: number;
   updatedAt: number;
   document: BusinessCardDocumentState;
+  bulkCsvText?: string;
+  bulkImportMode?: TextUploadMergeMode;
+  activePackId?: BusinessCardIndustryPackId;
+  sheetTemplateId?: BusinessCardLabelSheetTemplateId;
+  sheetSide?: BusinessCardSideId;
+  repeatSingleDesign?: boolean;
 }
 
 interface BusinessCardSizePreset {
@@ -39013,6 +39030,62 @@ interface BusinessCardTemplateOption {
   hint: string;
 }
 
+interface BusinessCardMarketplaceTemplateOption {
+  id: BusinessCardMarketplaceTemplateId;
+  label: string;
+  hint: string;
+  packId: Exclude<BusinessCardIndustryPackId, "all">;
+  baseTemplateId: BusinessCardTemplateId;
+  frontBackground?: string;
+  backBackground?: string;
+  accentColor?: string;
+  frontTextColor?: string;
+  backTextColor?: string;
+  frontText?: string;
+  backText?: string;
+}
+
+interface BusinessCardCustomTemplate {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  document: BusinessCardDocumentState;
+}
+
+interface BusinessCardTemplateLibraryPayload {
+  version: number;
+  templates: BusinessCardCustomTemplate[];
+}
+
+interface BusinessCardBulkCsvRow {
+  id: string;
+  rowIndex: number;
+  fields: Record<string, string>;
+  displayLabel: string;
+}
+
+interface BusinessCardBulkCsvParseResult {
+  headers: string[];
+  rows: BusinessCardBulkCsvRow[];
+  usedHeaderRow: boolean;
+}
+
+interface BusinessCardPrintSheetTemplate {
+  id: Exclude<BusinessCardLabelSheetTemplateId, "free-grid">;
+  label: string;
+  vendor: "Avery" | "Herma";
+  hint: string;
+  pageSizeCss: "Letter" | "A4";
+  columns: number;
+  rows: number;
+  labelWidthMm: number;
+  labelHeightMm: number;
+  columnGapMm: number;
+  rowGapMm: number;
+  pagePaddingMm: [number, number, number, number];
+}
+
 interface BusinessCardDragState {
   elementId: string;
   side: BusinessCardSideId;
@@ -39026,6 +39099,9 @@ interface BusinessCardDragState {
 
 const BUSINESS_CARD_WORKSPACE_STORAGE_BASE = "utiliora-business-card-studio-doc-v1";
 const BUSINESS_CARD_DOC_VERSION = 1;
+const BUSINESS_CARD_TEMPLATE_LIBRARY_STORAGE_KEY = "utiliora-business-card-template-library-v1";
+const BUSINESS_CARD_TEMPLATE_LIBRARY_VERSION = 1;
+const BUSINESS_CARD_BULK_MAX_ROWS = 200;
 
 const BUSINESS_CARD_SIZE_PRESETS: BusinessCardSizePreset[] = [
   { id: "us-standard", label: "US standard (3.5 x 2 in)", unit: "in", width: 3.5, height: 2 },
@@ -39039,6 +39115,194 @@ const BUSINESS_CARD_TEMPLATE_OPTIONS: BusinessCardTemplateOption[] = [
   { id: "bold-band", label: "Bold band", hint: "Strong accent strip for visible brand tone." },
   { id: "executive-dark", label: "Executive dark", hint: "Dark premium profile card style." },
   { id: "contact-split", label: "Contact split", hint: "High-contrast split with contact panel." },
+];
+
+const BUSINESS_CARD_INDUSTRY_PACKS: Array<{
+  id: BusinessCardIndustryPackId;
+  label: string;
+  hint: string;
+}> = [
+  { id: "all", label: "All packs", hint: "Show every starter template pack." },
+  { id: "retail", label: "Retail", hint: "Product, boutique, and shelf-ready card styles." },
+  { id: "beauty", label: "Beauty", hint: "Salon and personal-care card styles." },
+  { id: "corporate", label: "Corporate", hint: "Consulting and office-ready identity cards." },
+  { id: "hospitality", label: "Hospitality", hint: "Cafe and service-business templates." },
+  { id: "logistics", label: "Logistics", hint: "Operational and warehouse teams." },
+  { id: "healthcare", label: "Healthcare", hint: "Clinic and practitioner communication cards." },
+];
+
+const BUSINESS_CARD_MARKETPLACE_TEMPLATES: BusinessCardMarketplaceTemplateOption[] = [
+  {
+    id: "retail-modern",
+    label: "Retail modern",
+    hint: "High-contrast storefront card with SKU-ready merge fields.",
+    packId: "retail",
+    baseTemplateId: "bold-band",
+    frontBackground: "#f8fafc",
+    backBackground: "#0f172a",
+    accentColor: "#f97316",
+    frontTextColor: "#111827",
+    backTextColor: "#ffffff",
+    frontText: "{{full_name}}\n{{role}}",
+    backText: "{{brand_name}}\nSKU: {{sku_prefix}}\n{{phone}}\n{{website}}",
+  },
+  {
+    id: "retail-boutique",
+    label: "Retail boutique",
+    hint: "Soft palette card for boutique and lifestyle brands.",
+    packId: "retail",
+    baseTemplateId: "contact-split",
+    frontBackground: "#fff7ed",
+    backBackground: "#ffffff",
+    accentColor: "#fb923c",
+    frontTextColor: "#1f2937",
+    backTextColor: "#374151",
+    frontText: "{{full_name}}\nBoutique Specialist",
+    backText: "{{brand_name}}\n{{location}}\n{{phone}}\n{{instagram}}",
+  },
+  {
+    id: "beauty-salon",
+    label: "Beauty salon",
+    hint: "Premium look for salon, spa, and beauty studios.",
+    packId: "beauty",
+    baseTemplateId: "executive-dark",
+    frontBackground: "#1f1122",
+    backBackground: "#2a1b31",
+    accentColor: "#f472b6",
+    frontTextColor: "#fdf2f8",
+    backTextColor: "#fdf2f8",
+    frontText: "{{full_name}}\nSenior Stylist",
+    backText: "{{salon_name}}\n{{phone}}\n{{email}}\nBy appointment",
+  },
+  {
+    id: "corporate-consulting",
+    label: "Corporate consulting",
+    hint: "Clean consulting profile with role + contact hierarchy.",
+    packId: "corporate",
+    baseTemplateId: "minimal-clean",
+    frontBackground: "#ffffff",
+    backBackground: "#f8fafc",
+    accentColor: "#2563eb",
+    frontTextColor: "#0f172a",
+    backTextColor: "#1e293b",
+    frontText: "{{full_name}}\n{{job_title}}",
+    backText: "{{company}}\n{{phone}}\n{{email}}\n{{website}}",
+  },
+  {
+    id: "corporate-finance",
+    label: "Corporate finance",
+    hint: "Executive dark styling tuned for finance teams.",
+    packId: "corporate",
+    baseTemplateId: "executive-dark",
+    frontBackground: "#0b1324",
+    backBackground: "#111827",
+    accentColor: "#22d3ee",
+    frontTextColor: "#e2e8f0",
+    backTextColor: "#e2e8f0",
+    frontText: "{{full_name}}\n{{job_title}}",
+    backText: "{{company}}\n{{phone}}\n{{email}}\n{{location}}",
+  },
+  {
+    id: "hospitality-cafe",
+    label: "Hospitality cafe",
+    hint: "Friendly layout for cafes, restaurants, and service desks.",
+    packId: "hospitality",
+    baseTemplateId: "bold-band",
+    frontBackground: "#fff7ed",
+    backBackground: "#7c2d12",
+    accentColor: "#f59e0b",
+    frontTextColor: "#7c2d12",
+    backTextColor: "#ffedd5",
+    frontText: "{{full_name}}\nGuest Experience",
+    backText: "{{business_name}}\n{{phone}}\n{{website}}\nOpen: {{hours}}",
+  },
+  {
+    id: "logistics-warehouse",
+    label: "Logistics warehouse",
+    hint: "Operational card style with SKU and dispatch fields.",
+    packId: "logistics",
+    baseTemplateId: "contact-split",
+    frontBackground: "#eff6ff",
+    backBackground: "#ffffff",
+    accentColor: "#2563eb",
+    frontTextColor: "#ffffff",
+    backTextColor: "#0f172a",
+    frontText: "{{full_name}}\nDispatch Lead",
+    backText: "{{company}}\nWarehouse: {{warehouse_code}}\n{{phone}}\nSKU desk: {{sku_desk}}",
+  },
+  {
+    id: "healthcare-clinic",
+    label: "Healthcare clinic",
+    hint: "Accessible clinic card with clean communication hierarchy.",
+    packId: "healthcare",
+    baseTemplateId: "minimal-clean",
+    frontBackground: "#f0fdfa",
+    backBackground: "#ffffff",
+    accentColor: "#0d9488",
+    frontTextColor: "#134e4a",
+    backTextColor: "#134e4a",
+    frontText: "{{full_name}}\n{{specialty}}",
+    backText: "{{clinic_name}}\n{{phone}}\n{{email}}\n{{location}}",
+  },
+];
+
+const BUSINESS_CARD_PRINT_SHEET_TEMPLATES: BusinessCardPrintSheetTemplate[] = [
+  {
+    id: "avery-5371",
+    label: "Avery 5371 (10-up)",
+    vendor: "Avery",
+    hint: "US Letter, 2 x 5, 3.5 x 2 in business-card stock.",
+    pageSizeCss: "Letter",
+    columns: 2,
+    rows: 5,
+    labelWidthMm: 88.9,
+    labelHeightMm: 50.8,
+    columnGapMm: 0,
+    rowGapMm: 0,
+    pagePaddingMm: [12.7, 19.05, 12.7, 19.05],
+  },
+  {
+    id: "avery-c32011",
+    label: "Avery C32011 (10-up)",
+    vendor: "Avery",
+    hint: "A4, 2 x 5, 85 x 54 mm card labels.",
+    pageSizeCss: "A4",
+    columns: 2,
+    rows: 5,
+    labelWidthMm: 85,
+    labelHeightMm: 54,
+    columnGapMm: 0,
+    rowGapMm: 0,
+    pagePaddingMm: [13.5, 20, 13.5, 20],
+  },
+  {
+    id: "herma-8855",
+    label: "Herma 8855 (10-up)",
+    vendor: "Herma",
+    hint: "A4, 2 x 5, 85 x 54 mm business card labels.",
+    pageSizeCss: "A4",
+    columns: 2,
+    rows: 5,
+    labelWidthMm: 85,
+    labelHeightMm: 54,
+    columnGapMm: 0,
+    rowGapMm: 0,
+    pagePaddingMm: [13.5, 20, 13.5, 20],
+  },
+  {
+    id: "herma-4279",
+    label: "Herma 4279 (24-up)",
+    vendor: "Herma",
+    hint: "A4, 3 x 8 sticker sheet (63.5 x 33.9 mm) for compact card promos.",
+    pageSizeCss: "A4",
+    columns: 3,
+    rows: 8,
+    labelWidthMm: 63.5,
+    labelHeightMm: 33.9,
+    columnGapMm: 2.5,
+    rowGapMm: 0,
+    pagePaddingMm: [12, 6.75, 12, 6.75],
+  },
 ];
 
 function clampBusinessCardNumber(value: number, min: number, max: number): number {
@@ -39271,6 +39535,238 @@ function createDefaultBusinessCardDocument(): BusinessCardDocumentState {
     activeSide: "front",
     sides: createBusinessCardTemplateSides("minimal-clean", pixelSize.width, pixelSize.height),
   };
+}
+
+function sanitizeBusinessCardFilePart(value: string): string {
+  const cleaned = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "business-card";
+}
+
+function normalizeBusinessCardMergeFieldKey(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "value";
+}
+
+function extractBusinessCardMergeFields(document: BusinessCardDocumentState): string[] {
+  const tokenPattern = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+  const keys = new Set<string>();
+  (["front", "back"] as BusinessCardSideId[]).forEach((sideId) => {
+    document.sides[sideId].elements.forEach((element) => {
+      if (element.kind !== "text") return;
+      const content = element.text;
+      let match = tokenPattern.exec(content);
+      while (match) {
+        keys.add(normalizeBusinessCardMergeFieldKey(match[1] ?? ""));
+        match = tokenPattern.exec(content);
+      }
+      tokenPattern.lastIndex = 0;
+    });
+  });
+  return [...keys];
+}
+
+function replaceBusinessCardMergeTokens(text: string, fields: Record<string, string>): string {
+  const normalizedLookup = new Map<string, string>();
+  Object.entries(fields).forEach(([key, value]) => {
+    normalizedLookup.set(normalizeBusinessCardMergeFieldKey(key), value);
+    normalizedLookup.set(key.trim(), value);
+  });
+  return text.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, token: string) => {
+    const trimmed = token.trim();
+    if (typeof fields[trimmed] === "string") return fields[trimmed];
+    return normalizedLookup.get(normalizeBusinessCardMergeFieldKey(trimmed)) ?? "";
+  });
+}
+
+function mergeBusinessCardDocumentWithFields(
+  document: BusinessCardDocumentState,
+  fields: Record<string, string>,
+): BusinessCardDocumentState {
+  return {
+    ...document,
+    sides: {
+      front: {
+        ...document.sides.front,
+        elements: document.sides.front.elements.map((element) =>
+          element.kind === "text" ? { ...element, text: replaceBusinessCardMergeTokens(element.text, fields) } : { ...element },
+        ),
+      },
+      back: {
+        ...document.sides.back,
+        elements: document.sides.back.elements.map((element) =>
+          element.kind === "text" ? { ...element, text: replaceBusinessCardMergeTokens(element.text, fields) } : { ...element },
+        ),
+      },
+    },
+  };
+}
+
+function createBusinessCardMarketplaceSides(
+  option: BusinessCardMarketplaceTemplateOption,
+  cardWidth: number,
+  cardHeight: number,
+): Record<BusinessCardSideId, BusinessCardSideState> {
+  const base = createBusinessCardTemplateSides(option.baseTemplateId, cardWidth, cardHeight);
+  const applySide = (sideId: BusinessCardSideId, side: BusinessCardSideState): BusinessCardSideState => {
+    let textIndex = 0;
+    let shapeIndex = 0;
+    return {
+      ...side,
+      background:
+        sideId === "front" ? option.frontBackground ?? side.background : option.backBackground ?? side.background,
+      elements: side.elements.map((element) => {
+        if (element.kind === "shape") {
+          const shouldAccent = Boolean(option.accentColor) && (element.locked || shapeIndex === 0);
+          shapeIndex += 1;
+          if (!shouldAccent) return { ...element };
+          return {
+            ...element,
+            fillColor: option.accentColor ?? element.fillColor,
+            strokeColor: option.accentColor ?? element.strokeColor,
+          };
+        }
+        if (element.kind === "text") {
+          textIndex += 1;
+          const isPrimary = textIndex === 1;
+          return {
+            ...element,
+            text:
+              sideId === "front"
+                ? isPrimary && option.frontText
+                  ? option.frontText
+                  : element.text
+                : isPrimary && option.backText
+                  ? option.backText
+                  : element.text,
+            color:
+              sideId === "front"
+                ? option.frontTextColor ?? element.color
+                : option.backTextColor ?? element.color,
+          };
+        }
+        return { ...element };
+      }),
+    };
+  };
+
+  return {
+    front: applySide("front", base.front),
+    back: applySide("back", base.back),
+  };
+}
+
+function parseBusinessCardBulkCsv(raw: string): BusinessCardBulkCsvParseResult {
+  const cleaned = raw.replace(/^\uFEFF/, "");
+  if (!cleaned.trim()) {
+    return { headers: [], rows: [], usedHeaderRow: false };
+  }
+  const delimiter = detectTableDelimiter(cleaned);
+  if (!delimiter) {
+    const rows = splitNonEmptyLines(cleaned)
+      .slice(0, BUSINESS_CARD_BULK_MAX_ROWS)
+      .map((line, index) => {
+        const value = line.trim();
+        return {
+          id: `business-card-bulk-${index + 1}`,
+          rowIndex: index + 1,
+          fields: { value },
+          displayLabel: value || `Row ${index + 1}`,
+        };
+      });
+    return { headers: ["value"], rows, usedHeaderRow: false };
+  }
+
+  const table = parseDelimitedTable(cleaned, delimiter);
+  if (!table.length) {
+    return { headers: [], rows: [], usedHeaderRow: false };
+  }
+
+  const firstRow = table[0] ?? [];
+  const hasHeader = firstRow.some((cell) => /[a-z]/i.test(cell));
+  const headerSource = hasHeader ? firstRow : firstRow.map((_, index) => `field_${index + 1}`);
+  const headerCounts = new Map<string, number>();
+  const headers = headerSource.map((header, index) => {
+    const normalized = normalizeBusinessCardMergeFieldKey(header || `field_${index + 1}`);
+    const nextCount = (headerCounts.get(normalized) ?? 0) + 1;
+    headerCounts.set(normalized, nextCount);
+    return nextCount === 1 ? normalized : `${normalized}_${nextCount}`;
+  });
+  const dataRows = hasHeader ? table.slice(1) : table;
+  const rows = dataRows
+    .map((rawRow, index) => {
+      const fields: Record<string, string> = {};
+      headers.forEach((header, headerIndex) => {
+        fields[header] = (rawRow[headerIndex] ?? "").trim();
+      });
+      const displayLabel =
+        fields.full_name ||
+        fields.name ||
+        fields.company ||
+        fields.brand_name ||
+        fields.business_name ||
+        fields.sku ||
+        fields.value ||
+        `Row ${index + 1}`;
+      return {
+        id: `business-card-bulk-${index + 1}`,
+        rowIndex: index + 1,
+        fields,
+        displayLabel,
+      };
+    })
+    .filter((row) => Object.values(row.fields).some((value) => value.trim().length > 0))
+    .slice(0, BUSINESS_CARD_BULK_MAX_ROWS);
+
+  return { headers, rows, usedHeaderRow: hasHeader };
+}
+
+function resolveBusinessCardSizeMm(document: BusinessCardDocumentState): { widthMm: number; heightMm: number } {
+  return {
+    widthMm: document.unit === "mm" ? document.width : document.width * 25.4,
+    heightMm: document.unit === "mm" ? document.height : document.height * 25.4,
+  };
+}
+
+function validateBusinessCardSheetFit(
+  document: BusinessCardDocumentState,
+  template: BusinessCardPrintSheetTemplate,
+): { errors: string[]; warnings: string[] } {
+  const { widthMm, heightMm } = resolveBusinessCardSizeMm(document);
+  const fullBleedWidth = widthMm + document.bleedMm * 2;
+  const fullBleedHeight = heightMm + document.bleedMm * 2;
+  const horizontalMargin = (template.labelWidthMm - widthMm) / 2;
+  const verticalMargin = (template.labelHeightMm - heightMm) / 2;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (widthMm > template.labelWidthMm || heightMm > template.labelHeightMm) {
+    errors.push(
+      `Card size ${widthMm.toFixed(1)} x ${heightMm.toFixed(1)} mm is larger than ${template.label} slots (${template.labelWidthMm.toFixed(1)} x ${template.labelHeightMm.toFixed(1)} mm).`,
+    );
+  }
+  if (fullBleedWidth > template.labelWidthMm || fullBleedHeight > template.labelHeightMm) {
+    errors.push(
+      `Bleed-inclusive size ${fullBleedWidth.toFixed(1)} x ${fullBleedHeight.toFixed(1)} mm exceeds slot bounds for ${template.label}.`,
+    );
+  }
+  if (horizontalMargin < document.bleedMm || verticalMargin < document.bleedMm) {
+    warnings.push(
+      "Bleed margin is tight for this template. Reduce bleed or pick a larger slot for safer trimming.",
+    );
+  }
+  if (document.safeMm * 2 >= Math.min(widthMm, heightMm)) {
+    warnings.push("Safe zone is very large relative to the card size. Important text may collapse into a tiny area.");
+  }
+
+  return { errors, warnings };
 }
 
 function resizeBusinessCardDocument(
@@ -39515,6 +40011,14 @@ function BusinessCardsDesignerTool() {
   const [storageReady, setStorageReady] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isFileHovering, setIsFileHovering] = useState(false);
+  const [activePackId, setActivePackId] = useState<BusinessCardIndustryPackId>("all");
+  const [customTemplateName, setCustomTemplateName] = useState("");
+  const [savedTemplates, setSavedTemplates] = useState<BusinessCardCustomTemplate[]>([]);
+  const [bulkCsvText, setBulkCsvText] = useState("");
+  const [bulkImportMode, setBulkImportMode] = useState<TextUploadMergeMode>("replace");
+  const [sheetTemplateId, setSheetTemplateId] = useState<BusinessCardLabelSheetTemplateId>("free-grid");
+  const [sheetSide, setSheetSide] = useState<BusinessCardSideId>("front");
+  const [repeatSingleDesign, setRepeatSingleDesign] = useState(true);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const dragStateRef = useRef<BusinessCardDragState | null>(null);
@@ -39551,10 +40055,74 @@ function BusinessCardsDesignerTool() {
     () => BUSINESS_CARD_SIZE_PRESETS.find((preset) => preset.id === documentState.sizePresetId) ?? null,
     [documentState.sizePresetId],
   );
+  const marketplaceTemplates = useMemo(
+    () =>
+      activePackId === "all"
+        ? BUSINESS_CARD_MARKETPLACE_TEMPLATES
+        : BUSINESS_CARD_MARKETPLACE_TEMPLATES.filter((template) => template.packId === activePackId),
+    [activePackId],
+  );
+  const bulkParseResult = useMemo(() => parseBusinessCardBulkCsv(bulkCsvText), [bulkCsvText]);
+  const mergeFieldTokens = useMemo(() => extractBusinessCardMergeFields(documentState), [documentState]);
+  const missingMergeHeaders = useMemo(
+    () => mergeFieldTokens.filter((field) => !bulkParseResult.headers.includes(field)),
+    [bulkParseResult.headers, mergeFieldTokens],
+  );
+  const selectedSheetTemplate = useMemo(
+    () => BUSINESS_CARD_PRINT_SHEET_TEMPLATES.find((template) => template.id === sheetTemplateId) ?? null,
+    [sheetTemplateId],
+  );
+  const sheetFitValidation = useMemo(
+    () =>
+      selectedSheetTemplate
+        ? validateBusinessCardSheetFit(documentState, selectedSheetTemplate)
+        : { errors: [], warnings: [] },
+    [documentState, selectedSheetTemplate],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(BUSINESS_CARD_TEMPLATE_LIBRARY_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<BusinessCardTemplateLibraryPayload>;
+      if (
+        parsed?.version === BUSINESS_CARD_TEMPLATE_LIBRARY_VERSION &&
+        Array.isArray(parsed.templates)
+      ) {
+        setSavedTemplates(
+          parsed.templates
+            .filter((entry) => entry && typeof entry.id === "string" && typeof entry.name === "string")
+            .slice(0, 40),
+        );
+      }
+    } catch {
+      // Ignore custom template library read failures.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+    try {
+      const payload: BusinessCardTemplateLibraryPayload = {
+        version: BUSINESS_CARD_TEMPLATE_LIBRARY_VERSION,
+        templates: savedTemplates.slice(0, 40),
+      };
+      localStorage.setItem(BUSINESS_CARD_TEMPLATE_LIBRARY_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // Ignore custom template library write failures.
+    }
+  }, [savedTemplates]);
 
   useEffect(() => {
     if (!toolSession.isReady) return;
     let loadedDocument: BusinessCardDocumentState | null = null;
+    let loadedBulkCsvText = "";
+    let loadedBulkImportMode: TextUploadMergeMode = "replace";
+    let loadedPackId: BusinessCardIndustryPackId = "all";
+    let loadedSheetTemplateId: BusinessCardLabelSheetTemplateId = "free-grid";
+    let loadedSheetSide: BusinessCardSideId = "front";
+    let loadedRepeatSingleDesign = true;
     if (typeof window !== "undefined" && typeof localStorage !== "undefined") {
       try {
         const raw = localStorage.getItem(workspaceStorageKey);
@@ -39562,6 +40130,31 @@ function BusinessCardsDesignerTool() {
           const parsed = JSON.parse(raw) as Partial<BusinessCardWorkspacePayload>;
           if (parsed?.document?.version === BUSINESS_CARD_DOC_VERSION) {
             loadedDocument = parsed.document as BusinessCardDocumentState;
+            if (typeof parsed.bulkCsvText === "string") {
+              loadedBulkCsvText = parsed.bulkCsvText;
+            }
+            if (parsed.bulkImportMode === "append" || parsed.bulkImportMode === "replace") {
+              loadedBulkImportMode = parsed.bulkImportMode;
+            }
+            if (
+              typeof parsed.activePackId === "string" &&
+              BUSINESS_CARD_INDUSTRY_PACKS.some((entry) => entry.id === parsed.activePackId)
+            ) {
+              loadedPackId = parsed.activePackId;
+            }
+            if (
+              typeof parsed.sheetTemplateId === "string" &&
+              (parsed.sheetTemplateId === "free-grid" ||
+                BUSINESS_CARD_PRINT_SHEET_TEMPLATES.some((entry) => entry.id === parsed.sheetTemplateId))
+            ) {
+              loadedSheetTemplateId = parsed.sheetTemplateId;
+            }
+            if (parsed.sheetSide === "front" || parsed.sheetSide === "back") {
+              loadedSheetSide = parsed.sheetSide;
+            }
+            if (typeof parsed.repeatSingleDesign === "boolean") {
+              loadedRepeatSingleDesign = parsed.repeatSingleDesign;
+            }
           }
         }
       } catch {
@@ -39576,6 +40169,12 @@ function BusinessCardsDesignerTool() {
       setDocumentState(createDefaultBusinessCardDocument());
       setStatus("Started a new business card workspace.");
     }
+    setBulkCsvText(loadedBulkCsvText);
+    setBulkImportMode(loadedBulkImportMode);
+    setActivePackId(loadedPackId);
+    setSheetTemplateId(loadedSheetTemplateId);
+    setSheetSide(loadedSheetSide);
+    setRepeatSingleDesign(loadedRepeatSingleDesign);
     setSelectedElementId("");
     setStorageReady(true);
   }, [toolSession.isReady, toolSession.sessionId, toolSession.sessionLabel, workspaceStorageKey]);
@@ -39587,13 +40186,31 @@ function BusinessCardsDesignerTool() {
       version: BUSINESS_CARD_DOC_VERSION,
       updatedAt: Date.now(),
       document: documentState,
+      bulkCsvText,
+      bulkImportMode,
+      activePackId,
+      sheetTemplateId,
+      sheetSide,
+      repeatSingleDesign,
     };
     try {
       localStorage.setItem(workspaceStorageKey, JSON.stringify(payload));
     } catch {
       // Ignore storage write failures.
     }
-  }, [documentState, storageReady, toolSession.isReady, toolSession.sessionId, workspaceStorageKey]);
+  }, [
+    activePackId,
+    bulkCsvText,
+    bulkImportMode,
+    documentState,
+    repeatSingleDesign,
+    sheetSide,
+    sheetTemplateId,
+    storageReady,
+    toolSession.isReady,
+    toolSession.sessionId,
+    workspaceStorageKey,
+  ]);
 
   const resolveStagePoint = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -39859,6 +40476,85 @@ function BusinessCardsDesignerTool() {
     [pixelSize.height, pixelSize.width],
   );
 
+  const applyMarketplaceTemplate = useCallback(
+    (templateId: BusinessCardMarketplaceTemplateId) => {
+      const selectedTemplate = BUSINESS_CARD_MARKETPLACE_TEMPLATES.find((entry) => entry.id === templateId);
+      if (!selectedTemplate) return;
+      setDocumentState((previous) => ({
+        ...previous,
+        templateId: selectedTemplate.baseTemplateId,
+        activeSide: "front",
+        sides: createBusinessCardMarketplaceSides(selectedTemplate, pixelSize.width, pixelSize.height),
+      }));
+      setSelectedElementId("");
+      setStatus(`Applied marketplace template: ${selectedTemplate.label}.`);
+      trackEvent("tool_business_card_marketplace_apply", {
+        template: templateId,
+        pack: selectedTemplate.packId,
+      });
+    },
+    [pixelSize.height, pixelSize.width],
+  );
+
+  const saveCurrentAsCustomTemplate = useCallback(() => {
+    const snapshot = JSON.parse(JSON.stringify(documentState)) as BusinessCardDocumentState;
+    const trimmedName = customTemplateName.trim();
+    const fallbackName = `Custom template ${savedTemplates.length + 1}`;
+    const name = trimmedName || fallbackName;
+    const now = Date.now();
+    const template: BusinessCardCustomTemplate = {
+      id: `business-card-template-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      createdAt: now,
+      updatedAt: now,
+      document: snapshot,
+    };
+    setSavedTemplates((current) => [template, ...current].slice(0, 40));
+    setCustomTemplateName("");
+    setStatus(`Saved custom template "${name}".`);
+    trackEvent("tool_business_card_template_save", { source: "custom" });
+  }, [customTemplateName, documentState, savedTemplates.length]);
+
+  const applySavedTemplate = useCallback((templateId: string) => {
+    const saved = savedTemplates.find((entry) => entry.id === templateId);
+    if (!saved) return;
+    const snapshot = JSON.parse(JSON.stringify(saved.document)) as BusinessCardDocumentState;
+    setDocumentState(snapshot);
+    setSelectedElementId("");
+    setStatus(`Loaded custom template "${saved.name}".`);
+    trackEvent("tool_business_card_template_apply", { template: "custom-template" });
+  }, [savedTemplates]);
+
+  const deleteSavedTemplate = useCallback((templateId: string) => {
+    setSavedTemplates((current) => current.filter((entry) => entry.id !== templateId));
+    setStatus("Deleted custom template.");
+  }, []);
+
+  const importBulkCsvFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const text = (await file.text()).replace(/^\uFEFF/, "");
+        if (!text.trim()) {
+          setStatus("Imported file is empty.");
+          return;
+        }
+        setBulkCsvText((current) => mergeUploadedText(current, text, bulkImportMode));
+        const parsed = parseBusinessCardBulkCsv(text);
+        setStatus(
+          `Imported ${formatNumericValue(parsed.rows.length)} row(s) from ${file.name}.${parsed.usedHeaderRow ? " Header mapping detected." : ""}`,
+        );
+        trackEvent("tool_business_card_bulk_import", {
+          rows: parsed.rows.length,
+          header: parsed.usedHeaderRow,
+        });
+      } catch {
+        setStatus("Could not read CSV/TXT file.");
+      }
+    },
+    [bulkImportMode],
+  );
+
   const applySizePreset = useCallback((presetId: string) => {
     const preset = BUSINESS_CARD_SIZE_PRESETS.find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -39943,6 +40639,229 @@ function BusinessCardsDesignerTool() {
       setIsExporting(false);
     }
   }, [documentState]);
+
+  const exportBulkZip = useCallback(async () => {
+    const rows = bulkParseResult.rows;
+    if (!rows.length) {
+      setStatus("Upload or paste CSV rows before bulk ZIP export.");
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const JSZip = await loadJsZipModule();
+      const zip = new JSZip();
+      const manifestRows: string[][] = [];
+
+      for (const row of rows) {
+        const mergedDocument = mergeBusinessCardDocumentWithFields(documentState, row.fields);
+        const frontCanvas = await renderBusinessCardSideToCanvas(mergedDocument, "front", 3);
+        const backCanvas = await renderBusinessCardSideToCanvas(mergedDocument, "back", 3);
+        const baseName = sanitizeBusinessCardFilePart(
+          row.displayLabel || row.fields.full_name || row.fields.name || row.fields.company || `row-${row.rowIndex}`,
+        );
+        const fileStem = `${String(row.rowIndex).padStart(3, "0")}-${baseName}`;
+        const frontFile = `${fileStem}-front.png`;
+        const backFile = `${fileStem}-back.png`;
+        zip.file(frontFile, frontCanvas.toDataURL("image/png").split(",")[1] ?? "", { base64: true });
+        zip.file(backFile, backCanvas.toDataURL("image/png").split(",")[1] ?? "", { base64: true });
+        manifestRows.push([
+          String(row.rowIndex),
+          row.displayLabel,
+          frontFile,
+          backFile,
+          ...bulkParseResult.headers.map((header) => row.fields[header] ?? ""),
+        ]);
+      }
+
+      const escapeCsvCell = (value: string): string =>
+        /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+      const manifestHeader = ["row", "label", "front_file", "back_file", ...bulkParseResult.headers];
+      const manifestCsv = [manifestHeader, ...manifestRows]
+        .map((row) => row.map((value) => escapeCsvCell(value ?? "")).join(","))
+        .join("\n");
+      zip.file("business-card-bulk-manifest.csv", manifestCsv);
+      zip.file(
+        "business-card-bulk-workspace.json",
+        JSON.stringify(
+          {
+            version: BUSINESS_CARD_DOC_VERSION,
+            exportedAt: new Date().toISOString(),
+            headers: bulkParseResult.headers,
+            rows: rows.map((row) => ({ rowIndex: row.rowIndex, displayLabel: row.displayLabel, fields: row.fields })),
+          },
+          null,
+          2,
+        ),
+      );
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlobFile(`business-card-bulk-${rows.length}.zip`, blob);
+      setStatus(`Downloaded bulk ZIP with ${formatNumericValue(rows.length)} personalized card pair(s).`);
+      trackEvent("tool_business_card_export", { format: "bulk-zip", rows: rows.length });
+    } catch {
+      setStatus("Could not generate bulk ZIP right now.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [bulkParseResult.headers, bulkParseResult.rows, documentState]);
+
+  const printLabelSheet = useCallback(async () => {
+    const rows = bulkParseResult.rows;
+    if (selectedSheetTemplate && sheetFitValidation.errors.length) {
+      setStatus(sheetFitValidation.errors[0] ?? "Selected sheet template is not compatible with current card size.");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const sourceRows =
+        rows.length > 0 ? rows : [{ id: "single", rowIndex: 1, fields: {}, displayLabel: "Current design" } as BusinessCardBulkCsvRow];
+      const rendered = await Promise.all(
+        sourceRows.map(async (row) => {
+          const mergedDocument = mergeBusinessCardDocumentWithFields(documentState, row.fields);
+          const canvas = await renderBusinessCardSideToCanvas(mergedDocument, sheetSide, 2);
+          return {
+            rowIndex: row.rowIndex,
+            label: row.displayLabel,
+            dataUrl: canvas.toDataURL("image/png"),
+          };
+        }),
+      );
+      if (!rendered.length) {
+        setStatus("Nothing to print.");
+        return;
+      }
+
+      if (!selectedSheetTemplate) {
+        const cardsHtml = rendered
+          .map(
+            (entry) => `<article class="card-slot">
+  <img src="${escapeHtml(entry.dataUrl)}" alt="${escapeHtml(`Card row ${entry.rowIndex}`)}" />
+  <p>${escapeHtml(entry.label)}</p>
+</article>`,
+          )
+          .join("");
+        const opened = openPrintWindow(
+          "Business card sheet",
+          `<main class="sheet-doc"><h1>Business Cards (${sheetSide})</h1><section class="free-grid">${cardsHtml}</section></main>`,
+          `
+          .sheet-doc { max-width: 1100px; margin: 0 auto; display: grid; gap: 10px; }
+          .free-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+          .card-slot { border: 1px solid #d3dbe5; border-radius: 10px; padding: 10px; break-inside: avoid; }
+          .card-slot img { width: 100%; height: auto; object-fit: contain; border-radius: 6px; }
+          .card-slot p { margin: 6px 0 0; font-size: 12px; text-align: center; }
+          `,
+        );
+        if (!opened) {
+          setStatus("Enable popups to open label-sheet print preview.");
+          return;
+        }
+        setStatus("Opened free-grid print sheet.");
+        trackEvent("tool_business_card_print_sheet", { template: "free-grid", rows: rendered.length, side: sheetSide });
+        return;
+      }
+
+      const labelsPerPage = selectedSheetTemplate.columns * selectedSheetTemplate.rows;
+      const printItems =
+        rows.length === 0 && repeatSingleDesign
+          ? Array.from({ length: labelsPerPage }, (_, index) => ({
+              rowIndex: index + 1,
+              label: "Current design",
+              dataUrl: rendered[0].dataUrl,
+            }))
+          : rendered;
+      const pageCount = Math.max(1, Math.ceil(printItems.length / labelsPerPage));
+      const pages = Array.from({ length: pageCount }, (_, pageIndex) =>
+        printItems.slice(pageIndex * labelsPerPage, (pageIndex + 1) * labelsPerPage),
+      );
+      const pagesHtml = pages
+        .map((pageItems, pageIndex) => {
+          const slots = Array.from({ length: labelsPerPage }, (_, slotIndex) => pageItems[slotIndex] ?? null);
+          const labelsHtml = slots
+            .map((entry) => {
+              if (!entry) return '<article class="sheet-label empty"></article>';
+              return `<article class="sheet-label">
+  <img src="${escapeHtml(entry.dataUrl)}" alt="${escapeHtml(`Business card ${entry.rowIndex}`)}" />
+  <p>${escapeHtml(entry.label)}</p>
+</article>`;
+            })
+            .join("");
+          return `<section class="sheet-page${pageIndex < pages.length - 1 ? " break" : ""}">
+  <div class="sheet-grid">${labelsHtml}</div>
+</section>`;
+        })
+        .join("");
+      const [top, right, bottom, left] = selectedSheetTemplate.pagePaddingMm;
+      const opened = openPrintWindow(
+        "Business card label sheet",
+        `<main class="sheet-doc">${pagesHtml}</main>`,
+        `
+        @page { size: ${selectedSheetTemplate.pageSizeCss}; margin: 0; }
+        body { margin: 0; padding: 0; background: #ffffff; }
+        .sheet-page {
+          box-sizing: border-box;
+          width: 100%;
+          min-height: 100%;
+          padding: ${top}mm ${right}mm ${bottom}mm ${left}mm;
+        }
+        .sheet-page.break { page-break-after: always; }
+        .sheet-grid {
+          display: grid;
+          grid-template-columns: repeat(${selectedSheetTemplate.columns}, ${selectedSheetTemplate.labelWidthMm}mm);
+          grid-auto-rows: ${selectedSheetTemplate.labelHeightMm}mm;
+          column-gap: ${selectedSheetTemplate.columnGapMm}mm;
+          row-gap: ${selectedSheetTemplate.rowGapMm}mm;
+        }
+        .sheet-label {
+          box-sizing: border-box;
+          padding: 0.8mm;
+          display: grid;
+          grid-template-rows: 1fr auto;
+          align-items: center;
+          overflow: hidden;
+          border: 0;
+        }
+        .sheet-label.empty { visibility: hidden; }
+        .sheet-label img {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        .sheet-label p {
+          margin: 0;
+          font-size: ${selectedSheetTemplate.id === "herma-4279" ? "7px" : "9px"};
+          line-height: 1.1;
+          text-align: center;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        `,
+      );
+      if (!opened) {
+        setStatus("Enable popups to open label-sheet print preview.");
+        return;
+      }
+      setStatus(
+        `Opened ${selectedSheetTemplate.vendor} ${selectedSheetTemplate.label} sheet (${labelsPerPage} labels/page).`,
+      );
+      trackEvent("tool_business_card_print_sheet", {
+        template: selectedSheetTemplate.id,
+        rows: printItems.length,
+        side: sheetSide,
+      });
+    } catch {
+      setStatus("Could not prepare label-sheet print view.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [
+    bulkParseResult.rows,
+    documentState,
+    repeatSingleDesign,
+    selectedSheetTemplate,
+    sheetFitValidation.errors,
+    sheetSide,
+  ]);
 
   const resetDocument = useCallback(() => {
     setDocumentState(createDefaultBusinessCardDocument());
@@ -40070,6 +40989,94 @@ function BusinessCardsDesignerTool() {
         <p className="supporting-text">
           {BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === documentState.templateId)?.hint ?? ""}
         </p>
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Template marketplace</h3>
+          <span className="supporting-text">Industry packs with merge-field-ready starter layouts.</span>
+        </div>
+        <label className="field">
+          <span>Industry pack</span>
+          <select
+            value={activePackId}
+            onChange={(event) => setActivePackId(event.target.value as BusinessCardIndustryPackId)}
+          >
+            {BUSINESS_CARD_INDUSTRY_PACKS.map((pack) => (
+              <option key={pack.id} value={pack.id}>
+                {pack.label}
+              </option>
+            ))}
+          </select>
+          <small className="supporting-text">
+            {BUSINESS_CARD_INDUSTRY_PACKS.find((pack) => pack.id === activePackId)?.hint ?? ""}
+          </small>
+        </label>
+        <div className="button-row">
+          {marketplaceTemplates.map((template) => (
+            <button key={template.id} className="chip-button" type="button" onClick={() => applyMarketplaceTemplate(template.id)}>
+              {template.label}
+            </button>
+          ))}
+        </div>
+        {marketplaceTemplates.length ? (
+          <ul className="plain-list">
+            {marketplaceTemplates.slice(0, 6).map((template) => (
+              <li key={`marketplace-note-${template.id}`}>
+                <small className="supporting-text">
+                  <strong>{template.label}:</strong> {template.hint}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="supporting-text">No templates in this pack yet.</p>
+        )}
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Saved custom templates</h3>
+          <span className="supporting-text">Save reusable card systems into local storage.</span>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Template name</span>
+            <input
+              type="text"
+              value={customTemplateName}
+              onChange={(event) => setCustomTemplateName(event.target.value)}
+              placeholder="e.g. Uganda retail card v2"
+            />
+          </label>
+        </div>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={saveCurrentAsCustomTemplate}>
+            Save current as template
+          </button>
+        </div>
+        {savedTemplates.length ? (
+          <ul className="plain-list">
+            {savedTemplates.map((template) => (
+              <li key={template.id}>
+                <div className="history-line">
+                  <strong>{template.name}</strong>
+                  <span className="supporting-text">{new Date(template.updatedAt).toLocaleString("en-US")}</span>
+                </div>
+                <div className="button-row">
+                  <button className="action-button secondary" type="button" onClick={() => applySavedTemplate(template.id)}>
+                    Apply
+                  </button>
+                  <button className="action-button secondary" type="button" onClick={() => deleteSavedTemplate(template.id)}>
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="supporting-text">No saved custom templates yet.</p>
+        )}
       </div>
 
       <div className="field-grid">
@@ -40214,6 +41221,108 @@ function BusinessCardsDesignerTool() {
           event.target.value = "";
         }}
       />
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Bulk generation</h3>
+          <span className="supporting-text">Upload CSV rows, merge fields into text layers, and export bulk ZIP cards.</span>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>CSV/TXT upload</span>
+            <input
+              type="file"
+              accept=".csv,.txt,.tsv"
+              onChange={(event) => {
+                void importBulkCsvFile(event.target.files?.[0] ?? null);
+                event.target.value = "";
+              }}
+            />
+          </label>
+          <label className="field">
+            <span>Import mode</span>
+            <select
+              value={bulkImportMode}
+              onChange={(event) => setBulkImportMode(event.target.value as TextUploadMergeMode)}
+            >
+              <option value="replace">Replace current rows</option>
+              <option value="append">Append imported rows</option>
+            </select>
+          </label>
+        </div>
+        <label className="field">
+          <span>Bulk rows (max {BUSINESS_CARD_BULK_MAX_ROWS})</span>
+          <textarea
+            rows={6}
+            value={bulkCsvText}
+            onChange={(event) => setBulkCsvText(event.target.value)}
+            placeholder="Use headers like full_name, job_title, company, phone, email..."
+          />
+        </label>
+        <p className="supporting-text">
+          Merge fields in text layers use <code>{"{{field_name}}"}</code>. Example: <code>{"{{full_name}}"}</code>,{" "}
+          <code>{"{{job_title}}"}</code>, <code>{"{{company}}"}</code>.
+        </p>
+        {mergeFieldTokens.length ? (
+          <p className="supporting-text">Detected merge tokens in design: {mergeFieldTokens.join(", ")}</p>
+        ) : (
+          <p className="supporting-text">No merge tokens detected yet. Add tokens in text boxes to personalize bulk exports.</p>
+        )}
+        {missingMergeHeaders.length ? (
+          <p className="status-badge warn">
+            Missing CSV headers for tokens: {missingMergeHeaders.join(", ")}. Missing values will export as blank text.
+          </p>
+        ) : null}
+      </div>
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Print vendor presets</h3>
+          <span className="supporting-text">Avery/Herma sheet templates with bleed-safe validation.</span>
+        </div>
+        <div className="field-grid">
+          <label className="field">
+            <span>Sheet template</span>
+            <select
+              value={sheetTemplateId}
+              onChange={(event) => setSheetTemplateId(event.target.value as BusinessCardLabelSheetTemplateId)}
+            >
+              <option value="free-grid">Free grid (auto)</option>
+              {BUSINESS_CARD_PRINT_SHEET_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.vendor} {template.label}
+                </option>
+              ))}
+            </select>
+            <small className="supporting-text">
+              {selectedSheetTemplate?.hint ?? "Flexible print sheet with automatic grid sizing."}
+            </small>
+          </label>
+          <label className="field">
+            <span>Side for sheet</span>
+            <select value={sheetSide} onChange={(event) => setSheetSide(event.target.value as BusinessCardSideId)}>
+              <option value="front">Front side</option>
+              <option value="back">Back side</option>
+            </select>
+          </label>
+        </div>
+        <div className="button-row">
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={repeatSingleDesign}
+              onChange={(event) => setRepeatSingleDesign(event.target.checked)}
+            />
+            Repeat single design across page when no CSV rows
+          </label>
+        </div>
+        {sheetFitValidation.errors.length ? (
+          <p className="error-text">{sheetFitValidation.errors[0]}</p>
+        ) : null}
+        {sheetFitValidation.warnings.length ? (
+          <p className="status-badge warn">{sheetFitValidation.warnings[0]}</p>
+        ) : null}
+      </div>
 
       <div className="mini-panel">
         <div className="panel-head">
@@ -40743,7 +41852,20 @@ function BusinessCardsDesignerTool() {
         </button>
         <button className="action-button secondary" type="button" onClick={() => void printProof()} disabled={isExporting}>
           <Printer size={15} />
-          Print proof
+          Print proof (front/back)
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => void printLabelSheet()} disabled={isExporting}>
+          <Printer size={15} />
+          Print label sheet
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => void exportBulkZip()}
+          disabled={isExporting || bulkParseResult.rows.length === 0}
+        >
+          <Download size={15} />
+          Bulk ZIP export
         </button>
         <button className="action-button secondary" type="button" onClick={resetDocument} disabled={isExporting}>
           <RefreshCw size={15} />
@@ -40771,6 +41893,15 @@ function BusinessCardsDesignerTool() {
             value:
               BUSINESS_CARD_TEMPLATE_OPTIONS.find((option) => option.id === documentState.templateId)?.label ??
               documentState.templateId,
+          },
+          { label: "Marketplace pack", value: BUSINESS_CARD_INDUSTRY_PACKS.find((entry) => entry.id === activePackId)?.label ?? activePackId },
+          { label: "Saved templates", value: formatNumericValue(savedTemplates.length) },
+          { label: "Bulk rows", value: formatNumericValue(bulkParseResult.rows.length) },
+          { label: "CSV headers", value: bulkParseResult.headers.length ? bulkParseResult.headers.join(", ") : "-" },
+          { label: "Missing merge fields", value: missingMergeHeaders.length ? missingMergeHeaders.join(", ") : "None" },
+          {
+            label: "Sheet template",
+            value: selectedSheetTemplate ? `${selectedSheetTemplate.vendor} ${selectedSheetTemplate.label}` : "Free grid",
           },
         ]}
       />
