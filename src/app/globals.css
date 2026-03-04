@@ -362,6 +362,7 @@ textarea {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  padding-right: 2.2rem;
 }
 
 .main-nav a {
@@ -385,6 +386,38 @@ textarea {
 
 .main-nav::-webkit-scrollbar {
   display: none;
+}
+
+.main-nav-wrap {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.main-nav-scroll-indicator {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--surface) 10%, transparent), var(--surface) 56%) padding-box,
+    var(--surface) border-box;
+  box-shadow: 0 4px 10px rgba(12, 21, 31, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.main-nav-scroll-indicator:hover,
+.main-nav-scroll-indicator:focus-visible {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
 .desktop-nav {

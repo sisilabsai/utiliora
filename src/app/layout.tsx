@@ -8,7 +8,7 @@ import { LocaleProvider } from "@/components/LocaleProvider";
 import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
-import { DEFAULT_LOCALE, LOCALE_COOKIE_KEY, LOCALE_STORAGE_KEY, SUPPORTED_LOCALES } from "@/lib/i18n";
+import { DEFAULT_LOCALE, LOCALE_COOKIE_KEY, LOCALE_STORAGE_KEY } from "@/lib/i18n";
 
 const GA_MEASUREMENT_ID = "G-1KYZN51H12";
 
@@ -67,36 +67,20 @@ gtag('config', '${GA_MEASUREMENT_ID}');
 const localeBootScript = `
 (() => {
   try {
-    const supported = ${JSON.stringify([...SUPPORTED_LOCALES])};
     const storageKey = '${LOCALE_STORAGE_KEY}';
     const cookieKey = '${LOCALE_COOKIE_KEY}';
-    const fallback = '${DEFAULT_LOCALE}';
+    const locale = '${DEFAULT_LOCALE}';
 
-    const normalize = (value) => {
-      if (!value || typeof value !== 'string') return null;
-      const lowered = value.toLowerCase().replace(/_/g, '-');
-      if (supported.includes(lowered)) return lowered;
-      const base = lowered.split('-')[0];
-      return supported.includes(base) ? base : null;
-    };
-
-    let fromStorage = null;
     try {
-      fromStorage = window.localStorage.getItem(storageKey);
+      window.localStorage.setItem(storageKey, locale);
     } catch {}
 
-    const cookieMatch = document.cookie.match(new RegExp('(?:^|; )' + cookieKey + '=([^;]+)'));
-    const fromCookie = cookieMatch && cookieMatch[1] ? decodeURIComponent(cookieMatch[1]) : null;
-
-    const locale =
-      normalize(fromStorage) ||
-      normalize(fromCookie) ||
-      normalize(navigator.language) ||
-      (Array.isArray(navigator.languages) ? navigator.languages.map(normalize).find(Boolean) : null) ||
-      fallback;
+    try {
+      document.cookie = cookieKey + '=' + encodeURIComponent(locale) + '; path=/; max-age=31536000; samesite=lax';
+    } catch {}
 
     document.documentElement.lang = locale;
-    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr';
+    document.documentElement.dir = 'ltr';
     window.__UTILIORA_LOCALE__ = locale;
   } catch {
     document.documentElement.lang = '${DEFAULT_LOCALE}';

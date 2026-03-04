@@ -2,9 +2,8 @@
 
 import NextImage from "next/image";
 import { usePathname } from "next/navigation";
-import { Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
+import { ChevronRight, Code2, Grid2x2, History, Home, Sparkles, SquareKanban } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LocaleSelector } from "@/components/LocaleSelector";
 import { useLocale } from "@/components/LocaleProvider";
 import { getCategories } from "@/lib/categories";
 import { CategoryIcon } from "@/components/CategoryIcon";
@@ -68,8 +67,21 @@ export function SiteHeader() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [mobileNavHidden, setMobileNavHidden] = useState(false);
   const [mobileNavCompact, setMobileNavCompact] = useState(false);
+  const [showDesktopNavArrow, setShowDesktopNavArrow] = useState(false);
   const lastScrollYRef = useRef(0);
   const scrollTickingRef = useRef(false);
+  const desktopNavScrollRef = useRef<HTMLElement | null>(null);
+
+  const updateDesktopNavArrow = useCallback(() => {
+    const nav = desktopNavScrollRef.current;
+    if (!nav) {
+      setShowDesktopNavArrow(false);
+      return;
+    }
+
+    const remaining = nav.scrollWidth - nav.clientWidth - nav.scrollLeft;
+    setShowDesktopNavArrow(remaining > 8);
+  }, []);
 
   useEffect(() => {
     try {
@@ -152,6 +164,23 @@ export function SiteHeader() {
     }
   }, [quickOpen]);
 
+  useEffect(() => {
+    const nav = desktopNavScrollRef.current;
+    if (!nav) return;
+
+    updateDesktopNavArrow();
+    const onResize = () => updateDesktopNavArrow();
+    const onScroll = () => updateDesktopNavArrow();
+
+    window.addEventListener("resize", onResize);
+    nav.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      nav.removeEventListener("scroll", onScroll);
+    };
+  }, [categories, updateDesktopNavArrow]);
+
   const isActive = useCallback(
     (href: string) => {
       if (href === "/") return pathname === "/";
@@ -174,6 +203,12 @@ export function SiteHeader() {
     setQuickOpen((current) => !current);
   }, []);
 
+  const scrollDesktopNavForward = useCallback(() => {
+    const nav = desktopNavScrollRef.current;
+    if (!nav) return;
+    nav.scrollBy({ left: 220, behavior: "smooth" });
+  }, []);
+
   return (
     <>
       <header className="site-header">
@@ -189,21 +224,32 @@ export function SiteHeader() {
           </a>
 
           <div className="desktop-nav">
-            <nav aria-label="Primary navigation" className="main-nav">
-              <a href="/tools">
-                <Grid2x2 size={14} />
-                <span>{t("nav.all_tools", undefined, "All Tools")}</span>
-              </a>
-              {categories.map((category) => (
-                <a key={category.slug} href={`/${category.slug}`}>
-                  <span>{t(`category.${category.slug}.title`, undefined, category.title)}</span>
+            <div className="main-nav-wrap">
+              <nav aria-label="Primary navigation" className="main-nav" ref={desktopNavScrollRef}>
+                <a href="/tools">
+                  <Grid2x2 size={14} />
+                  <span>{t("nav.all_tools", undefined, "All Tools")}</span>
                 </a>
-              ))}
-            </nav>
+                {categories.map((category) => (
+                  <a key={category.slug} href={`/${category.slug}`}>
+                    <span>{t(`category.${category.slug}.title`, undefined, category.title)}</span>
+                  </a>
+                ))}
+              </nav>
+              {showDesktopNavArrow ? (
+                <button
+                  type="button"
+                  className="main-nav-scroll-indicator"
+                  onClick={scrollDesktopNavForward}
+                  aria-label="Show more navigation links"
+                >
+                  <ChevronRight size={14} aria-hidden />
+                </button>
+              ) : null}
+            </div>
             <nav className="main-nav-meta" aria-label="Company links">
               <a href="/about">{t("nav.about", undefined, "About")}</a>
               <a href="/contact">{t("nav.contact", undefined, "Contact")}</a>
-              <LocaleSelector />
             </nav>
           </div>
         </div>
@@ -258,7 +304,6 @@ export function SiteHeader() {
                   <strong>{t("nav.quick_access", undefined, "Quick access")}</strong>
                   <small>{t("nav.quick_access_desc", undefined, "Jump directly into a tool category.")}</small>
                 </div>
-                <LocaleSelector compact />
                 <div className="mobile-quick-grid">
                   {categories.map((category) => (
                     <a

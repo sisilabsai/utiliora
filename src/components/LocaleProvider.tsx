@@ -11,13 +11,11 @@ import {
 } from "react";
 import {
   DEFAULT_LOCALE,
-  detectLocaleFromNavigator,
   getLocaleDirection,
-  getMessage,
   LOCALE_COOKIE_KEY,
   LOCALE_STORAGE_KEY,
+  getMessage,
   type AppLocale,
-  resolveLocale,
 } from "@/lib/i18n";
 
 interface LocaleContextValue {
@@ -38,34 +36,13 @@ declare global {
   }
 }
 
-function readLocaleFromCookie(): AppLocale | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${LOCALE_COOKIE_KEY}=([^;]+)`));
-  if (!match?.[1]) return null;
-  return resolveLocale(decodeURIComponent(match[1]), DEFAULT_LOCALE);
-}
-
 function resolveInitialLocale(): AppLocale {
-  if (typeof window === "undefined") return DEFAULT_LOCALE;
-
-  const bootLocale = window.__UTILIORA_LOCALE__;
-  if (bootLocale) return resolveLocale(bootLocale, DEFAULT_LOCALE);
-
-  try {
-    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
-    if (stored) return resolveLocale(stored, DEFAULT_LOCALE);
-  } catch {
-    // Ignore storage failures.
-  }
-
-  const cookieLocale = readLocaleFromCookie();
-  if (cookieLocale) return cookieLocale;
-
-  return detectLocaleFromNavigator(DEFAULT_LOCALE);
+  return DEFAULT_LOCALE;
 }
 
-function persistLocale(nextLocale: AppLocale): void {
+function persistLocale(): void {
   if (typeof window === "undefined") return;
+  const nextLocale = DEFAULT_LOCALE;
 
   try {
     localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
@@ -88,11 +65,11 @@ export function LocaleProvider({ children }: LocaleProviderProps) {
   const [locale, setLocaleState] = useState<AppLocale>(resolveInitialLocale);
 
   useEffect(() => {
-    persistLocale(locale);
+    persistLocale();
   }, [locale]);
 
-  const setLocale = useCallback((nextLocale: AppLocale) => {
-    setLocaleState(resolveLocale(nextLocale, DEFAULT_LOCALE));
+  const setLocale = useCallback(() => {
+    setLocaleState(DEFAULT_LOCALE);
   }, []);
 
   const t = useCallback(
