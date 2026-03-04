@@ -12,5 +12,5 @@ export function AdSenseScript() {
     return null;
   }
 
-  return <Script id="adsense-loader" src={ADSENSE_SRC} strategy="afterInteractive" crossOrigin="anonymous" />;
+  return <Script id="adsense-loader" src={ADSENSE_SRC} strategy="afterInteractive" async crossOrigin="anonymous" />;
 }

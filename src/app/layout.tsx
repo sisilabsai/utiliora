@@ -188,6 +188,7 @@ export default function RootLayout({
       <head>
         <Script id="locale-boot" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: localeBootScript }} />
         <Script id="accessibility-boot" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: accessibilityBootScript }} />
+        <meta name="google-adsense-account" content="ca-pub-8247984832507820" />
         <AdSenseScript />
         <Script id="ga-loader" src={`https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`} strategy="afterInteractive" />
         <Script id="ga-boot" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: googleAnalyticsBootScript }} />
