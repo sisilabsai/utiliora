@@ -1114,6 +1114,24 @@ const developerTools: ToolDefinition[] = [
     faq: baseFaq("Accessibility Auditor & Fix Planner"),
   },
   {
+    slug: "scam-shield-phishing-url-qr-email-analyzer",
+    category: "developer-tools",
+    title: "Scam Shield",
+    summary: "Analyze suspicious links, emails, messages, and QR payloads for phishing and fraud signals before you click, reply, or pay.",
+    description:
+      "Review suspicious URLs, sender patterns, urgency language, credential traps, payment pressure, QR payloads, redirects, and certificate health in one safety workflow built for everyday users and teams.",
+    keywords: [
+      "phishing checker",
+      "scam link checker",
+      "url scam detector",
+      "email scam analyzer",
+      "qr phishing checker",
+      "fraud detection tool",
+    ],
+    engine: { kind: "developer-tool", id: "scam-shield" },
+    faq: baseFaq("Scam Shield"),
+  },
+  {
     slug: "uuid-generator",
     category: "developer-tools",
     title: "UUID Generator",

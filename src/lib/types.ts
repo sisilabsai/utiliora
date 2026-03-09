@@ -111,6 +111,7 @@ export type TextToolId =
 
 export type DeveloperToolId =
   | "accessibility-auditor"
+  | "scam-shield"
   | "uuid-generator"
   | "url-encoder-decoder"
   | "timestamp-converter"

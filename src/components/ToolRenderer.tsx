@@ -56,6 +56,19 @@ import {
   type AccessibilityAuditResult,
 } from "@/lib/accessibility-audit";
 import {
+  analyzeMessageForScamRisk,
+  analyzeQrPayloadForScamRisk,
+  analyzeUrlForScamRisk,
+  buildScamShieldMarkdown,
+  type ScamMessageAnalysis,
+  type ScamQrAnalysis,
+  type ScamShieldMode,
+  type ScamSignal,
+  type ScamUrlAnalysis,
+  type ScamUrlRemoteInspection,
+  type ScamUrlSslInspection,
+} from "@/lib/scam-shield";
+import {
   buildDocumentTranslationWordMarkup,
   DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
   DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
@@ -16205,6 +16218,594 @@ function AccessibilityAuditorTool() {
   );
 }
 
+interface ScamShieldHistoryEntry {
+  id: string;
+  mode: ScamShieldMode;
+  label: string;
+  riskScore: number;
+  verdict: string;
+  auditedAt: string;
+}
+
+const SCAM_SHIELD_HISTORY_KEY = "utiliora-scam-shield-history-v1";
+const SCAM_SHIELD_HISTORY_LIMIT = 15;
+const SCAM_SHIELD_SAMPLE_MESSAGE = `From: PayPal Billing <support@paypal-security-check-center.xyz>
+Reply-To: support@payments-review-mail.com
+Subject: Urgent action required - your PayPal account will be suspended within 24 hours
+
+We detected unusual activity and need you to verify your password and one-time security code immediately.
+Failure to respond today will suspend your account.
+
+Review your account now:
+https://paypal-login-secure-check.top/verify?session=gift-reward
+
+If you cannot complete verification, buy a gift card and reply with the code so we can secure your balance.`;
+
+const SCAM_SHIELD_SAMPLE_QR = "WIFI:T:WPA;S:Airport Free WiFi Secure Login;P:verify-now-2026;H:true;;";
+
+function getScamSignalBadgeClass(severity: ScamSignal["severity"]): string {
+  if (severity === "high") return "bad";
+  if (severity === "medium") return "warn";
+  return "ok";
+}
+
+function getScamVerdictBadgeClass(verdict: string): string {
+  if (verdict === "danger") return "bad";
+  if (verdict === "caution") return "warn";
+  return "ok";
+}
+
+function ScamShieldTool() {
+  const [mode, setMode] = useState<ScamShieldMode>("message");
+  const [urlInput, setUrlInput] = useState("https://www.utiliora.cloud");
+  const [messageInput, setMessageInput] = useState("");
+  const [qrInput, setQrInput] = useState("");
+  const [status, setStatus] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const [history, setHistory] = useState<ScamShieldHistoryEntry[]>([]);
+  const [urlResult, setUrlResult] = useState<ScamUrlAnalysis | null>(null);
+  const [messageResult, setMessageResult] = useState<ScamMessageAnalysis | null>(null);
+  const [qrResult, setQrResult] = useState<ScamQrAnalysis | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SCAM_SHIELD_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setHistory(
+        parsed.filter((entry): entry is ScamShieldHistoryEntry => {
+          return typeof entry?.id === "string" && typeof entry?.mode === "string" && typeof entry?.auditedAt === "string";
+        }),
+      );
+    } catch {
+      // Ignore history hydration errors.
+    }
+  }, []);
+
+  const persistHistory = useCallback((entry: ScamShieldHistoryEntry) => {
+    setHistory((current) => {
+      const next = [entry, ...current].slice(0, SCAM_SHIELD_HISTORY_LIMIT);
+      try {
+        window.localStorage.setItem(SCAM_SHIELD_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore localStorage failures.
+      }
+      return next;
+    });
+  }, []);
+
+  const activeResult = useMemo(() => {
+    if (mode === "url") return urlResult;
+    if (mode === "qr") return qrResult;
+    return messageResult;
+  }, [messageResult, mode, qrResult, urlResult]);
+
+  const activeLabel = useMemo(() => {
+    if (mode === "url") return urlInput.trim() || "URL check";
+    if (mode === "qr") return "QR payload";
+    return "Suspicious message";
+  }, [mode, urlInput]);
+
+  const summaryRows = useMemo(() => {
+    if (!activeResult) return [];
+    return [
+      { label: "Risk score", value: `${activeResult.riskScore}/100` },
+      { label: "Verdict", value: activeResult.verdict },
+      { label: "Signals", value: formatNumericValue(activeResult.signals.length) },
+      { label: "Safe next steps", value: formatNumericValue(activeResult.nextSteps.length) },
+    ];
+  }, [activeResult]);
+
+  const reportMarkdown = useMemo(() => {
+    if (!activeResult) return "";
+    const extra: string[] = [];
+    if (mode === "url" && urlResult) {
+      extra.push(`Normalized URL: ${urlResult.normalizedUrl}`);
+      extra.push(`Host: ${urlResult.host}`);
+      if (urlResult.remote) extra.push(`Final URL: ${urlResult.remote.finalUrl}`);
+      if (urlResult.remote) extra.push(`HTTP status: ${urlResult.remote.status}`);
+    }
+    if (mode === "message" && messageResult) {
+      if (messageResult.subject) extra.push(`Subject: ${messageResult.subject}`);
+      if (messageResult.senderEmail) extra.push(`Sender: ${messageResult.senderEmail}`);
+      if (messageResult.replyToEmail) extra.push(`Reply-To: ${messageResult.replyToEmail}`);
+      if (messageResult.extractedUrls.length > 0) extra.push(`URLs found: ${messageResult.extractedUrls.join(", ")}`);
+    }
+    if (mode === "qr" && qrResult) {
+      extra.push(`Payload type: ${qrResult.payloadType}`);
+      if (qrResult.extractedUrls.length > 0) extra.push(`Embedded URL: ${qrResult.extractedUrls[0]}`);
+    }
+    return buildScamShieldMarkdown(mode, activeLabel, activeResult, extra);
+  }, [activeLabel, activeResult, messageResult, mode, qrResult, urlResult]);
+
+  const runUrlAnalysis = useCallback(async () => {
+    const trimmed = urlInput.trim();
+    if (!trimmed) {
+      setStatus("Enter a URL to inspect.");
+      return;
+    }
+
+    setProcessing(true);
+    setStatus("Inspecting live destination, redirects, and certificate health...");
+    try {
+      const inspectionResponse = await fetch("/api/scam-shield-inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmed }),
+      });
+      const inspectionPayload = (await inspectionResponse.json()) as {
+        ok?: boolean;
+        error?: string;
+        requestedUrl?: string;
+        finalUrl?: string;
+        status?: number;
+        contentType?: string;
+        title?: string;
+      };
+
+      let remoteInspection: ScamUrlRemoteInspection | null = null;
+      if (inspectionResponse.ok && inspectionPayload.ok && inspectionPayload.requestedUrl && inspectionPayload.finalUrl) {
+        remoteInspection = {
+          requestedUrl: inspectionPayload.requestedUrl,
+          finalUrl: inspectionPayload.finalUrl,
+          status: inspectionPayload.status ?? 0,
+          contentType: inspectionPayload.contentType ?? "",
+          title: inspectionPayload.title ?? "",
+        };
+      }
+
+      const inspectionUrl = remoteInspection?.finalUrl ?? trimmed;
+      const sslTarget = (() => {
+        try {
+          return new URL(inspectionUrl).hostname;
+        } catch {
+          return "";
+        }
+      })();
+
+      let sslInspection: ScamUrlSslInspection | null = null;
+      if (sslTarget) {
+        try {
+          const sslResponse = await fetch(`/api/ssl-check?target=${encodeURIComponent(sslTarget)}`);
+          const sslPayload = await sslResponse.json();
+          if (sslPayload?.ok) {
+            sslInspection = {
+              ok: true,
+              authorized: Boolean(sslPayload.authorized),
+              authorizationError: typeof sslPayload.authorizationError === "string" ? sslPayload.authorizationError : null,
+              hostnameMatches: Boolean(sslPayload.certificate?.hostnameMatches),
+              hostnameMatchSource: sslPayload.certificate?.hostnameMatchSource ?? "none",
+              isExpired: Boolean(sslPayload.certificate?.isExpired),
+              expiresSoon: Boolean(sslPayload.certificate?.expiresSoon),
+              daysRemaining:
+                typeof sslPayload.certificate?.daysRemaining === "number" ? sslPayload.certificate.daysRemaining : null,
+            };
+          } else {
+            sslInspection = {
+              ok: false,
+              authorized: false,
+              authorizationError: typeof sslPayload?.error === "string" ? sslPayload.error : "TLS inspection failed.",
+              hostnameMatches: false,
+              hostnameMatchSource: "none",
+              isExpired: false,
+              expiresSoon: false,
+              daysRemaining: null,
+            };
+          }
+        } catch {
+          sslInspection = {
+            ok: false,
+            authorized: false,
+            authorizationError: "TLS inspection failed.",
+            hostnameMatches: false,
+            hostnameMatchSource: "none",
+            isExpired: false,
+            expiresSoon: false,
+            daysRemaining: null,
+          };
+        }
+      }
+
+      const analysis = analyzeUrlForScamRisk(trimmed, remoteInspection, sslInspection);
+      setUrlResult(analysis);
+      setMode("url");
+      persistHistory({
+        id: `${Date.now()}-url`,
+        mode: "url",
+        label: analysis.normalizedUrl,
+        riskScore: analysis.riskScore,
+        verdict: analysis.verdict,
+        auditedAt: new Date().toISOString(),
+      });
+      setStatus(inspectionPayload.error ? `Inspection note: ${inspectionPayload.error}` : analysis.headline);
+      trackEvent("tool_scam_shield_url", {
+        riskScore: analysis.riskScore,
+        verdict: analysis.verdict,
+        signals: analysis.signals.length,
+      });
+      emitShareSignal({ action: "success", context: "scam-shield-url" });
+    } catch {
+      setStatus("Unable to inspect the destination right now.");
+    } finally {
+      setProcessing(false);
+    }
+  }, [persistHistory, urlInput]);
+
+  const runMessageAnalysis = useCallback(() => {
+    const trimmed = messageInput.trim();
+    if (!trimmed) {
+      setStatus("Paste the suspicious email or message first.");
+      return;
+    }
+    const analysis = analyzeMessageForScamRisk(trimmed);
+    setMessageResult(analysis);
+    setMode("message");
+    persistHistory({
+      id: `${Date.now()}-message`,
+      mode: "message",
+      label: analysis.subject || "Suspicious message",
+      riskScore: analysis.riskScore,
+      verdict: analysis.verdict,
+      auditedAt: new Date().toISOString(),
+    });
+    setStatus(analysis.headline);
+    trackEvent("tool_scam_shield_message", {
+      riskScore: analysis.riskScore,
+      verdict: analysis.verdict,
+      signals: analysis.signals.length,
+      urls: analysis.extractedUrls.length,
+    });
+    emitShareSignal({ action: "success", context: "scam-shield-message" });
+  }, [messageInput, persistHistory]);
+
+  const runQrAnalysis = useCallback(() => {
+    const trimmed = qrInput.trim();
+    if (!trimmed) {
+      setStatus("Paste the QR payload or suspicious text first.");
+      return;
+    }
+    const analysis = analyzeQrPayloadForScamRisk(trimmed);
+    setQrResult(analysis);
+    setMode("qr");
+    persistHistory({
+      id: `${Date.now()}-qr`,
+      mode: "qr",
+      label: analysis.payloadLabel,
+      riskScore: analysis.riskScore,
+      verdict: analysis.verdict,
+      auditedAt: new Date().toISOString(),
+    });
+    setStatus(analysis.headline);
+    trackEvent("tool_scam_shield_qr", {
+      riskScore: analysis.riskScore,
+      verdict: analysis.verdict,
+      signals: analysis.signals.length,
+      payloadType: analysis.payloadType,
+    });
+    emitShareSignal({ action: "success", context: "scam-shield-qr" });
+  }, [persistHistory, qrInput]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="Scam Shield"
+        subtitle="Check suspicious links, messages, and QR payloads before you click, reply, pay, or log in."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Analysis mode</span>
+          <select value={mode} onChange={(event) => setMode(event.target.value as ScamShieldMode)}>
+            <option value="message">Email / message</option>
+            <option value="url">URL / destination</option>
+            <option value="qr">QR payload</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>What Scam Shield checks</span>
+          <input type="text" value="Urgency, impersonation, links, redirects, certificate health, payment and credential traps" readOnly />
+        </label>
+      </div>
+
+      {mode === "url" ? (
+        <label className="field">
+          <span>Suspicious URL</span>
+          <input
+            type="url"
+            value={urlInput}
+            onChange={(event) => setUrlInput(event.target.value)}
+            placeholder="https://example.com/login"
+          />
+          <small className="supporting-text">Scam Shield checks the live destination, redirects, title, and certificate health to reduce blind clicking.</small>
+        </label>
+      ) : null}
+
+      {mode === "message" ? (
+        <label className="field">
+          <span>Suspicious email or message</span>
+          <textarea
+            value={messageInput}
+            onChange={(event) => setMessageInput(event.target.value)}
+            rows={14}
+            placeholder="Paste the email, SMS, DM, or support message here."
+          />
+          <small className="supporting-text">Include headers like `From`, `Reply-To`, and `Subject` if you have them.</small>
+        </label>
+      ) : null}
+
+      {mode === "qr" ? (
+        <label className="field">
+          <span>QR payload or suspicious text</span>
+          <textarea
+            value={qrInput}
+            onChange={(event) => setQrInput(event.target.value)}
+            rows={10}
+            placeholder="Paste the scanned QR payload, URL, Wi-Fi string, or SMS action."
+          />
+          <small className="supporting-text">If you scanned a QR code elsewhere, paste its decoded contents here for a safety review.</small>
+        </label>
+      ) : null}
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => void (mode === "url" ? runUrlAnalysis() : mode === "message" ? runMessageAnalysis() : runQrAnalysis())}
+          disabled={processing}
+        >
+          {processing ? "Analyzing..." : mode === "url" ? "Inspect destination" : mode === "message" ? "Analyze message" : "Analyze payload"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setMode("message");
+            setMessageInput(SCAM_SHIELD_SAMPLE_MESSAGE);
+            setStatus("Loaded a phishing-style sample message.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Sample email
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setMode("qr");
+            setQrInput(SCAM_SHIELD_SAMPLE_QR);
+            setStatus("Loaded a suspicious QR payload sample.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Sample QR
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(reportMarkdown);
+            setStatus(ok ? "Scam Shield report copied." : "Nothing to copy yet.");
+          }}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={() => downloadTextFile("scam-shield-report.md", reportMarkdown)}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      {activeResult ? <ResultList rows={summaryRows} /> : null}
+
+      {activeResult ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Verdict</h3>
+            <span className={`status-badge ${getScamVerdictBadgeClass(activeResult.verdict)}`}>{activeResult.verdict}</span>
+          </div>
+          <p>{activeResult.headline}</p>
+        </div>
+      ) : null}
+
+      {mode === "url" && urlResult ? (
+        <div className="mini-panel">
+          <h3>URL inspection details</h3>
+          <ul className="plain-list">
+            <li>Normalized URL: {urlResult.normalizedUrl}</li>
+            <li>Host: {urlResult.host}</li>
+            <li>HTTPS: {urlResult.usesHttps ? "Yes" : "No"}</li>
+            <li>Shortener domain: {urlResult.shortened ? "Yes" : "No"}</li>
+            <li>
+              Lure terms: {urlResult.suspiciousTerms.length ? urlResult.suspiciousTerms.join(", ") : "None detected"}
+            </li>
+            {urlResult.remote ? <li>Final URL: {urlResult.remote.finalUrl}</li> : null}
+            {urlResult.remote ? <li>HTTP status: {urlResult.remote.status}</li> : null}
+            {urlResult.remote?.title ? <li>Page title: {urlResult.remote.title}</li> : null}
+            {urlResult.ssl ? <li>Certificate authorized: {urlResult.ssl.ok && urlResult.ssl.authorized ? "Yes" : "No"}</li> : null}
+            {urlResult.ssl ? <li>Certificate hostname match: {urlResult.ssl.hostnameMatches ? "Yes" : "No"}</li> : null}
+          </ul>
+        </div>
+      ) : null}
+
+      {mode === "message" && messageResult ? (
+        <div className="mini-panel">
+          <h3>Message breakdown</h3>
+          <ul className="plain-list">
+            <li>Subject: {messageResult.subject ?? "Not provided"}</li>
+            <li>Sender: {messageResult.senderEmail ?? "Not provided"}</li>
+            <li>Reply-To: {messageResult.replyToEmail ?? "Not provided"}</li>
+            <li>Themes: {messageResult.matchedThemes.length ? messageResult.matchedThemes.join(", ") : "None detected"}</li>
+            <li>URLs found: {formatNumericValue(messageResult.extractedUrls.length)}</li>
+            <li>Emails found: {formatNumericValue(messageResult.extractedEmails.length)}</li>
+          </ul>
+        </div>
+      ) : null}
+
+      {mode === "qr" && qrResult ? (
+        <div className="mini-panel">
+          <h3>QR payload breakdown</h3>
+          <ul className="plain-list">
+            <li>Payload type: {qrResult.payloadType}</li>
+            <li>Payload label: {qrResult.payloadLabel}</li>
+            <li>Embedded URLs: {formatNumericValue(qrResult.extractedUrls.length)}</li>
+            {qrResult.urlAnalysis ? <li>Embedded URL verdict: {qrResult.urlAnalysis.verdict}</li> : null}
+          </ul>
+        </div>
+      ) : null}
+
+      {activeResult?.signals.length ? (
+        <div className="faq" aria-label="Scam risk signals">
+          <h2>Risk signals</h2>
+          {activeResult.signals.map((signal) => (
+            <details key={signal.id}>
+              <summary>
+                {signal.title} <span className={`status-badge ${getScamSignalBadgeClass(signal.severity)}`}>{signal.severity}</span>
+              </summary>
+              <p>{signal.detail}</p>
+              <p className="supporting-text">{signal.nextStep}</p>
+            </details>
+          ))}
+        </div>
+      ) : null}
+
+      {activeResult?.nextSteps.length ? (
+        <div className="mini-panel">
+          <h3>Safe next steps</h3>
+          <ul className="plain-list">
+            {activeResult.nextSteps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {messageResult?.extractedUrls.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Extracted links</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setMode("url");
+                setUrlInput(messageResult.extractedUrls[0]);
+                setStatus("Loaded the first extracted link for live inspection.");
+              }}
+            >
+              Inspect first link
+            </button>
+          </div>
+          <ul className="plain-list">
+            {messageResult.extractedUrls.map((entry) => (
+              <li key={entry}>{entry}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {qrResult?.extractedUrls.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Embedded link</h3>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => {
+                setMode("url");
+                setUrlInput(qrResult.extractedUrls[0]);
+                setStatus("Loaded the QR destination for live inspection.");
+              }}
+            >
+              Inspect live
+            </button>
+          </div>
+          <ul className="plain-list">
+            {qrResult.extractedUrls.map((entry) => (
+              <li key={entry}>{entry}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {reportMarkdown ? (
+        <label className="field">
+          <span>Scam Shield report</span>
+          <textarea value={reportMarkdown} rows={16} readOnly />
+        </label>
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent checks</h3>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              setHistory([]);
+              try {
+                window.localStorage.removeItem(SCAM_SHIELD_HISTORY_KEY);
+              } catch {
+                // Ignore storage clear failures.
+              }
+            }}
+            disabled={!history.length}
+          >
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No Scam Shield history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.label}</strong>
+                  <span className={`status-badge ${getScamVerdictBadgeClass(entry.verdict)}`}>{entry.riskScore}/100</span>
+                </div>
+                <small className="supporting-text">
+                  {entry.mode} | {entry.verdict} | {new Date(entry.auditedAt).toLocaleString("en-US")}
+                </small>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function UuidGeneratorTool() {
   const [count, setCount] = useState("5");
   const [uppercase, setUppercase] = useState(false);
@@ -20327,6 +20928,8 @@ function DeveloperTool({ id }: { id: DeveloperToolId }) {
   switch (id) {
     case "accessibility-auditor":
       return <AccessibilityAuditorTool />;
+    case "scam-shield":
+      return <ScamShieldTool />;
     case "uuid-generator":
       return <UuidGeneratorTool />;
     case "url-encoder-decoder":
