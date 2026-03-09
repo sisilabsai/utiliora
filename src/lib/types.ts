@@ -153,6 +153,7 @@ export type ProductivityToolId =
   | "meeting-time-planner"
   | "simple-todo-list"
   | "notes-pad"
+  | "pii-redaction-studio"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

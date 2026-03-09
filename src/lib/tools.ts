@@ -1354,6 +1354,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Notes Pad"),
   },
   {
+    slug: "pii-redaction-studio",
+    category: "productivity-tools",
+    title: "PII Redaction Studio",
+    summary: "Detect sensitive personal data in text, screenshots, and PDFs, then export share-safe redacted output.",
+    description:
+      "Scan pasted text or uploaded files for emails, phone numbers, card numbers, bank identifiers, IDs, URLs, IP addresses, and custom terms, review detections, and produce redacted outputs for safer sharing.",
+    keywords: [
+      "pii redaction",
+      "redact personal information",
+      "document redaction tool",
+      "pdf redaction online",
+      "image redaction",
+      "sensitive data masking",
+    ],
+    engine: { kind: "productivity-tool", id: "pii-redaction-studio" },
+    faq: baseFaq("PII Redaction Studio"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",

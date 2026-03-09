@@ -69,6 +69,13 @@ import {
   type ScamUrlSslInspection,
 } from "@/lib/scam-shield";
 import {
+  applyPiiRedactions,
+  detectPiiFindings,
+  summarizePiiCounts,
+  type PiiFinding,
+  type PiiReplacementMode,
+} from "@/lib/pii-redaction";
+import {
   buildDocumentTranslationWordMarkup,
   DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
   DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
@@ -39827,12 +39834,30 @@ interface OcrPageResult {
 interface OcrRecognitionWord {
   text?: string;
   confidence?: number;
+  bbox?: {
+    x0?: number;
+    y0?: number;
+    x1?: number;
+    y1?: number;
+  };
+}
+
+interface OcrRecognitionLine {
+  text?: string;
+  confidence?: number;
+  bbox?: {
+    x0?: number;
+    y0?: number;
+    x1?: number;
+    y1?: number;
+  };
 }
 
 interface OcrRecognitionData {
   text?: string;
   confidence?: number;
   words?: OcrRecognitionWord[];
+  lines?: OcrRecognitionLine[];
 }
 
 interface OcrWorkerLike {
@@ -40213,6 +40238,734 @@ function OcrWorkbenchTool() {
           placeholder="OCR output will appear here."
         />
       </label>
+    </section>
+  );
+}
+
+type PiiStudioSourceMode = "text" | "file";
+
+interface PiiVisualLineEntry {
+  id: string;
+  text: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  findings: PiiFinding[];
+}
+
+interface PiiVisualPageEntry {
+  id: string;
+  label: string;
+  imageDataUrl: string;
+  width: number;
+  height: number;
+  lines: PiiVisualLineEntry[];
+}
+
+interface PiiHistoryEntry {
+  id: string;
+  label: string;
+  sourceType: string;
+  findingCount: number;
+  highRiskCount: number;
+  redactedAt: string;
+}
+
+const PII_REDACTION_HISTORY_KEY = "utiliora-pii-redaction-history-v1";
+const PII_REDACTION_HISTORY_LIMIT = 12;
+const PII_TEXT_UPLOAD_ACCEPT = ".txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.xml,text/plain,text/csv,text/markdown,application/json,text/html,application/xml,image/*,application/pdf";
+
+function parseCustomTerms(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.slice(0, 120)),
+    ),
+  ).slice(0, 50);
+}
+
+async function readFileAsDataUrl(file: File): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Unable to read file."));
+      }
+    };
+    reader.onerror = () => reject(new Error("Unable to read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to load preview image."));
+    image.src = dataUrl;
+  });
+}
+
+function buildVisualRedactedText(pages: PiiVisualPageEntry[], selectedIds: string[], mode: PiiReplacementMode): string {
+  return pages
+    .map((page) =>
+      page.lines
+        .map((line) => applyPiiRedactions(line.text, line.findings, selectedIds, mode))
+        .join("\n"),
+    )
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function renderRedactedVisualPreview(page: PiiVisualPageEntry, selectedIds: string[]): Promise<string> {
+  const image = await loadImageFromDataUrl(page.imageDataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = page.width;
+  canvas.height = page.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas unavailable for preview rendering.");
+  }
+  context.drawImage(image, 0, 0, page.width, page.height);
+  context.fillStyle = "#0b0f14";
+  page.lines.forEach((line) => {
+    if (!line.findings.some((finding) => selectedIds.includes(finding.id))) return;
+    context.fillRect(
+      Math.max(0, line.bbox.x - 2),
+      Math.max(0, line.bbox.y - 2),
+      Math.min(page.width, line.bbox.width + 4),
+      Math.min(page.height, line.bbox.height + 4),
+    );
+  });
+  return canvas.toDataURL("image/png");
+}
+
+function createVisualLineFindings(lineId: string, text: string, customTerms: string[]): PiiFinding[] {
+  return detectPiiFindings(text, customTerms).map((finding) => ({
+    ...finding,
+    id: `${lineId}-${finding.id}`,
+  }));
+}
+
+function PiiRedactionStudioTool() {
+  const [sourceMode, setSourceMode] = useState<PiiStudioSourceMode>("text");
+  const [inputText, setInputText] = useState("");
+  const [customTermsText, setCustomTermsText] = useState("");
+  const [replacementMode, setReplacementMode] = useState<PiiReplacementMode>("block");
+  const [status, setStatus] = useState("Paste text or upload a file to detect sensitive data before sharing.");
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [findings, setFindings] = useState<PiiFinding[]>([]);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
+  const [redactedText, setRedactedText] = useState("");
+  const [visualPages, setVisualPages] = useState<PiiVisualPageEntry[]>([]);
+  const [visualPreviews, setVisualPreviews] = useState<Record<string, string>>({});
+  const [history, setHistory] = useState<PiiHistoryEntry[]>([]);
+  const [uploadedLabel, setUploadedLabel] = useState("");
+  const [maxPdfPages, setMaxPdfPages] = useState(4);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PII_REDACTION_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setHistory(
+        parsed.filter((entry): entry is PiiHistoryEntry => {
+          return typeof entry?.id === "string" && typeof entry?.redactedAt === "string";
+        }),
+      );
+    } catch {
+      // Ignore malformed local history.
+    }
+  }, []);
+
+  const persistHistory = useCallback((entry: PiiHistoryEntry) => {
+    setHistory((current) => {
+      const next = [entry, ...current].slice(0, PII_REDACTION_HISTORY_LIMIT);
+      try {
+        window.localStorage.setItem(PII_REDACTION_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage failures.
+      }
+      return next;
+    });
+  }, []);
+
+  const customTerms = useMemo(() => parseCustomTerms(customTermsText), [customTermsText]);
+  const findingSummary = useMemo(() => summarizePiiCounts(findings), [findings]);
+  const selectedFindings = useMemo(
+    () => findings.filter((finding) => selectedFindingIds.includes(finding.id)),
+    [findings, selectedFindingIds],
+  );
+
+  useEffect(() => {
+    if (visualPages.length > 0) {
+      setRedactedText(buildVisualRedactedText(visualPages, selectedFindingIds, replacementMode));
+      let cancelled = false;
+      void (async () => {
+        const next: Record<string, string> = {};
+        for (const page of visualPages) {
+          next[page.id] = await renderRedactedVisualPreview(page, selectedFindingIds);
+        }
+        if (!cancelled) setVisualPreviews(next);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setRedactedText(applyPiiRedactions(inputText, findings, selectedFindingIds, replacementMode));
+    return undefined;
+  }, [findings, inputText, replacementMode, selectedFindingIds, visualPages]);
+
+  const completeScan = useCallback(
+    (nextFindings: PiiFinding[], label: string, sourceType: string, nextVisualPages: PiiVisualPageEntry[] = []) => {
+      setFindings(nextFindings);
+      setSelectedFindingIds(nextFindings.map((finding) => finding.id));
+      setVisualPages(nextVisualPages);
+      setUploadedLabel(label);
+      persistHistory({
+        id: `${Date.now()}-${label}`,
+        label,
+        sourceType,
+        findingCount: nextFindings.length,
+        highRiskCount: nextFindings.filter((finding) => finding.severity === "high").length,
+        redactedAt: new Date().toISOString(),
+      });
+      setStatus(
+        nextFindings.length === 0
+          ? "Scan completed. No supported sensitive patterns were detected."
+          : `Scan completed with ${nextFindings.length} sensitive match${nextFindings.length === 1 ? "" : "es"}.`,
+      );
+      trackEvent("tool_pii_redaction_scan", {
+        sourceType,
+        findings: nextFindings.length,
+        highRiskFindings: nextFindings.filter((finding) => finding.severity === "high").length,
+      });
+      emitShareSignal({ action: "success", context: "pii-redaction-studio" });
+    },
+    [persistHistory],
+  );
+
+  const runTextScan = useCallback(() => {
+    const normalized = normalizeUploadedText(inputText).trim();
+    if (!normalized) {
+      setStatus("Paste text before running a PII scan.");
+      return;
+    }
+    const nextFindings = detectPiiFindings(normalized, customTerms);
+    completeScan(nextFindings, uploadedLabel || "Pasted text", "text");
+  }, [completeScan, customTerms, inputText, uploadedLabel]);
+
+  const processUploadedFile = useCallback(
+    async (file: File | null) => {
+      if (!file) {
+        setStatus("Choose a file first.");
+        return;
+      }
+
+      setProcessing(true);
+      setProgress(0);
+      setVisualPages([]);
+      setVisualPreviews({});
+      setUploadedLabel(file.name);
+
+      const extension = getFileExtension(file.name);
+      const isPdf = file.type === "application/pdf" || extension === "pdf";
+      const isImage = file.type.startsWith("image/");
+      const isTextLike =
+        file.type.startsWith("text/") ||
+        ["txt", "md", "markdown", "csv", "tsv", "json", "html", "htm", "xml"].includes(extension);
+
+      try {
+        if (isTextLike) {
+          const rawText = await readTextFileWithLimit(file, 6 * 1024 * 1024);
+          const normalized = normalizeUploadedText(rawText);
+          setInputText(normalized);
+          const nextFindings = detectPiiFindings(normalized, customTerms);
+          completeScan(nextFindings, file.name, "text-file");
+          setProgress(100);
+          return;
+        }
+
+        let worker: OcrWorkerLike | null = null;
+        let loadingTask: PdfJsLoadingTask | null = null;
+        let pdfDocument: PdfJsDocument | null = null;
+
+        try {
+          const tesseractModule = (await import("tesseract.js")) as unknown as OcrModuleLike;
+          worker = await tesseractModule.createWorker("eng", 1, {
+            logger: (message) => {
+              if (message.status === "recognizing text") {
+                const bounded = Math.max(0, Math.min(1, message.progress || 0));
+                setProgress(Math.round(bounded * 100));
+              }
+            },
+          });
+
+          if (isImage) {
+            setStatus("Running OCR and building image redaction preview...");
+            const dataUrl = await readFileAsDataUrl(file);
+            const image = await loadImageFromDataUrl(dataUrl);
+            const recognition = await worker.recognize(file);
+            const data = recognition.data as OcrRecognitionData | undefined;
+            const lines = Array.isArray(data?.lines) ? data.lines : [];
+
+            const visualLines = lines
+              .map((line, index) => {
+                const text = (line.text ?? "").trim();
+                const bbox = line.bbox;
+                if (!text || !bbox) return null;
+                const width = Math.max(8, Number(bbox.x1 ?? 0) - Number(bbox.x0 ?? 0));
+                const height = Math.max(8, Number(bbox.y1 ?? 0) - Number(bbox.y0 ?? 0));
+                const lineId = `image-line-${index}`;
+                const lineFindings = createVisualLineFindings(lineId, text, customTerms);
+                return {
+                  id: lineId,
+                  text,
+                  bbox: {
+                    x: Math.max(0, Number(bbox.x0 ?? 0)),
+                    y: Math.max(0, Number(bbox.y0 ?? 0)),
+                    width,
+                    height,
+                  },
+                  findings: lineFindings,
+                } satisfies PiiVisualLineEntry;
+              })
+              .filter((entry): entry is PiiVisualLineEntry => Boolean(entry));
+
+            const flattened = visualLines.flatMap((line) => line.findings);
+            completeScan(flattened, file.name, "image", [
+              {
+                id: "image-page-1",
+                label: file.name,
+                imageDataUrl: dataUrl,
+                width: image.naturalWidth || image.width,
+                height: image.naturalHeight || image.height,
+                lines: visualLines,
+              },
+            ]);
+            setProgress(100);
+            return;
+          }
+
+          if (isPdf) {
+            setStatus("Rendering PDF pages for OCR redaction...");
+            const pdfjs = await loadPdfJsModule();
+            const bytes = await readPdfFileBytes(file);
+            const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+            loadingTask = opened.loadingTask;
+            pdfDocument = opened.pdfDocument;
+            const totalPages = Math.max(1, Math.min(pdfDocument.numPages, maxPdfPages));
+            const pages: PiiVisualPageEntry[] = [];
+            const flattenedFindings: PiiFinding[] = [];
+
+            for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
+              setStatus(`Scanning PDF page ${pageIndex + 1}/${totalPages}...`);
+              const page = await pdfDocument.getPage(pageIndex + 1);
+              const viewport = page.getViewport({ scale: 2 });
+              const canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.floor(viewport.width));
+              canvas.height = Math.max(1, Math.floor(viewport.height));
+              const context = canvas.getContext("2d");
+              if (!context) {
+                throw new Error("Canvas unavailable for PDF rendering.");
+              }
+              await page.render({ canvasContext: context, viewport }).promise;
+              const recognition = await worker.recognize(canvas);
+              const data = recognition.data as OcrRecognitionData | undefined;
+              const lines = Array.isArray(data?.lines) ? data.lines : [];
+              const visualLines = lines
+                .map((line, index) => {
+                  const text = (line.text ?? "").trim();
+                  const bbox = line.bbox;
+                  if (!text || !bbox) return null;
+                  const width = Math.max(8, Number(bbox.x1 ?? 0) - Number(bbox.x0 ?? 0));
+                  const height = Math.max(8, Number(bbox.y1 ?? 0) - Number(bbox.y0 ?? 0));
+                  const lineId = `pdf-${pageIndex + 1}-line-${index}`;
+                  const lineFindings = createVisualLineFindings(lineId, text, customTerms);
+                  return {
+                    id: lineId,
+                    text,
+                    bbox: {
+                      x: Math.max(0, Number(bbox.x0 ?? 0)),
+                      y: Math.max(0, Number(bbox.y0 ?? 0)),
+                      width,
+                      height,
+                    },
+                    findings: lineFindings,
+                  } satisfies PiiVisualLineEntry;
+                })
+                .filter((entry): entry is PiiVisualLineEntry => Boolean(entry));
+
+              visualLines.forEach((line) => flattenedFindings.push(...line.findings));
+              pages.push({
+                id: `pdf-page-${pageIndex + 1}`,
+                label: `Page ${pageIndex + 1}`,
+                imageDataUrl: canvas.toDataURL("image/png"),
+                width: canvas.width,
+                height: canvas.height,
+                lines: visualLines,
+              });
+              setProgress(Math.round(((pageIndex + 1) / totalPages) * 100));
+            }
+
+            completeScan(flattenedFindings, file.name, "pdf", pages);
+            return;
+          }
+
+          setStatus("Unsupported file type. Use text, image, or PDF files.");
+        } finally {
+          if (worker) {
+            try {
+              await worker.terminate();
+            } catch {
+              // Ignore OCR worker cleanup failures.
+            }
+          }
+          await closePdfDocumentResources(loadingTask, pdfDocument);
+        }
+      } catch {
+        setStatus("Unable to scan and redact this file. Try a cleaner image, a smaller PDF, or a text-based file.");
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [completeScan, customTerms, maxPdfPages],
+  );
+
+  const exportRedactedPdf = useCallback(async () => {
+    if (!visualPages.length) return;
+    const { jsPDF } = await import("jspdf");
+    let output: JsPdfType | null = null;
+    for (const page of visualPages) {
+      const preview = visualPreviews[page.id];
+      if (!preview) continue;
+      if (!output) {
+        output = new jsPDF({
+          orientation: page.width >= page.height ? "landscape" : "portrait",
+          unit: "pt",
+          format: [page.width, page.height],
+        });
+      } else {
+        output.addPage([page.width, page.height], page.width >= page.height ? "landscape" : "portrait");
+      }
+      output.addImage(preview, "PNG", 0, 0, page.width, page.height);
+    }
+    output?.save("pii-redacted-document.pdf");
+  }, [visualPages, visualPreviews]);
+
+  const findingsCsvRows = useMemo(
+    () =>
+      findings.map((finding) => [
+        finding.label,
+        finding.type,
+        finding.severity,
+        finding.value.replace(/"/g, '""'),
+        selectedFindingIds.includes(finding.id) ? "Yes" : "No",
+      ]),
+    [findings, selectedFindingIds],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PII redaction studio"
+        subtitle="Detect sensitive personal data in text, screenshots, and PDFs, then export share-safe redacted output."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Source</span>
+          <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as PiiStudioSourceMode)}>
+            <option value="text">Pasted text</option>
+            <option value="file">Uploaded file</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Replacement style</span>
+          <select value={replacementMode} onChange={(event) => setReplacementMode(event.target.value as PiiReplacementMode)}>
+            <option value="block">Block token</option>
+            <option value="label">Field label</option>
+            <option value="partial">Partial mask</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Max PDF pages ({maxPdfPages})</span>
+          <input
+            type="range"
+            min={1}
+            max={8}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(8, Number(event.target.value))))}
+          />
+        </label>
+      </div>
+
+      {sourceMode === "text" ? (
+        <label className="field">
+          <span>Paste text, logs, messages, or document content</span>
+          <textarea
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            rows={14}
+            placeholder="Paste the content you want to scrub before sharing."
+          />
+        </label>
+      ) : (
+        <label className="field">
+          <span>Upload text, image, or PDF</span>
+          <input
+            type="file"
+            accept={PII_TEXT_UPLOAD_ACCEPT}
+            onChange={(event) => void processUploadedFile(event.target.files?.[0] ?? null)}
+          />
+          <small className="supporting-text">Text files are redacted directly. Images and PDFs use OCR plus black-box overlays for share-safe export.</small>
+        </label>
+      )}
+
+      <label className="field">
+        <span>Custom phrases to always redact</span>
+        <textarea
+          value={customTermsText}
+          onChange={(event) => setCustomTermsText(event.target.value)}
+          rows={4}
+          placeholder={"One phrase per line\nCustomer ID 4829\nJane Doe"}
+        />
+      </label>
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => void (sourceMode === "text" ? runTextScan() : setStatus("Upload a file to start scanning."))}
+          disabled={processing || sourceMode !== "text"}
+        >
+          {processing ? "Scanning..." : "Scan text"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setSourceMode("text");
+            setInputText(
+              "Customer: Jane Doe\nEmail: jane.doe@example.com\nPhone: +1 202 555 0184\nCard: 4242 4242 4242 4242\nPortal: https://portal.example.com/reset\nOffice IP: 192.168.1.42",
+            );
+            setCustomTermsText("Jane Doe\nCustomer");
+            setStatus("Loaded a redaction sample.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Load sample
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!selectedFindings.length}
+          onClick={() => setSelectedFindingIds(findings.map((finding) => finding.id))}
+        >
+          Select all
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!findings.length}
+          onClick={() => setSelectedFindingIds(findings.filter((finding) => finding.severity === "high").map((finding) => finding.id))}
+        >
+          High risk only
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!findings.length}
+          onClick={() => setSelectedFindingIds([])}
+        >
+          Clear selection
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {processing ? (
+        <div className="progress-panel">
+          <p>Scan progress: {progress}%</p>
+          <div className="limit-meter">
+            <div className="limit-meter-fill" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      {findings.length ? (
+        <ResultList
+          rows={[
+            { label: "Source", value: uploadedLabel || (sourceMode === "text" ? "Pasted text" : "Upload") },
+            { label: "Sensitive matches", value: formatNumericValue(findings.length) },
+            { label: "Selected for redaction", value: formatNumericValue(selectedFindings.length) },
+            { label: "High-risk matches", value: formatNumericValue(findings.filter((finding) => finding.severity === "high").length) },
+            { label: "Custom terms", value: formatNumericValue(customTerms.length) },
+          ]}
+        />
+      ) : null}
+
+      {findingSummary.length ? (
+        <div className="mini-panel">
+          <h3>Detection summary</h3>
+          <ul className="plain-list">
+            {findingSummary.map((entry) => (
+              <li key={entry.label}>
+                {entry.label}: {formatNumericValue(entry.count)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {findings.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Review detections</h3>
+            <span className="supporting-text">Toggle what should be redacted before export.</span>
+          </div>
+          <ul className="plain-list">
+            {findings.map((finding) => (
+              <li key={finding.id}>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={selectedFindingIds.includes(finding.id)}
+                    onChange={(event) => {
+                      setSelectedFindingIds((current) =>
+                        event.target.checked ? [...current, finding.id] : current.filter((entry) => entry !== finding.id),
+                      );
+                    }}
+                  />
+                  <span>
+                    <strong>{finding.label}</strong> [{finding.severity}] {finding.value}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {redactedText ? (
+        <>
+          <label className="field">
+            <span>Redacted text output</span>
+            <textarea value={redactedText} onChange={(event) => setRedactedText(event.target.value)} rows={14} />
+          </label>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={async () => {
+                const ok = await copyTextToClipboard(redactedText);
+                setStatus(ok ? "Redacted text copied." : "Nothing to copy.");
+              }}
+            >
+              <Copy size={15} />
+              Copy redacted text
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => downloadTextFile("pii-redacted-output.txt", redactedText)}
+            >
+              <Download size={15} />
+              TXT
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                downloadCsv("pii-redaction-findings.csv", ["Label", "Type", "Severity", "Value", "Selected"], findingsCsvRows)
+              }
+              disabled={!findings.length}
+            >
+              <Download size={15} />
+              Findings CSV
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {visualPages.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Share-safe visual preview</h3>
+            <div className="button-row">
+              <button className="action-button secondary" type="button" onClick={() => void exportRedactedPdf()}>
+                Export PDF
+              </button>
+              {visualPages.length === 1 && visualPreviews[visualPages[0].id] ? (
+                <button
+                  className="action-button secondary"
+                  type="button"
+                  onClick={() => downloadDataUrl("pii-redacted-image.png", visualPreviews[visualPages[0].id])}
+                >
+                  Export PNG
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {visualPages.map((page) => (
+            <div key={page.id} className="image-preview">
+              <p className="supporting-text">{page.label}</p>
+              {visualPreviews[page.id] ? (
+                <NextImage src={visualPreviews[page.id]} alt={`${page.label} redacted preview`} width={420} height={280} unoptimized />
+              ) : (
+                <p className="supporting-text">Rendering preview...</p>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Recent redaction jobs</h3>
+          <button
+            className="action-button secondary"
+            type="button"
+            onClick={() => {
+              setHistory([]);
+              try {
+                window.localStorage.removeItem(PII_REDACTION_HISTORY_KEY);
+              } catch {
+                // Ignore storage clear issues.
+              }
+            }}
+            disabled={!history.length}
+          >
+            Clear history
+          </button>
+        </div>
+        {history.length === 0 ? (
+          <p className="supporting-text">No redaction history yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.label}</strong>
+                  <span className="supporting-text">
+                    {entry.findingCount} match(es), {entry.highRiskCount} high risk
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  {entry.sourceType} | {new Date(entry.redactedAt).toLocaleString("en-US")}
+                </small>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }
@@ -44279,6 +45032,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <TextTranslatorTool />;
     case "document-translator":
       return <DocumentTranslatorTool />;
+    case "pii-redaction-studio":
+      return <PiiRedactionStudioTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":
