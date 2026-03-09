@@ -50,6 +50,18 @@ import { trackEvent } from "@/lib/analytics";
 import { emitShareSignal } from "@/lib/social-share";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
+  applyCleanupPreset,
+  buildCsvText,
+  cleanupCsvDataset,
+  detectCsvDelimiter,
+  mapCsvRows,
+  parseDelimitedText,
+  parseTargetSchema,
+  suggestColumnMappings,
+  type CsvCleanupOptions,
+  type CsvDataset,
+} from "@/lib/csv-cleanup";
+import {
   analyzeAccessibilityMarkup,
   buildAccessibilityAuditMarkdown,
   type AccessibilityAuditIssue,
@@ -41933,6 +41945,408 @@ function TranscriptSubtitleStudioTool() {
   );
 }
 
+function CsvCleanupMappingStudioTool() {
+  const [sourceText, setSourceText] = useState("");
+  const [targetSchemaText, setTargetSchemaText] = useState("");
+  const [sourceFileLabel, setSourceFileLabel] = useState("");
+  const [targetFileLabel, setTargetFileLabel] = useState("");
+  const [status, setStatus] = useState("Import a CSV or TSV file, clean the rows, and optionally map it into a target schema.");
+  const [dataset, setDataset] = useState<CsvDataset | null>(null);
+  const [cleanupOptions, setCleanupOptions] = useState<CsvCleanupOptions>(() => applyCleanupPreset("normalize-ecommerce-exports"));
+  const [cleanupStats, setCleanupStats] = useState<{ duplicateRowsRemoved: number; emptyRowsRemoved: number; changedCells: number }>({
+    duplicateRowsRemoved: 0,
+    emptyRowsRemoved: 0,
+    changedCells: 0,
+  });
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+
+  const loadSourceText = useCallback((raw: string, label: string) => {
+    const normalized = normalizeUploadedText(raw);
+    if (!normalized.trim()) {
+      setStatus("The source CSV text is empty.");
+      setDataset(null);
+      return;
+    }
+    const parsed = parseDelimitedText(normalized, detectCsvDelimiter(normalized));
+    setSourceText(normalized);
+    setDataset(parsed);
+    setSourceFileLabel(label);
+    setStatus(`Loaded ${parsed.rows.length} row${parsed.rows.length === 1 ? "" : "s"} with ${parsed.headers.length} column${parsed.headers.length === 1 ? "" : "s"}.`);
+  }, []);
+
+  const loadTargetSchema = useCallback((raw: string, label: string) => {
+    const normalized = normalizeUploadedText(raw);
+    setTargetSchemaText(normalized);
+    setTargetFileLabel(label);
+    setStatus(normalized.trim() ? `Loaded target schema from ${label}.` : "Target schema cleared.");
+  }, []);
+
+  const importSourceFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file, 8 * 1024 * 1024);
+      loadSourceText(raw, file.name);
+    } catch {
+      setStatus("Could not read this CSV/TSV file.");
+    }
+  }, [loadSourceText]);
+
+  const importTargetSchemaFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file, 2 * 1024 * 1024);
+      loadTargetSchema(raw, file.name);
+    } catch {
+      setStatus("Could not read this target schema file.");
+    }
+  }, [loadTargetSchema]);
+
+  const cleanedDataset = useMemo(() => {
+    if (!dataset) return null;
+    const result = cleanupCsvDataset(dataset, cleanupOptions);
+    return result;
+  }, [cleanupOptions, dataset]);
+
+  useEffect(() => {
+    if (!cleanedDataset) {
+      setCleanupStats({ duplicateRowsRemoved: 0, emptyRowsRemoved: 0, changedCells: 0 });
+      return;
+    }
+    setCleanupStats({
+      duplicateRowsRemoved: cleanedDataset.duplicateRowsRemoved,
+      emptyRowsRemoved: cleanedDataset.emptyRowsRemoved,
+      changedCells: cleanedDataset.changedCells,
+    });
+  }, [cleanedDataset]);
+
+  const targetHeaders = useMemo(() => parseTargetSchema(targetSchemaText), [targetSchemaText]);
+
+  useEffect(() => {
+    if (!cleanedDataset || !targetHeaders.length) return;
+    const suggestions = suggestColumnMappings(cleanedDataset.headers, targetHeaders);
+    setMapping((current) => {
+      const next: Record<string, string> = {};
+      targetHeaders.forEach((header) => {
+        next[header] = current[header] ?? suggestions.find((entry) => entry.targetHeader === header)?.sourceHeader ?? "";
+      });
+      return next;
+    });
+  }, [cleanedDataset, targetHeaders]);
+
+  const mappedRows = useMemo(() => {
+    if (!cleanedDataset || !targetHeaders.length) return [];
+    return mapCsvRows(cleanedDataset.headers, cleanedDataset.rows, mapping, targetHeaders);
+  }, [cleanedDataset, mapping, targetHeaders]);
+
+  const sourcePreviewRows = useMemo(() => cleanedDataset?.rows.slice(0, 8) ?? [], [cleanedDataset]);
+  const mappedPreviewRows = useMemo(() => mappedRows.slice(0, 8), [mappedRows]);
+
+  const applyPreset = useCallback((preset: Parameters<typeof applyCleanupPreset>[0]) => {
+    setCleanupOptions(applyCleanupPreset(preset));
+    setStatus(`Applied ${preset.replace(/-/g, " ")} preset.`);
+  }, []);
+
+  const mappedCsvText = useMemo(() => {
+    if (!targetHeaders.length || !mappedRows.length) return "";
+    return buildCsvText(targetHeaders, mappedRows, ",");
+  }, [mappedRows, targetHeaders]);
+
+  const cleanedCsvText = useMemo(() => {
+    if (!cleanedDataset) return "";
+    return buildCsvText(cleanedDataset.headers, cleanedDataset.rows, ",");
+  }, [cleanedDataset]);
+
+  const mappingSuggestions = useMemo(() => {
+    if (!cleanedDataset || !targetHeaders.length) return [];
+    return suggestColumnMappings(cleanedDataset.headers, targetHeaders);
+  }, [cleanedDataset, targetHeaders]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Briefcase}
+        title="CSV cleanup & mapping studio"
+        subtitle="Clean dirty CSV files, normalize headers, dedupe rows, and map them into a target schema with previewable outputs."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Source CSV/TSV file</span>
+          <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values,text/plain" onChange={(event) => void importSourceFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Target schema file (optional)</span>
+          <input type="file" accept=".txt,.csv,.tsv,text/plain,text/csv" onChange={(event) => void importTargetSchemaFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <div className="mini-panel">
+          <h3>Quick presets</h3>
+          <div className="chip-list">
+            <button className="chip-button" type="button" onClick={() => applyPreset("merchant-name-cleanup")}>
+              Merchant-name cleanup
+            </button>
+            <button className="chip-button" type="button" onClick={() => applyPreset("dedupe-contacts")}>
+              Dedupe contacts
+            </button>
+            <button className="chip-button" type="button" onClick={() => applyPreset("normalize-ecommerce-exports")}>
+              Normalize ecommerce export
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <label className="field">
+        <span>Source CSV/TSV text {sourceFileLabel ? `(${sourceFileLabel})` : ""}</span>
+        <textarea
+          rows={10}
+          value={sourceText}
+          onChange={(event) => {
+            setSourceText(event.target.value);
+            setDataset(null);
+          }}
+          placeholder="Paste source CSV or TSV data here."
+        />
+      </label>
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => loadSourceText(sourceText, sourceFileLabel || "Pasted source")}
+          disabled={!sourceText.trim()}
+        >
+          Parse source
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={async () => {
+            const ok = await copyTextToClipboard(cleanedCsvText || sourceText);
+            setStatus(ok ? "CSV text copied." : "Nothing to copy.");
+          }}
+          disabled={!sourceText.trim()}
+        >
+          <Copy size={15} />
+          Copy cleaned CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => cleanedCsvText && downloadTextFile("cleaned-data.csv", cleanedCsvText, "text/csv;charset=utf-8;")}
+          disabled={!cleanedCsvText}
+        >
+          <Download size={15} />
+          Cleaned CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() =>
+            cleanedDataset &&
+            downloadTextFile(
+              "cleaned-data.json",
+              JSON.stringify(
+                cleanedDataset.rows.map((row) => Object.fromEntries(cleanedDataset.headers.map((header, index) => [header, row[index] ?? ""]))),
+                null,
+                2,
+              ),
+              "application/json;charset=utf-8;",
+            )
+          }
+          disabled={!cleanedDataset}
+        >
+          <Download size={15} />
+          Cleaned JSON
+        </button>
+      </div>
+
+      <label className="field">
+        <span>Target schema {targetFileLabel ? `(${targetFileLabel})` : ""}</span>
+        <textarea
+          rows={4}
+          value={targetSchemaText}
+          onChange={(event) => setTargetSchemaText(event.target.value)}
+          placeholder="Paste target headers separated by commas or new lines, for example: full_name,email,phone"
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.trimCells} onChange={(event) => setCleanupOptions((current) => ({ ...current, trimCells: event.target.checked }))} />
+          Trim cells
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.collapseWhitespace} onChange={(event) => setCleanupOptions((current) => ({ ...current, collapseWhitespace: event.target.checked }))} />
+          Collapse whitespace
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.normalizeHeaders} onChange={(event) => setCleanupOptions((current) => ({ ...current, normalizeHeaders: event.target.checked }))} />
+          Normalize headers
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.fillMissingHeaders} onChange={(event) => setCleanupOptions((current) => ({ ...current, fillMissingHeaders: event.target.checked }))} />
+          Fill missing headers
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.dropEmptyRows} onChange={(event) => setCleanupOptions((current) => ({ ...current, dropEmptyRows: event.target.checked }))} />
+          Drop empty rows
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={cleanupOptions.dedupeRows} onChange={(event) => setCleanupOptions((current) => ({ ...current, dedupeRows: event.target.checked }))} />
+          Remove duplicate rows
+        </label>
+        <label className="field">
+          <span>Text casing</span>
+          <select value={cleanupOptions.textCase} onChange={(event) => setCleanupOptions((current) => ({ ...current, textCase: event.target.value as CsvCleanupOptions["textCase"] }))}>
+            <option value="keep">Keep as-is</option>
+            <option value="lower">lowercase</option>
+            <option value="upper">UPPERCASE</option>
+            <option value="title">Title Case</option>
+          </select>
+        </label>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Detected delimiter", value: dataset ? (dataset.delimiter === "\t" ? "Tab" : dataset.delimiter) : "Not parsed" },
+          { label: "Columns", value: formatNumericValue(cleanedDataset?.headers.length ?? 0) },
+          { label: "Rows", value: formatNumericValue(cleanedDataset?.rows.length ?? 0) },
+          { label: "Duplicates removed", value: formatNumericValue(cleanupStats.duplicateRowsRemoved) },
+          { label: "Empty rows removed", value: formatNumericValue(cleanupStats.emptyRowsRemoved) },
+          { label: "Changed cells", value: formatNumericValue(cleanupStats.changedCells) },
+        ]}
+      />
+
+      {cleanedDataset ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Cleaned preview</h3>
+            <span className="supporting-text">First {formatNumericValue(sourcePreviewRows.length)} row{sourcePreviewRows.length === 1 ? "" : "s"} after cleanup.</span>
+          </div>
+          <div className="preview-box" style={{ overflowX: "auto" }}>
+            <table className="comparison-table">
+              <thead>
+                <tr>
+                  {cleanedDataset.headers.map((header) => (
+                    <th key={header}>{header || "(empty header)"}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sourcePreviewRows.map((row, rowIndex) => (
+                  <tr key={`source-row-${rowIndex}`}>
+                    {cleanedDataset.headers.map((header, cellIndex) => (
+                      <td key={`${header}-${rowIndex}-${cellIndex}`}>{row[cellIndex] ?? ""}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {targetHeaders.length && cleanedDataset ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Column mapping</h3>
+            <span className="supporting-text">Map each target column to a cleaned source column.</span>
+          </div>
+          <div className="plain-list">
+            {targetHeaders.map((targetHeader) => {
+              const suggestion = mappingSuggestions.find((entry) => entry.targetHeader === targetHeader);
+              return (
+                <div key={targetHeader} className="field-grid">
+                  <label className="field">
+                    <span>Target column</span>
+                    <input type="text" value={targetHeader} readOnly />
+                  </label>
+                  <label className="field">
+                    <span>Source column</span>
+                    <select value={mapping[targetHeader] ?? ""} onChange={(event) => setMapping((current) => ({ ...current, [targetHeader]: event.target.value }))}>
+                      <option value="">Leave blank</option>
+                      {cleanedDataset.headers.map((header) => (
+                        <option key={`${targetHeader}-${header}`} value={header}>
+                          {header}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="mini-panel">
+                    <h3>Suggestion</h3>
+                    <p className="supporting-text">
+                      {suggestion?.sourceHeader
+                        ? `${suggestion.sourceHeader} (${suggestion.confidence})`
+                        : "No strong automatic match"}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="button-row">
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() => mappedCsvText && downloadTextFile("mapped-data.csv", mappedCsvText, "text/csv;charset=utf-8;")}
+              disabled={!mappedCsvText}
+            >
+              <Download size={15} />
+              Mapped CSV
+            </button>
+            <button
+              className="action-button secondary"
+              type="button"
+              onClick={() =>
+                mappedRows.length &&
+                downloadTextFile(
+                  "mapped-data.json",
+                  JSON.stringify(mappedRows.map((row) => Object.fromEntries(targetHeaders.map((header, index) => [header, row[index] ?? ""]))), null, 2),
+                  "application/json;charset=utf-8;",
+                )
+              }
+              disabled={!mappedRows.length}
+            >
+              <Download size={15} />
+              Mapped JSON
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {mappedPreviewRows.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Mapped preview</h3>
+            <span className="supporting-text">Target-schema output preview.</span>
+          </div>
+          <div className="preview-box" style={{ overflowX: "auto" }}>
+            <table className="comparison-table">
+              <thead>
+                <tr>
+                  {targetHeaders.map((header) => (
+                    <th key={header}>{header}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {mappedPreviewRows.map((row, rowIndex) => (
+                  <tr key={`mapped-row-${rowIndex}`}>
+                    {targetHeaders.map((header, cellIndex) => (
+                      <td key={`${header}-${rowIndex}-${cellIndex}`}>{row[cellIndex] ?? ""}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -46731,6 +47145,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <RemittanceFxComparatorTool />;
     case "transcript-subtitle-studio":
       return <TranscriptSubtitleStudioTool />;
+    case "csv-cleanup-mapping-studio":
+      return <CsvCleanupMappingStudioTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":

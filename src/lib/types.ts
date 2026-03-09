@@ -157,6 +157,7 @@ export type ProductivityToolId =
   | "receipt-invoice-extractor"
   | "remittance-fx-comparator"
   | "transcript-subtitle-studio"
+  | "csv-cleanup-mapping-studio"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

@@ -1426,6 +1426,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Transcript & Subtitle Studio"),
   },
   {
+    slug: "csv-cleanup-mapping-studio",
+    category: "productivity-tools",
+    title: "CSV Cleanup & Mapping Studio",
+    summary: "Clean dirty CSV files, dedupe rows, normalize headers, and map columns into a target schema.",
+    description:
+      "Import CSV or TSV files, detect delimiters, fix whitespace and casing issues, remove duplicates, standardize headers, preview cleaned data, and export mapped outputs for downstream systems.",
+    keywords: [
+      "csv cleanup tool",
+      "csv mapping studio",
+      "csv dedupe",
+      "clean spreadsheet export",
+      "schema mapping csv",
+      "normalize csv headers",
+    ],
+    engine: { kind: "productivity-tool", id: "csv-cleanup-mapping-studio" },
+    faq: baseFaq("CSV Cleanup & Mapping Studio"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",
