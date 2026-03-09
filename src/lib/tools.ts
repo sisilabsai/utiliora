@@ -1408,6 +1408,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Remittance Fee & FX Comparator"),
   },
   {
+    slug: "transcript-subtitle-studio",
+    category: "productivity-tools",
+    title: "Transcript & Subtitle Studio",
+    summary: "Turn transcripts into timed subtitles, speaker notes, meeting minutes, and translated caption tracks.",
+    description:
+      "Upload audio or video for preview, import or paste a transcript, generate subtitle cues, edit timings, translate caption tracks, and export SRT, VTT, transcript, or meeting-minute outputs.",
+    keywords: [
+      "subtitle generator",
+      "transcript studio",
+      "srt generator",
+      "vtt generator",
+      "subtitle translator",
+      "meeting transcript tool",
+    ],
+    engine: { kind: "productivity-tool", id: "transcript-subtitle-studio" },
+    faq: baseFaq("Transcript & Subtitle Studio"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",

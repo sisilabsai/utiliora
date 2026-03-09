@@ -156,6 +156,7 @@ export type ProductivityToolId =
   | "pii-redaction-studio"
   | "receipt-invoice-extractor"
   | "remittance-fx-comparator"
+  | "transcript-subtitle-studio"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

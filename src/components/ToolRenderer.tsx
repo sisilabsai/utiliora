@@ -89,6 +89,18 @@ import {
   type RemittanceProviderInput,
 } from "@/lib/remittance";
 import {
+  buildMeetingMinutes,
+  buildSpeakerNotes,
+  cuesToTranscript,
+  exportSrt,
+  exportVtt,
+  formatSubtitleTimestamp,
+  generateSubtitleCues,
+  parseSubtitleFile,
+  parseTranscriptSpeakers,
+  type SubtitleCue,
+} from "@/lib/transcript-subtitle";
+import {
   buildDocumentTranslationWordMarkup,
   DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
   DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
@@ -41518,6 +41530,409 @@ function RemittanceFxComparatorTool() {
   );
 }
 
+function TranscriptSubtitleStudioTool() {
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [transcriptText, setTranscriptText] = useState("");
+  const [cues, setCues] = useState<SubtitleCue[]>([]);
+  const [status, setStatus] = useState("Upload media for preview, then paste or import a transcript to generate subtitles.");
+  const [targetCharsPerCue, setTargetCharsPerCue] = useState("84");
+  const [minCueSeconds, setMinCueSeconds] = useState("2");
+  const [maxCueSeconds, setMaxCueSeconds] = useState("6");
+  const [mediaDurationSeconds, setMediaDurationSeconds] = useState(0);
+  const [translationTargetLanguage, setTranslationTargetLanguage] = useState("es");
+  const [translationSourceLanguage, setTranslationSourceLanguage] = useState(TRANSLATION_AUTO_LANGUAGE_CODE);
+  const [translating, setTranslating] = useState(false);
+  const [translationProgress, setTranslationProgress] = useState(0);
+
+  useEffect(() => {
+    return () => {
+      if (mediaUrl) {
+        URL.revokeObjectURL(mediaUrl);
+      }
+    };
+  }, [mediaUrl]);
+
+  const applyMediaFile = useCallback((file: File | null) => {
+    if (mediaUrl) {
+      URL.revokeObjectURL(mediaUrl);
+      setMediaUrl("");
+    }
+    setMediaFile(file);
+    setMediaDurationSeconds(0);
+    if (!file) {
+      setStatus("Upload media for preview, then paste or import a transcript to generate subtitles.");
+      return;
+    }
+    setMediaUrl(URL.createObjectURL(file));
+    setStatus(`Loaded ${file.name}. Waiting for media metadata or transcript input.`);
+  }, [mediaUrl]);
+
+  const importTranscriptFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await readTextFileWithLimit(file, 4 * 1024 * 1024);
+      const extension = getFileExtension(file.name);
+      if (extension === "srt" || extension === "vtt") {
+        const parsed = parseSubtitleFile(raw);
+        setCues(parsed);
+        setTranscriptText(cuesToTranscript(parsed));
+        setStatus(`Imported ${parsed.length} subtitle cue${parsed.length === 1 ? "" : "s"} from ${file.name}.`);
+        return;
+      }
+      const normalized = normalizeUploadedText(raw);
+      setTranscriptText(normalized);
+      setStatus(`Imported transcript text from ${file.name}.`);
+    } catch {
+      setStatus("Could not import this transcript file.");
+    }
+  }, []);
+
+  const generateCuesFromTranscript = useCallback(() => {
+    const normalized = normalizeUploadedText(transcriptText).trim();
+    if (!normalized) {
+      setStatus("Paste or import transcript text first.");
+      return;
+    }
+    const generated = generateSubtitleCues(normalized, {
+      mediaDurationSeconds: mediaDurationSeconds || undefined,
+      targetCharsPerCue: Math.max(28, safeNumberValue(targetCharsPerCue)),
+      minCueSeconds: Math.max(1.2, safeNumberValue(minCueSeconds)),
+      maxCueSeconds: Math.max(1.5, safeNumberValue(maxCueSeconds)),
+    });
+    setCues(generated);
+    setStatus(`Generated ${generated.length} subtitle cue${generated.length === 1 ? "" : "s"} from the transcript.`);
+    trackEvent("tool_transcript_subtitle_generate", {
+      cues: generated.length,
+      hasMediaDuration: mediaDurationSeconds > 0,
+    });
+    emitShareSignal({ action: "success", context: "transcript-subtitle-studio" });
+  }, [maxCueSeconds, mediaDurationSeconds, minCueSeconds, targetCharsPerCue, transcriptText]);
+
+  const speakerNotes = useMemo(
+    () => (cues.length ? buildSpeakerNotes(cues) : parseTranscriptSpeakers(transcriptText)),
+    [cues, transcriptText],
+  );
+  const meetingMinutes = useMemo(() => buildMeetingMinutes(cues), [cues]);
+  const totalCueDuration = useMemo(() => {
+    if (!cues.length) return 0;
+    return cues[cues.length - 1].endMs;
+  }, [cues]);
+
+  const translateCueTrack = useCallback(async () => {
+    if (!cues.length) {
+      setStatus("Generate or import subtitle cues before translating.");
+      return;
+    }
+    setTranslating(true);
+    setTranslationProgress(0);
+    try {
+      const translated: SubtitleCue[] = [];
+      for (let index = 0; index < cues.length; index += 1) {
+        const cue = cues[index];
+        const response = await fetch("/api/text-translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: cue.text,
+            sourceLanguage: translationSourceLanguage,
+            targetLanguage: translationTargetLanguage,
+          }),
+        });
+        const payload = (await response.json().catch(() => null)) as TextTranslateApiPayload | null;
+        if (!response.ok || !payload || payload.ok !== true) {
+          const message = payload && payload.ok === false && typeof payload.error === "string"
+            ? payload.error
+            : `Subtitle translation failed on cue ${index + 1}.`;
+          throw new Error(message);
+        }
+        translated.push({
+          ...cue,
+          text: payload.translatedText,
+        });
+        setTranslationProgress(Math.round(((index + 1) / cues.length) * 100));
+      }
+      setCues(translated);
+      setTranscriptText(cuesToTranscript(translated));
+      setStatus(`Translated ${translated.length} cue${translated.length === 1 ? "" : "s"} to ${getTranslationLanguageLabel(translationTargetLanguage)}.`);
+      trackEvent("tool_transcript_subtitle_translate", {
+        cues: translated.length,
+        targetLanguage: translationTargetLanguage,
+      });
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not translate subtitle track.";
+      setStatus(message);
+    } finally {
+      setTranslating(false);
+    }
+  }, [cues, translationSourceLanguage, translationTargetLanguage]);
+
+  const updateCue = useCallback((id: string, patch: Partial<SubtitleCue>) => {
+    setCues((current) => current.map((cue) => (cue.id === id ? { ...cue, ...patch } : cue)));
+  }, []);
+
+  const addCue = useCallback(() => {
+    setCues((current) => {
+      const lastCue = current[current.length - 1];
+      const startMs = lastCue ? lastCue.endMs : 0;
+      const endMs = startMs + 3000;
+      return [
+        ...current,
+        {
+          id: `cue-${Date.now()}`,
+          startMs,
+          endMs,
+          text: "",
+          speaker: "Speaker",
+        },
+      ];
+    });
+    setStatus("Added a blank subtitle cue.");
+  }, []);
+
+  const removeCue = useCallback((id: string) => {
+    setCues((current) => current.filter((cue) => cue.id !== id));
+  }, []);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Volume2}
+        title="Transcript & subtitle studio"
+        subtitle="Import transcript text, generate subtitle cues, translate tracks, and export SRT/VTT with media preview support."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Audio or video file</span>
+          <input type="file" accept="audio/*,video/*" onChange={(event) => applyMediaFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Transcript / subtitle import</span>
+          <input type="file" accept=".txt,.md,.srt,.vtt,text/plain,text/markdown" onChange={(event) => void importTranscriptFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <div className="mini-panel">
+          <h3>First version scope</h3>
+          <p className="supporting-text">
+            This studio handles transcript import, cue generation, timing cleanup, translation, and exports. Media upload is used for preview and timing context.
+          </p>
+        </div>
+      </div>
+
+      {mediaUrl ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Media preview</h3>
+            <span className="supporting-text">
+              {mediaFile?.name ?? "Media"}{mediaDurationSeconds > 0 ? ` | ${formatNumericValue(mediaDurationSeconds)} sec` : ""}
+            </span>
+          </div>
+          {mediaFile?.type.startsWith("video/") ? (
+            <video
+              controls
+              src={mediaUrl}
+              style={{ width: "100%", borderRadius: 14 }}
+              onLoadedMetadata={(event) => setMediaDurationSeconds(Math.max(0, event.currentTarget.duration || 0))}
+            />
+          ) : (
+            <audio
+              controls
+              src={mediaUrl}
+              style={{ width: "100%" }}
+              onLoadedMetadata={(event) => setMediaDurationSeconds(Math.max(0, event.currentTarget.duration || 0))}
+            />
+          )}
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Transcript text</span>
+        <textarea
+          rows={12}
+          value={transcriptText}
+          onChange={(event) => setTranscriptText(event.target.value)}
+          placeholder="Paste transcript text here. Speaker-labelled lines like 'Host: Welcome everyone' will be preserved."
+        />
+      </label>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Target chars per cue</span>
+          <input type="number" min={28} max={160} step={1} value={targetCharsPerCue} onChange={(event) => setTargetCharsPerCue(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Min cue seconds</span>
+          <input type="number" min={1.2} max={10} step={0.1} value={minCueSeconds} onChange={(event) => setMinCueSeconds(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Max cue seconds</span>
+          <input type="number" min={1.5} max={14} step={0.1} value={maxCueSeconds} onChange={(event) => setMaxCueSeconds(event.target.value)} />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={generateCuesFromTranscript} disabled={!transcriptText.trim()}>
+          Generate subtitles
+        </button>
+        <button className="action-button secondary" type="button" onClick={addCue}>
+          <Plus size={15} />
+          Add cue
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!transcriptText}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(transcriptText);
+            setStatus(ok ? "Transcript copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy transcript
+        </button>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Translate from</span>
+          <select value={translationSourceLanguage} onChange={(event) => setTranslationSourceLanguage(event.target.value)}>
+            <option value={TRANSLATION_AUTO_LANGUAGE_CODE}>Auto detect</option>
+            {TRANSLATION_LANGUAGE_OPTIONS.map((option) => (
+              <option key={`src-${option.code}`} value={option.code}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Translate to</span>
+          <select value={translationTargetLanguage} onChange={(event) => setTranslationTargetLanguage(event.target.value)}>
+            {TRANSLATION_LANGUAGE_OPTIONS.filter((option) => option.code !== TRANSLATION_AUTO_LANGUAGE_CODE).map((option) => (
+              <option key={`dst-${option.code}`} value={option.code}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="button-row">
+          <button className="action-button secondary" type="button" onClick={() => void translateCueTrack()} disabled={!cues.length || translating}>
+            {translating ? "Translating..." : "Translate cue text"}
+          </button>
+        </div>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {translating ? (
+        <div className="progress-panel">
+          <p>Translation progress: {translationProgress}%</p>
+          <div className="limit-meter">
+            <div className="limit-meter-fill" style={{ width: `${Math.max(0, Math.min(100, translationProgress))}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      <ResultList
+        rows={[
+          { label: "Speaker groups", value: formatNumericValue(speakerNotes.length) },
+          { label: "Subtitle cues", value: formatNumericValue(cues.length) },
+          { label: "Media duration", value: mediaDurationSeconds > 0 ? `${formatNumericValue(mediaDurationSeconds)} sec` : "Not loaded" },
+          { label: "Cue timeline", value: totalCueDuration > 0 ? `${formatNumericValue(totalCueDuration / 1000)} sec` : "Not generated" },
+        ]}
+      />
+
+      {speakerNotes.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Speaker-separated notes</h3>
+            <span className="supporting-text">Grouped from transcript labels or current cue speakers.</span>
+          </div>
+          <ul className="plain-list">
+            {speakerNotes.map((speaker) => (
+              <li key={speaker.speaker}>
+                <div className="history-line">
+                  <strong>{speaker.speaker}</strong>
+                  <span className="status-badge info">{formatNumericValue(speaker.wordCount)} words</span>
+                </div>
+                <small className="supporting-text">{speaker.lines.slice(0, 3).join(" ")}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {meetingMinutes ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Meeting minutes</h3>
+            <span className="supporting-text">Auto-built from the current subtitle cues.</span>
+          </div>
+          <pre className="preview-box" style={{ whiteSpace: "pre-wrap" }}>{meetingMinutes}</pre>
+        </div>
+      ) : null}
+
+      {cues.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Subtitle cues</h3>
+            <span className="supporting-text">Edit speaker labels, timing, and cue text before export.</span>
+          </div>
+          <ul className="plain-list">
+            {cues.map((cue, index) => (
+              <li key={cue.id}>
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Speaker</span>
+                    <input type="text" value={cue.speaker} onChange={(event) => updateCue(cue.id, { speaker: event.target.value })} />
+                  </label>
+                  <label className="field">
+                    <span>Start (ms)</span>
+                    <input type="number" min={0} step={100} value={cue.startMs} onChange={(event) => updateCue(cue.id, { startMs: Math.max(0, Math.round(safeNumberValue(event.target.value))) })} />
+                  </label>
+                  <label className="field">
+                    <span>End (ms)</span>
+                    <input type="number" min={0} step={100} value={cue.endMs} onChange={(event) => updateCue(cue.id, { endMs: Math.max(0, Math.round(safeNumberValue(event.target.value))) })} />
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Cue {index + 1}</span>
+                  <textarea rows={3} value={cue.text} onChange={(event) => updateCue(cue.id, { text: event.target.value })} />
+                </label>
+                <div className="history-line">
+                  <small className="supporting-text">
+                    {`${formatSubtitleTimestamp(cue.startMs, "vtt")} --> ${formatSubtitleTimestamp(cue.endMs, "vtt")}`}
+                  </small>
+                  <button className="chip-button" type="button" onClick={() => removeCue(cue.id)}>
+                    Remove
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" disabled={!cues.length} onClick={() => downloadTextFile("captions.srt", exportSrt(cues))}>
+          <Download size={15} />
+          SRT
+        </button>
+        <button className="action-button secondary" type="button" disabled={!cues.length} onClick={() => downloadTextFile("captions.vtt", exportVtt(cues), "text/vtt;charset=utf-8;")}>
+          <Download size={15} />
+          VTT
+        </button>
+        <button className="action-button secondary" type="button" disabled={!transcriptText.trim()} onClick={() => downloadTextFile("transcript.txt", transcriptText)}>
+          <Download size={15} />
+          Transcript
+        </button>
+        <button className="action-button secondary" type="button" disabled={!meetingMinutes} onClick={() => downloadTextFile("meeting-minutes.txt", meetingMinutes)}>
+          <Download size={15} />
+          Meeting minutes
+        </button>
+      </div>
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -46314,6 +46729,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <ReceiptInvoiceExtractorTool />;
     case "remittance-fx-comparator":
       return <RemittanceFxComparatorTool />;
+    case "transcript-subtitle-studio":
+      return <TranscriptSubtitleStudioTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":
