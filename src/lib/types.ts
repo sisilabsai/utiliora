@@ -158,6 +158,7 @@ export type ProductivityToolId =
   | "remittance-fx-comparator"
   | "transcript-subtitle-studio"
   | "csv-cleanup-mapping-studio"
+  | "bank-statement-normalizer-expense-intelligence"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

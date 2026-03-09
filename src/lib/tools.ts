@@ -1444,6 +1444,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("CSV Cleanup & Mapping Studio"),
   },
   {
+    slug: "bank-statement-normalizer-expense-intelligence",
+    category: "productivity-tools",
+    title: "Bank Statement Normalizer & Expense Intelligence",
+    summary: "Normalize statement rows, categorize spending, and detect subscriptions, spikes, duplicate charges, and fee patterns.",
+    description:
+      "Import bank-statement CSV, TSV, PDF, or pasted text to standardize dates and merchants, infer debit-credit polarity, group spend by merchant, and surface recurring charges, spikes, duplicates, and hidden fees.",
+    keywords: [
+      "bank statement analyzer",
+      "expense intelligence tool",
+      "statement normalizer",
+      "subscription detector",
+      "duplicate charge finder",
+      "merchant spend analysis",
+    ],
+    engine: { kind: "productivity-tool", id: "bank-statement-normalizer-expense-intelligence" },
+    faq: baseFaq("Bank Statement Normalizer & Expense Intelligence"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",

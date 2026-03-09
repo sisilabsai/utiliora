@@ -67,6 +67,7 @@ import {
   type AccessibilityAuditIssue,
   type AccessibilityAuditResult,
 } from "@/lib/accessibility-audit";
+import { analyzeBankStatement, type BankStatementAnalysis } from "@/lib/bank-statement";
 import {
   analyzeMessageForScamRisk,
   analyzeQrPayloadForScamRisk,
@@ -42347,6 +42348,331 @@ function CsvCleanupMappingStudioTool() {
   );
 }
 
+function BankStatementNormalizerExpenseIntelligenceTool() {
+  const [inputText, setInputText] = useState("");
+  const [sourceLabel, setSourceLabel] = useState("");
+  const [analysis, setAnalysis] = useState<BankStatementAnalysis | null>(null);
+  const [status, setStatus] = useState("Import a statement file or paste statement text to normalize transactions and surface spending insights.");
+  const [processing, setProcessing] = useState(false);
+  const [maxPdfPages, setMaxPdfPages] = useState(6);
+
+  const loadStatementText = useCallback((raw: string, label: string, sourceHint: Parameters<typeof analyzeBankStatement>[1]) => {
+    const normalized = normalizeUploadedText(raw);
+    if (!normalized.trim()) {
+      setAnalysis(null);
+      setStatus("The statement content is empty.");
+      return;
+    }
+    const nextAnalysis = analyzeBankStatement(normalized, sourceHint);
+    setInputText(normalized);
+    setAnalysis(nextAnalysis);
+    setSourceLabel(label);
+    setStatus(
+      nextAnalysis.transactions.length
+        ? `Normalized ${nextAnalysis.transactions.length} transaction row${nextAnalysis.transactions.length === 1 ? "" : "s"} from ${label}.`
+        : `No transaction rows were detected in ${label}.`,
+    );
+    trackEvent("tool_bank_statement_normalizer_run", {
+      sourceHint,
+      transactions: nextAnalysis.transactions.length,
+      recurringCharges: nextAnalysis.recurringCharges.length,
+      hiddenFees: nextAnalysis.hiddenFees.length,
+    });
+    emitShareSignal({ action: "success", context: "bank-statement-normalizer" });
+  }, []);
+
+  const importStatementFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    setProcessing(true);
+    try {
+      const extension = getFileExtension(file.name);
+      if (extension === "csv" || extension === "tsv") {
+        const raw = await readTextFileWithLimit(file, 10 * 1024 * 1024);
+        loadStatementText(raw, file.name, "csv");
+        return;
+      }
+
+      if (file.type === "application/pdf" || extension === "pdf") {
+        setStatus("Extracting readable text from PDF statement...");
+        const extracted = await extractTextFromPdfDocument(file, {
+          maxPages: maxPdfPages,
+          includePageMarkers: false,
+        });
+        loadStatementText(extracted.text, `${file.name} (${extracted.selectedPages.length} page${extracted.selectedPages.length === 1 ? "" : "s"})`, "text");
+        return;
+      }
+
+      const extracted = await extractTextFromDocumentFile(file, { convertHtmlToText: true });
+      loadStatementText(extracted.text, `${file.name} (${extracted.source})`, extension === "txt" || extension === "md" ? "text" : "auto");
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not import this statement file.";
+      setStatus(message);
+      setAnalysis(null);
+    } finally {
+      setProcessing(false);
+    }
+  }, [loadStatementText, maxPdfPages]);
+
+  const normalizedTransactionRows = useMemo(() => {
+    if (!analysis) return [];
+    return analysis.transactions.map((transaction) => [
+      transaction.date,
+      transaction.merchant,
+      transaction.normalizedMerchant,
+      transaction.category,
+      transaction.debit ? String(transaction.debit) : "",
+      transaction.credit ? String(transaction.credit) : "",
+      String(transaction.amount),
+      transaction.balance === null ? "" : String(transaction.balance),
+      transaction.currency,
+      transaction.source,
+    ]);
+  }, [analysis]);
+
+  const previewTransactions = useMemo(() => analysis?.transactions.slice(0, 10) ?? [], [analysis]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Bank statement normalizer & expense intelligence"
+        subtitle="Normalize statement rows, categorize spending, and detect subscriptions, spikes, duplicates, and hidden fees."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Statement file</span>
+          <input
+            type="file"
+            accept=".csv,.tsv,.txt,.md,.pdf,.html,.htm,.xml,.json"
+            onChange={(event) => void importStatementFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="field">
+          <span>Max PDF pages ({maxPdfPages})</span>
+          <input
+            type="range"
+            min={1}
+            max={20}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(20, Number(event.target.value))))}
+          />
+        </label>
+        <div className="mini-panel">
+          <h3>Supported inputs</h3>
+          <p className="supporting-text">
+            CSV and TSV statements work best. PDF and text statements are parsed with heuristics and may need manual review before export.
+          </p>
+        </div>
+      </div>
+
+      <label className="field">
+        <span>Statement text {sourceLabel ? `(${sourceLabel})` : ""}</span>
+        <textarea
+          rows={10}
+          value={inputText}
+          onChange={(event) => setInputText(event.target.value)}
+          placeholder="Paste statement rows here if you are not uploading a file."
+        />
+      </label>
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          disabled={processing || !inputText.trim()}
+          onClick={() => loadStatementText(inputText, sourceLabel || "Pasted statement", "auto")}
+        >
+          {processing ? "Analyzing..." : "Analyze statement"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!inputText.trim()}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(inputText);
+            setStatus(ok ? "Statement text copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!normalizedTransactionRows.length}
+          onClick={() =>
+            downloadCsv(
+              "normalized-bank-statement.csv",
+              ["Date", "Merchant", "Normalized Merchant", "Category", "Debit", "Credit", "Net Amount", "Balance", "Currency", "Source"],
+              normalizedTransactionRows,
+            )
+          }
+        >
+          <Download size={15} />
+          CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!analysis}
+          onClick={() => downloadTextFile("bank-statement-insights.json", JSON.stringify(analysis, null, 2), "application/json;charset=utf-8;")}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Transactions", value: formatNumericValue(analysis?.transactions.length ?? 0) },
+          {
+            label: "Income",
+            value: analysis ? formatCurrencyWithCode(analysis.incomeTotal, analysis.currencies[0] ?? "USD") : "0",
+          },
+          {
+            label: "Expenses",
+            value: analysis ? formatCurrencyWithCode(analysis.expenseTotal, analysis.currencies[0] ?? "USD") : "0",
+          },
+          {
+            label: "Net cashflow",
+            value: analysis ? formatCurrencyWithCode(analysis.netCashflow, analysis.currencies[0] ?? "USD") : "0",
+          },
+          { label: "Recurring charges", value: formatNumericValue(analysis?.recurringCharges.length ?? 0) },
+          { label: "Duplicate charges", value: formatNumericValue(analysis?.duplicateCharges.length ?? 0) },
+          { label: "Currencies", value: analysis?.currencies.join(", ") || "Not detected" },
+        ]}
+      />
+
+      {analysis?.merchantClusters.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Top merchant clusters</h3>
+            <span className="supporting-text">Where the money is going after merchant normalization.</span>
+          </div>
+          <ul className="plain-list">
+            {analysis.merchantClusters.slice(0, 10).map((cluster) => (
+              <li key={cluster.merchant}>
+                <div className="history-line">
+                  <strong>{cluster.merchant}</strong>
+                  <span className="status-badge info">{cluster.category}</span>
+                </div>
+                <small className="supporting-text">
+                  {cluster.count} transaction{cluster.count === 1 ? "" : "s"} | Total {formatCurrencyWithCode(cluster.totalSpent, analysis.currencies[0] ?? "USD")} | Avg {formatCurrencyWithCode(cluster.averageSpent, analysis.currencies[0] ?? "USD")}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="split-panel">
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Recurring charges</h3>
+            <span className="supporting-text">Likely subscriptions and repeat debits.</span>
+          </div>
+          <ul className="plain-list">
+            {(analysis?.recurringCharges.length ? analysis.recurringCharges : []).map((charge) => (
+              <li key={charge.merchant}>
+                <strong>{charge.merchant}</strong>
+                <small className="supporting-text">
+                  {charge.occurrences} charges | Avg every {formatNumericValue(charge.averageIntervalDays)} days | {formatCurrencyWithCode(charge.averageAmount, analysis?.currencies[0] ?? "USD")}
+                </small>
+              </li>
+            ))}
+            {!analysis?.recurringCharges.length ? <li className="supporting-text">No recurring-charge pattern detected yet.</li> : null}
+          </ul>
+        </div>
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Spikes & duplicates</h3>
+            <span className="supporting-text">Outlier charges and near-duplicate debits.</span>
+          </div>
+          <ul className="plain-list">
+            {(analysis?.spikes.length ? analysis.spikes : []).slice(0, 5).map((spike) => (
+              <li key={`${spike.merchant}-${spike.date}-${spike.amount}`}>
+                <strong>{spike.merchant}</strong>
+                <small className="supporting-text">
+                  Spike on {spike.date}: {formatCurrencyWithCode(spike.amount, analysis?.currencies[0] ?? "USD")} vs usual {formatCurrencyWithCode(spike.usualAmount, analysis?.currencies[0] ?? "USD")}
+                </small>
+              </li>
+            ))}
+            {(analysis?.duplicateCharges.length ? analysis.duplicateCharges : []).slice(0, 5).map((duplicate) => (
+              <li key={`${duplicate.merchant}-${duplicate.amount}`}>
+                <strong>{duplicate.merchant}</strong>
+                <small className="supporting-text">
+                  Possible duplicate {formatCurrencyWithCode(duplicate.amount, analysis?.currencies[0] ?? "USD")} on {duplicate.dates.join(", ")}
+                </small>
+              </li>
+            ))}
+            {!analysis?.spikes.length && !analysis?.duplicateCharges.length ? (
+              <li className="supporting-text">No spike or duplicate-charge pattern detected yet.</li>
+            ) : null}
+          </ul>
+        </div>
+      </div>
+
+      {analysis?.hiddenFees.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Hidden fees & charges</h3>
+            <span className="supporting-text">Fee-coded transactions surfaced from the statement.</span>
+          </div>
+          <ul className="plain-list">
+            {analysis.hiddenFees.slice(0, 10).map((fee) => (
+              <li key={fee.id}>
+                <strong>{fee.description}</strong>
+                <small className="supporting-text">
+                  {fee.date} | {formatCurrencyWithCode(Math.abs(fee.amount), fee.currency)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {previewTransactions.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Normalized preview</h3>
+            <span className="supporting-text">First {previewTransactions.length} transaction rows after normalization.</span>
+          </div>
+          <div className="preview-box" style={{ overflowX: "auto" }}>
+            <table className="comparison-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Merchant</th>
+                  <th>Category</th>
+                  <th>Debit</th>
+                  <th>Credit</th>
+                  <th>Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {previewTransactions.map((transaction) => (
+                  <tr key={transaction.id}>
+                    <td>{transaction.date}</td>
+                    <td>{transaction.merchant}</td>
+                    <td>{transaction.category}</td>
+                    <td>{transaction.debit ? formatCurrencyWithCode(transaction.debit, transaction.currency) : ""}</td>
+                    <td>{transaction.credit ? formatCurrencyWithCode(transaction.credit, transaction.currency) : ""}</td>
+                    <td>{transaction.balance === null ? "" : formatCurrencyWithCode(transaction.balance, transaction.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -47147,6 +47473,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <TranscriptSubtitleStudioTool />;
     case "csv-cleanup-mapping-studio":
       return <CsvCleanupMappingStudioTool />;
+    case "bank-statement-normalizer-expense-intelligence":
+      return <BankStatementNormalizerExpenseIntelligenceTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":
