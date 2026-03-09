@@ -154,6 +154,8 @@ export type ProductivityToolId =
   | "simple-todo-list"
   | "notes-pad"
   | "pii-redaction-studio"
+  | "receipt-invoice-extractor"
+  | "remittance-fx-comparator"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

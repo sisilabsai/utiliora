@@ -76,6 +76,19 @@ import {
   type PiiReplacementMode,
 } from "@/lib/pii-redaction";
 import {
+  analyzeReceiptInvoiceText,
+  type ExtractedBookkeepingRow,
+  type ReceiptInvoiceExtraction,
+} from "@/lib/receipt-invoice-extractor";
+import {
+  compareRemittanceRoutes,
+  createDefaultRemittanceProviders,
+  estimateMonthlySavings,
+  formatDeliveryLabel,
+  REMITTANCE_CORRIDOR_PRESETS,
+  type RemittanceProviderInput,
+} from "@/lib/remittance";
+import {
   buildDocumentTranslationWordMarkup,
   DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
   DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
@@ -40242,6 +40255,1269 @@ function OcrWorkbenchTool() {
   );
 }
 
+type ReceiptInvoiceSourceMode = "file" | "text";
+
+const RECEIPT_INVOICE_UPLOAD_ACCEPT =
+  "image/*,application/pdf,.txt,.md,.csv,.tsv,.json,.html,.htm,.xml,.doc,.docx,.rtf,.odt,.ods,.xlsx,.xls,.ppt,.pptx";
+
+function ReceiptInvoiceExtractorTool() {
+  const [sourceMode, setSourceMode] = useState<ReceiptInvoiceSourceMode>("file");
+  const [file, setFile] = useState<File | null>(null);
+  const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
+  const [inputText, setInputText] = useState("");
+  const [extractedText, setExtractedText] = useState("");
+  const [analysis, setAnalysis] = useState<ReceiptInvoiceExtraction | null>(null);
+  const [language, setLanguage] = useState("eng");
+  const [maxPdfPages, setMaxPdfPages] = useState(4);
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("Upload a receipt, invoice, or paste raw text to start extraction.");
+  const [pageResults, setPageResults] = useState<OcrPageResult[]>([]);
+  const [extractionMethod, setExtractionMethod] = useState("");
+  const progressBaseRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (sourcePreviewUrl) {
+        URL.revokeObjectURL(sourcePreviewUrl);
+      }
+    };
+  }, [sourcePreviewUrl]);
+
+  const averageConfidence = useMemo(() => {
+    if (!pageResults.length) return 0;
+    const total = pageResults.reduce((sum, entry) => sum + entry.confidence, 0);
+    return Math.round((total / pageResults.length) * 10) / 10;
+  }, [pageResults]);
+
+  const setPickedFile = useCallback((nextFile: File | null) => {
+    if (sourcePreviewUrl) {
+      URL.revokeObjectURL(sourcePreviewUrl);
+      setSourcePreviewUrl("");
+    }
+    setFile(nextFile);
+    setAnalysis(null);
+    setExtractedText("");
+    setPageResults([]);
+    setProgress(0);
+    setExtractionMethod("");
+
+    if (!nextFile) {
+      setStatus("Upload a receipt, invoice, or paste raw text to start extraction.");
+      return;
+    }
+
+    if (nextFile.type.startsWith("image/")) {
+      setSourcePreviewUrl(URL.createObjectURL(nextFile));
+    }
+    setStatus(`Loaded ${nextFile.name}. Ready to extract merchant, totals, taxes, and line items.`);
+  }, [sourcePreviewUrl]);
+
+  const finalizeExtraction = useCallback(
+    (rawText: string, method: string, nextPageResults: OcrPageResult[]) => {
+      const normalizedText = normalizeUploadedText(rawText).trim();
+      if (!normalizedText) {
+        setAnalysis(null);
+        setPageResults(nextPageResults);
+        setExtractionMethod(method);
+        setExtractedText("");
+        setStatus("No readable text was extracted. Try a clearer scan or paste the document text manually.");
+        return;
+      }
+
+      const nextAnalysis = analyzeReceiptInvoiceText(normalizedText);
+      setAnalysis(nextAnalysis);
+      setExtractedText(normalizedText);
+      setPageResults(nextPageResults);
+      setExtractionMethod(method);
+      setStatus(
+        nextAnalysis.warnings.length
+          ? `Extraction finished with ${nextAnalysis.confidenceScore}% confidence. Review the flagged fields before exporting.`
+          : `Extraction finished with ${nextAnalysis.confidenceScore}% confidence.`,
+      );
+      trackEvent("tool_receipt_invoice_extractor_run", {
+        sourceMode,
+        method,
+        confidence: nextAnalysis.confidenceScore,
+        lineItems: nextAnalysis.lineItems.length,
+        hasTotal: nextAnalysis.total.amount !== null,
+      });
+      emitShareSignal({ action: "success", context: "receipt-invoice-extractor" });
+    },
+    [sourceMode],
+  );
+
+  const runOcrExtraction = useCallback(
+    async (sourceFile: File): Promise<{ text: string; pageResults: OcrPageResult[] }> => {
+      let worker: OcrWorkerLike | null = null;
+      let loadingTask: PdfJsLoadingTask | null = null;
+      let pdfDocument: PdfJsDocument | null = null;
+
+      try {
+        const tesseractModule = (await import("tesseract.js")) as unknown as OcrModuleLike;
+        worker = await tesseractModule.createWorker(language, 1, {
+          logger: (message) => {
+            if (message.status === "recognizing text") {
+              const bounded = Math.max(0, Math.min(1, message.progress || 0));
+              setProgress(Math.round(progressBaseRef.current + bounded * (100 - progressBaseRef.current)));
+            }
+          },
+        });
+
+        const results: OcrPageResult[] = [];
+
+        if (sourceFile.type.startsWith("image/")) {
+          setStatus("Running OCR on the uploaded image...");
+          progressBaseRef.current = 0;
+          const recognition = await worker.recognize(sourceFile);
+          const data = recognition?.data as OcrRecognitionData | undefined;
+          const words = Array.isArray(data?.words) ? data.words : [];
+          results.push({
+            label: sourceFile.name,
+            text: data?.text ?? "",
+            confidence: Number.isFinite(data?.confidence ?? Number.NaN) ? Number(data?.confidence) : 0,
+            lowConfidenceWords: words
+              .filter((word) => (word.confidence ?? 0) > 0 && (word.confidence ?? 0) < 65)
+              .map((word) => word.text?.trim() ?? "")
+              .filter(Boolean)
+              .slice(0, 12),
+          });
+          setProgress(100);
+          return {
+            text: normalizeOcrText(results.map((entry) => entry.text).join("\n\n"), true),
+            pageResults: results,
+          };
+        }
+
+        setStatus("Rendering PDF pages and running OCR...");
+        const pdfjs = await loadPdfJsModule();
+        const bytes = await readPdfFileBytes(sourceFile);
+        const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+        loadingTask = opened.loadingTask;
+        pdfDocument = opened.pdfDocument;
+        const totalPages = Math.max(1, Math.min(pdfDocument.numPages, maxPdfPages));
+        const stepSize = 100 / totalPages;
+
+        for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
+          const pageNumber = pageIndex + 1;
+          setStatus(`Running OCR on PDF page ${pageNumber}/${totalPages}...`);
+          const page = await pdfDocument.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 2 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.floor(viewport.width));
+          canvas.height = Math.max(1, Math.floor(viewport.height));
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Canvas unavailable for OCR.");
+          await page.render({ canvasContext: context, viewport }).promise;
+          progressBaseRef.current = pageIndex * stepSize;
+
+          const recognition = await worker.recognize(canvas);
+          const data = recognition?.data as OcrRecognitionData | undefined;
+          const words = Array.isArray(data?.words) ? data.words : [];
+          results.push({
+            label: `Page ${pageNumber}`,
+            text: data?.text ?? "",
+            confidence: Number.isFinite(data?.confidence ?? Number.NaN) ? Number(data?.confidence) : 0,
+            lowConfidenceWords: words
+              .filter((word) => (word.confidence ?? 0) > 0 && (word.confidence ?? 0) < 65)
+              .map((word) => word.text?.trim() ?? "")
+              .filter(Boolean)
+              .slice(0, 12),
+          });
+          setProgress(Math.round((pageIndex + 1) * stepSize));
+        }
+
+        return {
+          text: normalizeOcrText(results.map((entry) => entry.text).join("\n\n"), true),
+          pageResults: results,
+        };
+      } finally {
+        if (worker) {
+          try {
+            await worker.terminate();
+          } catch {
+            // Ignore OCR worker cleanup failures.
+          }
+        }
+        await closePdfDocumentResources(loadingTask, pdfDocument);
+      }
+    },
+    [language, maxPdfPages],
+  );
+
+  const extractFromFile = useCallback(async () => {
+    if (!file) {
+      setStatus("Select a file first.");
+      return;
+    }
+
+    setProcessing(true);
+    setProgress(0);
+    setAnalysis(null);
+    setPageResults([]);
+    setExtractionMethod("");
+
+    try {
+      const extension = getFileExtension(file.name);
+      const isPdf = file.type === "application/pdf" || extension === "pdf";
+      const isImage = file.type.startsWith("image/");
+
+      if (file.size > 12 * 1024 * 1024) {
+        throw new Error(`File is too large. Limit is ${formatBytes(12 * 1024 * 1024)}.`);
+      }
+
+      if (isImage) {
+        const ocrResult = await runOcrExtraction(file);
+        finalizeExtraction(ocrResult.text, "Image OCR", ocrResult.pageResults);
+        setProgress(100);
+        return;
+      }
+
+      if (isPdf) {
+        let pdfLayerText = "";
+        let pdfLayerAnalysis: ReceiptInvoiceExtraction | null = null;
+        try {
+          setStatus("Reading text from the PDF text layer...");
+          const pdfResult = await extractTextFromPdfDocument(file, {
+            maxPages: maxPdfPages,
+            includePageMarkers: false,
+            onProgress: ({ processed, total }) => {
+              setProgress(Math.round((processed / Math.max(1, total)) * 42));
+            },
+          });
+          pdfLayerText = pdfResult.text;
+          pdfLayerAnalysis = pdfLayerText ? analyzeReceiptInvoiceText(pdfLayerText) : null;
+          if (
+            pdfLayerAnalysis &&
+            (pdfLayerAnalysis.confidenceScore >= 60 ||
+              (pdfLayerAnalysis.merchantName && pdfLayerAnalysis.total.amount !== null))
+          ) {
+            finalizeExtraction(
+              pdfLayerText,
+              `PDF text layer (${pdfResult.selectedPages.length} page${pdfResult.selectedPages.length === 1 ? "" : "s"})`,
+              [],
+            );
+            setProgress(100);
+            return;
+          }
+        } catch {
+          pdfLayerText = "";
+          pdfLayerAnalysis = null;
+        }
+
+        setStatus("PDF text layer was not strong enough. Falling back to OCR...");
+        const ocrResult = await runOcrExtraction(file);
+        const candidates = [
+          pdfLayerText
+            ? { text: pdfLayerText, method: "PDF text layer", analysis: pdfLayerAnalysis, pageResults: [] as OcrPageResult[] }
+            : null,
+          ocrResult.text
+            ? {
+                text: ocrResult.text,
+                method: "PDF OCR",
+                analysis: analyzeReceiptInvoiceText(ocrResult.text),
+                pageResults: ocrResult.pageResults,
+              }
+            : null,
+          pdfLayerText && ocrResult.text
+            ? {
+                text: `${pdfLayerText}\n\n${ocrResult.text}`.trim(),
+                method: "PDF text layer + OCR",
+                analysis: analyzeReceiptInvoiceText(`${pdfLayerText}\n\n${ocrResult.text}`),
+                pageResults: ocrResult.pageResults,
+              }
+            : null,
+        ].filter(
+          (
+            entry,
+          ): entry is {
+            text: string;
+            method: string;
+            analysis: ReceiptInvoiceExtraction | null;
+            pageResults: OcrPageResult[];
+          } => Boolean(entry),
+        );
+
+        const best = [...candidates].sort(
+          (left, right) => (right.analysis?.confidenceScore ?? 0) - (left.analysis?.confidenceScore ?? 0),
+        )[0];
+
+        if (!best) {
+          throw new Error("No readable PDF text could be extracted.");
+        }
+
+        finalizeExtraction(best.text, best.method, best.pageResults);
+        setProgress(100);
+        return;
+      }
+
+      setStatus("Extracting readable text from the uploaded document...");
+      setProgress(18);
+      const extracted = await extractTextFromDocumentFile(file, { convertHtmlToText: true });
+      setProgress(78);
+      finalizeExtraction(extracted.text, extracted.source, []);
+      setProgress(100);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not extract this file.";
+      setStatus(message);
+      setAnalysis(null);
+    } finally {
+      setProcessing(false);
+    }
+  }, [file, finalizeExtraction, maxPdfPages, runOcrExtraction]);
+
+  const analyzePastedText = useCallback(() => {
+    const normalized = normalizeUploadedText(inputText).trim();
+    if (!normalized) {
+      setStatus("Paste the receipt or invoice text before running extraction.");
+      return;
+    }
+    setProgress(100);
+    finalizeExtraction(normalized, "Pasted text", []);
+  }, [finalizeExtraction, inputText]);
+
+  const reAnalyzeExtractedText = useCallback(() => {
+    const normalized = normalizeUploadedText(extractedText).trim();
+    if (!normalized) {
+      setStatus("There is no extracted text to analyze.");
+      return;
+    }
+    finalizeExtraction(normalized, extractionMethod || "Edited extracted text", pageResults);
+  }, [extractedText, extractionMethod, finalizeExtraction, pageResults]);
+
+  const bookkeepingCsvRows = useMemo(() => {
+    if (!analysis) return [];
+    return analysis.bookkeepingRows.map((row: ExtractedBookkeepingRow) => [
+      row.rowType,
+      row.documentType,
+      row.merchant,
+      row.documentNumber,
+      row.transactionDate,
+      row.dueDate,
+      row.category,
+      row.currency,
+      row.subtotal === null ? "" : String(row.subtotal),
+      row.tax === null ? "" : String(row.tax),
+      row.total === null ? "" : String(row.total),
+      row.paymentMethod,
+      row.lineDescription,
+      row.quantity === null ? "" : String(row.quantity),
+      row.unitPrice === null ? "" : String(row.unitPrice),
+      row.lineTotal === null ? "" : String(row.lineTotal),
+    ]);
+  }, [analysis]);
+
+  const lineItemCsvRows = useMemo(() => {
+    if (!analysis) return [];
+    return analysis.lineItems.map((item) => [
+      item.description,
+      item.quantity === null ? "" : String(item.quantity),
+      item.unitPrice === null ? "" : String(item.unitPrice),
+      item.total === null ? "" : String(item.total),
+      item.confidence,
+      item.sourceLine,
+    ]);
+  }, [analysis]);
+
+  const summaryRows = useMemo<ResultRow[]>(() => {
+    if (!analysis) return [];
+    return [
+      { label: "Document type", value: analysis.documentType === "unknown" ? "Unknown" : analysis.documentType },
+      { label: "Merchant", value: analysis.merchantName || "Not found" },
+      { label: "Transaction date", value: analysis.purchaseDate || "Not found" },
+      { label: "Document number", value: analysis.invoiceNumber || "Not found" },
+      {
+        label: "Total",
+        value:
+          analysis.total.amount === null
+            ? "Not found"
+            : formatCurrencyWithCode(analysis.total.amount, analysis.total.currency || analysis.currency),
+      },
+      { label: "Currency", value: analysis.currency || "Not found" },
+      { label: "Payment method", value: analysis.paymentMethod || "Not found" },
+      { label: "Suggested category", value: analysis.categorySuggestion || "General expense" },
+      { label: "Confidence", value: `${analysis.confidenceScore}%` },
+      { label: "Line items", value: formatNumericValue(analysis.lineItems.length) },
+    ];
+  }, [analysis]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Receipt}
+        title="Receipt & invoice extractor"
+        subtitle="Extract merchant, totals, taxes, dates, payment method, and bookkeeping rows from receipts, invoices, scans, and PDFs."
+      />
+
+      <div className="button-row">
+        <button
+          className={`chip-button${sourceMode === "file" ? " active" : ""}`}
+          type="button"
+          onClick={() => setSourceMode("file")}
+          aria-pressed={sourceMode === "file"}
+        >
+          Upload file
+        </button>
+        <button
+          className={`chip-button${sourceMode === "text" ? " active" : ""}`}
+          type="button"
+          onClick={() => setSourceMode("text")}
+          aria-pressed={sourceMode === "text"}
+        >
+          Paste text
+        </button>
+      </div>
+
+      {sourceMode === "file" ? (
+        <div className="field-grid">
+          <label className="field">
+            <span>Source file</span>
+            <input
+              type="file"
+              accept={RECEIPT_INVOICE_UPLOAD_ACCEPT}
+              onChange={(event) => setPickedFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <label className="field">
+            <span>OCR language</span>
+            <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+              {OCR_LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Max PDF pages ({maxPdfPages})</span>
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={1}
+              value={maxPdfPages}
+              onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(12, Number(event.target.value))))}
+            />
+          </label>
+          <div className="mini-panel">
+            <h3>Supported inputs</h3>
+            <p className="supporting-text">
+              Images, PDFs, and common text/document files. The extractor prefers PDF text layers first, then falls back to OCR when needed.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <label className="field">
+          <span>Receipt or invoice text</span>
+          <textarea
+            rows={10}
+            value={inputText}
+            onChange={(event) => setInputText(event.target.value)}
+            placeholder="Paste invoice email content, OCR text, or receipt text here."
+          />
+        </label>
+      )}
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          disabled={processing || (sourceMode === "file" ? !file : !inputText.trim())}
+          onClick={() => {
+            if (sourceMode === "file") {
+              void extractFromFile();
+            } else {
+              analyzePastedText();
+            }
+          }}
+        >
+          {processing ? "Extracting..." : "Extract fields"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!extractedText}
+          onClick={reAnalyzeExtractedText}
+        >
+          <RefreshCw size={15} />
+          Re-analyze edited text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!extractedText}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(extractedText);
+            setStatus(ok ? "Extracted text copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy text
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!analysis}
+          onClick={() => downloadTextFile("receipt-invoice-extraction.json", JSON.stringify(analysis, null, 2), "application/json;charset=utf-8;")}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!bookkeepingCsvRows.length}
+          onClick={() =>
+            downloadCsv(
+              "receipt-invoice-bookkeeping.csv",
+              [
+                "Row Type",
+                "Document Type",
+                "Merchant",
+                "Document Number",
+                "Transaction Date",
+                "Due Date",
+                "Category",
+                "Currency",
+                "Subtotal",
+                "Tax",
+                "Total",
+                "Payment Method",
+                "Line Description",
+                "Quantity",
+                "Unit Price",
+                "Line Total",
+              ],
+              bookkeepingCsvRows,
+            )
+          }
+        >
+          <Download size={15} />
+          Bookkeeping CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!lineItemCsvRows.length}
+          onClick={() =>
+            downloadCsv(
+              "receipt-invoice-line-items.csv",
+              ["Description", "Quantity", "Unit Price", "Line Total", "Confidence", "Source line"],
+              lineItemCsvRows,
+            )
+          }
+        >
+          <Download size={15} />
+          Line items CSV
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+      {processing ? (
+        <div className="progress-panel">
+          <p>Extraction progress: {progress}%</p>
+          <div className="limit-meter">
+            <div className="limit-meter-fill" style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      {sourcePreviewUrl ? (
+        <div className="image-preview">
+          <NextImage src={sourcePreviewUrl} alt="Receipt or invoice preview" width={420} height={260} unoptimized />
+        </div>
+      ) : null}
+
+      {analysis ? <ResultList rows={summaryRows} /> : null}
+
+      {analysis ? (
+        <div className="split-panel">
+          <div className="mini-panel">
+            <h3>Core fields</h3>
+            <ul className="plain-list">
+              <li>
+                <strong>Merchant:</strong> {analysis.merchantName || "Not found"}
+              </li>
+              <li>
+                <strong>Vendor email:</strong> {analysis.vendor.email || "Not found"}
+              </li>
+              <li>
+                <strong>Vendor phone:</strong> {analysis.vendor.phone || "Not found"}
+              </li>
+              <li>
+                <strong>Vendor address:</strong> {analysis.vendor.address || "Not found"}
+              </li>
+              <li>
+                <strong>Tax ID:</strong> {analysis.vendor.taxId || "Not found"}
+              </li>
+              <li>
+                <strong>Payment method:</strong> {analysis.paymentMethod || "Not found"}
+              </li>
+              <li>
+                <strong>Suggested category:</strong> {analysis.categorySuggestion}
+              </li>
+              <li>
+                <strong>Extraction method:</strong> {extractionMethod || "Manual"}
+              </li>
+            </ul>
+          </div>
+          <div className="mini-panel">
+            <h3>Totals</h3>
+            <ul className="plain-list">
+              <li>
+                <strong>Subtotal:</strong>{" "}
+                {analysis.subtotal.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.subtotal.amount, analysis.subtotal.currency || analysis.currency)}
+              </li>
+              <li>
+                <strong>Tax:</strong>{" "}
+                {analysis.tax.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.tax.amount, analysis.tax.currency || analysis.currency)}
+              </li>
+              <li>
+                <strong>Discount:</strong>{" "}
+                {analysis.discount.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.discount.amount, analysis.discount.currency || analysis.currency)}
+              </li>
+              <li>
+                <strong>Shipping:</strong>{" "}
+                {analysis.shipping.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.shipping.amount, analysis.shipping.currency || analysis.currency)}
+              </li>
+              <li>
+                <strong>Tip:</strong>{" "}
+                {analysis.tip.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.tip.amount, analysis.tip.currency || analysis.currency)}
+              </li>
+              <li>
+                <strong>Total:</strong>{" "}
+                {analysis.total.amount === null
+                  ? "Not found"
+                  : formatCurrencyWithCode(analysis.total.amount, analysis.total.currency || analysis.currency)}
+              </li>
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
+      {analysis?.warnings.length ? (
+        <div className="mini-panel">
+          <h3>Review before export</h3>
+          <ul className="plain-list">
+            {analysis.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {pageResults.length ? (
+        <div className="mini-panel">
+          <h3>OCR page confidence</h3>
+          <p className="supporting-text">Average confidence: {averageConfidence.toFixed(1)}%</p>
+          <ul className="plain-list">
+            {pageResults.map((entry) => (
+              <li key={entry.label}>
+                <div className="history-line">
+                  <strong>{entry.label}</strong>
+                  <span className={`status-badge ${entry.confidence >= 80 ? "ok" : entry.confidence >= 60 ? "warn" : "bad"}`}>
+                    {entry.confidence.toFixed(1)}%
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  {entry.lowConfidenceWords.length
+                    ? `Low-confidence words: ${entry.lowConfidenceWords.join(", ")}`
+                    : "No notable OCR weak spots captured."}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {analysis?.lineItems.length ? (
+        <div className="mini-panel">
+          <h3>Line items</h3>
+          <ul className="plain-list">
+            {analysis.lineItems.map((item) => (
+              <li key={item.id}>
+                <div className="history-line">
+                  <strong>{item.description}</strong>
+                  <span className={`status-badge ${item.confidence === "high" ? "ok" : item.confidence === "medium" ? "warn" : "info"}`}>
+                    {item.confidence}
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  Qty: {item.quantity === null ? "-" : formatNumericValue(item.quantity)} | Unit:{" "}
+                  {item.unitPrice === null ? "-" : formatCurrencyWithCode(item.unitPrice, analysis.currency)} | Total:{" "}
+                  {item.total === null ? "-" : formatCurrencyWithCode(item.total, analysis.currency)}
+                </small>
+                <small className="supporting-text">{item.sourceLine}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <label className="field">
+        <span>Extracted text</span>
+        <textarea
+          rows={14}
+          value={extractedText}
+          onChange={(event) => setExtractedText(event.target.value)}
+          placeholder="Readable OCR or document text will appear here after extraction."
+        />
+      </label>
+    </section>
+  );
+}
+
+type RemittanceRateMode = "live" | "manual";
+
+function RemittanceFxComparatorTool() {
+  const [sendCountry, setSendCountry] = useState("United States");
+  const [receiveCountry, setReceiveCountry] = useState("Nigeria");
+  const [fromCurrency, setFromCurrency] = useState("USD");
+  const [toCurrency, setToCurrency] = useState("NGN");
+  const [sendAmount, setSendAmount] = useState("300");
+  const [transfersPerMonth, setTransfersPerMonth] = useState("2");
+  const [rateMode, setRateMode] = useState<RemittanceRateMode>("live");
+  const [manualRate, setManualRate] = useState("");
+  const [marketRate, setMarketRate] = useState(0);
+  const [rateDate, setRateDate] = useState("");
+  const [rateSource, setRateSource] = useState("pending");
+  const [loadingRate, setLoadingRate] = useState(false);
+  const [status, setStatus] = useState("Choose a corridor, confirm the FX rate, and compare routes.");
+  const [providers, setProviders] = useState<RemittanceProviderInput[]>(() => createDefaultRemittanceProviders());
+  const [currencyOptions, setCurrencyOptions] = useState<CurrencyOption[]>(INVOICE_LOCAL_CURRENCIES);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const loadCurrencies = async () => {
+      try {
+        const response = await fetch("/api/currencies", { signal: controller.signal });
+        if (!response.ok) throw new Error("Currency API unavailable");
+        const payload = (await response.json()) as {
+          currencies?: Array<{ code?: string; name?: string }>;
+        };
+        const normalized = (payload.currencies ?? [])
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({
+            code: typeof item.code === "string" ? item.code.trim().toUpperCase() : "",
+            name: typeof item.name === "string" ? item.name.trim() : "",
+          }))
+          .filter((item) => /^[A-Z]{3}$/.test(item.code) && item.name)
+          .sort((left, right) => left.code.localeCompare(right.code));
+        if (!normalized.length) throw new Error("No currencies returned");
+        if (!cancelled) {
+          setCurrencyOptions(mergeCurrencyOptions(normalized, INVOICE_AFRICAN_PRIORITY));
+        }
+      } catch {
+        if (!cancelled) {
+          setCurrencyOptions(INVOICE_LOCAL_CURRENCIES);
+        }
+      }
+    };
+
+    void loadCurrencies();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  const refreshRate = useCallback(async () => {
+    if (fromCurrency === toCurrency) {
+      setMarketRate(1);
+      setRateDate(new Date().toISOString().slice(0, 10));
+      setRateSource("identity");
+      return;
+    }
+
+    setLoadingRate(true);
+    try {
+      const response = await fetch(`/api/exchange-rate?from=${encodeURIComponent(fromCurrency)}&to=${encodeURIComponent(toCurrency)}`);
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        rate?: number;
+        source?: string;
+        date?: string;
+        message?: string;
+      };
+      if (!response.ok || !payload.ok || typeof payload.rate !== "number" || payload.rate <= 0) {
+        throw new Error(payload.message || "Could not load exchange rate.");
+      }
+      setMarketRate(payload.rate);
+      setRateSource(payload.source || "live");
+      setRateDate(payload.date || "");
+      setStatus(`Loaded live reference rate for ${fromCurrency}/${toCurrency}.`);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not load exchange rate.";
+      setStatus(message);
+    } finally {
+      setLoadingRate(false);
+    }
+  }, [fromCurrency, toCurrency]);
+
+  useEffect(() => {
+    if (rateMode !== "live") return;
+    void refreshRate();
+  }, [fromCurrency, rateMode, refreshRate, toCurrency]);
+
+  const applyCorridorPreset = useCallback((presetId: string) => {
+    const preset = REMITTANCE_CORRIDOR_PRESETS.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setSendCountry(preset.sendCountry);
+    setReceiveCountry(preset.receiveCountry);
+    setFromCurrency(preset.fromCurrency);
+    setToCurrency(preset.toCurrency);
+    setSendAmount(String(preset.suggestedAmount));
+    setStatus(`Loaded ${preset.label}.`);
+  }, []);
+
+  const updateProvider = useCallback((id: string, patch: Partial<RemittanceProviderInput>) => {
+    setProviders((current) => current.map((provider) => (provider.id === id ? { ...provider, ...patch } : provider)));
+  }, []);
+
+  const removeProvider = useCallback((id: string) => {
+    setProviders((current) => {
+      if (current.length <= 2) return current;
+      return current.filter((provider) => provider.id !== id);
+    });
+  }, []);
+
+  const addProvider = useCallback(() => {
+    const nextId = `custom-${Date.now()}`;
+    setProviders((current) => [
+      ...current,
+      {
+        id: nextId,
+        name: `Custom route ${current.length + 1}`,
+        fixedFee: 3,
+        percentFee: 0.8,
+        fxSpreadPercent: 1.3,
+        deliveryHours: 12,
+        payoutType: "bank",
+        note: "Editable comparison scenario.",
+      },
+    ]);
+    setStatus("Added a new provider scenario.");
+  }, []);
+
+  const safeSendAmount = Math.max(0, safeNumberValue(sendAmount));
+  const safeTransfersPerMonth = Math.max(1, Math.round(safeNumberValue(transfersPerMonth) || 1));
+  const effectiveRate = rateMode === "manual" ? Math.max(0, safeNumberValue(manualRate)) : marketRate;
+  const comparison = useMemo(
+    () =>
+      compareRemittanceRoutes({
+        sendAmount: safeSendAmount,
+        marketRate: effectiveRate,
+        providers,
+      }),
+    [effectiveRate, providers, safeSendAmount],
+  );
+  const worstRoute = useMemo(
+    () => [...comparison.rows].sort((left, right) => left.recipientAmount - right.recipientAmount)[0] ?? null,
+    [comparison.rows],
+  );
+  const monthlyBoost = useMemo(
+    () => estimateMonthlySavings(comparison.bestRoute, worstRoute, safeTransfersPerMonth),
+    [comparison.bestRoute, safeTransfersPerMonth, worstRoute],
+  );
+  const bestRoute = comparison.bestRoute;
+  const lowestCostRoute = comparison.lowestCostRoute;
+  const fastestRoute = comparison.fastestRoute;
+  const maxRecipient = Math.max(1, ...comparison.rows.map((row) => row.recipientAmount));
+  const maxCost = Math.max(1, ...comparison.rows.map((row) => row.totalCostInSendCurrency));
+  const maxHours = Math.max(1, ...comparison.rows.map((row) => row.deliveryHours));
+
+  const exportRows = useMemo(
+    () =>
+      comparison.rows.map((row) => [
+        row.name,
+        row.payoutType,
+        String(row.deliveryHours),
+        String(row.fixedFee),
+        String(row.percentFee),
+        String(row.feeAmount),
+        String(row.fxSpreadPercent),
+        String(row.appliedRate),
+        String(row.recipientAmount),
+        String(row.totalCostInSendCurrency),
+        String(row.overallScore),
+        row.note,
+      ]),
+    [comparison.rows],
+  );
+
+  const summaryText = useMemo(() => {
+    if (!bestRoute) return "No remittance comparison results yet.";
+    return [
+      `Corridor: ${sendCountry} (${fromCurrency}) to ${receiveCountry} (${toCurrency})`,
+      `Send amount: ${formatCurrencyWithCode(safeSendAmount, fromCurrency)}`,
+      `Reference rate: ${effectiveRate > 0 ? formatNumericValue(effectiveRate) : "Not available"}`,
+      `Best route today: ${bestRoute.name}`,
+      `Recipient gets: ${formatCurrencyWithCode(bestRoute.recipientAmount, toCurrency)}`,
+      `Total cost: ${formatCurrencyWithCode(bestRoute.totalCostInSendCurrency, fromCurrency)}`,
+      `Delivery: ${formatDeliveryLabel(bestRoute.deliveryHours)}`,
+      `Monthly boost vs worst route (${safeTransfersPerMonth}x/month): ${formatCurrencyWithCode(monthlyBoost, toCurrency)}`,
+    ].join("\n");
+  }, [bestRoute, effectiveRate, fromCurrency, monthlyBoost, receiveCountry, safeSendAmount, safeTransfersPerMonth, sendCountry, toCurrency]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={CreditCard}
+        title="Remittance fee & FX comparator"
+        subtitle="Compare transfer routes by fee, FX spread, payout type, delivery speed, and recipient amount using live reference rates."
+      />
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Corridor presets</h3>
+          <span className="supporting-text">Start from a common transfer route, then edit currencies or provider assumptions.</span>
+        </div>
+        <div className="chip-list">
+          {REMITTANCE_CORRIDOR_PRESETS.map((preset) => (
+            <button key={preset.id} className="chip-button" type="button" onClick={() => applyCorridorPreset(preset.id)}>
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Send country / corridor label</span>
+          <input type="text" value={sendCountry} onChange={(event) => setSendCountry(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Receive country / corridor label</span>
+          <input type="text" value={receiveCountry} onChange={(event) => setReceiveCountry(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Send amount</span>
+          <input type="number" min={0} step={1} value={sendAmount} onChange={(event) => setSendAmount(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>Transfers per month</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={transfersPerMonth}
+            onChange={(event) => setTransfersPerMonth(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span>From currency</span>
+          <select value={fromCurrency} onChange={(event) => setFromCurrency(event.target.value)}>
+            {currencyOptions.map((option) => (
+              <option key={`send-${option.code}`} value={option.code}>
+                {option.code} - {option.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>To currency</span>
+          <select value={toCurrency} onChange={(event) => setToCurrency(event.target.value)}>
+            {currencyOptions.map((option) => (
+              <option key={`receive-${option.code}`} value={option.code}>
+                {option.code} - {option.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button
+          className={`chip-button${rateMode === "live" ? " active" : ""}`}
+          type="button"
+          onClick={() => setRateMode("live")}
+          aria-pressed={rateMode === "live"}
+        >
+          Live rate
+        </button>
+        <button
+          className={`chip-button${rateMode === "manual" ? " active" : ""}`}
+          type="button"
+          onClick={() => setRateMode("manual")}
+          aria-pressed={rateMode === "manual"}
+        >
+          Manual rate
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => void refreshRate()} disabled={loadingRate}>
+          <RefreshCw size={15} />
+          {loadingRate ? "Refreshing..." : "Refresh rate"}
+        </button>
+        <button className="action-button secondary" type="button" onClick={() => setProviders(createDefaultRemittanceProviders())}>
+          Reset providers
+        </button>
+        <button className="action-button secondary" type="button" onClick={addProvider}>
+          <Plus size={15} />
+          Add route
+        </button>
+      </div>
+
+      <div className="field-grid">
+        {rateMode === "manual" ? (
+          <label className="field">
+            <span>Manual FX rate (1 {fromCurrency} = ? {toCurrency})</span>
+            <input type="number" min={0} step={0.0001} value={manualRate} onChange={(event) => setManualRate(event.target.value)} />
+          </label>
+        ) : (
+          <div className="mini-panel">
+            <h3>Live reference rate</h3>
+            <p className="supporting-text">
+              {effectiveRate > 0
+                ? `1 ${fromCurrency} = ${formatNumericValue(effectiveRate)} ${toCurrency}`
+                : "Live rate unavailable. Refresh or switch to manual mode."}
+            </p>
+            <p className="supporting-text">Source: {rateSource}{rateDate ? ` | Date: ${rateDate}` : ""}</p>
+          </div>
+        )}
+        <div className="mini-panel">
+          <h3>What this compares</h3>
+          <p className="supporting-text">
+            Each route assumes the same send amount, then subtracts transfer fees and FX spread before calculating what the recipient actually gets.
+          </p>
+        </div>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      {bestRoute ? (
+        <ResultList
+          rows={[
+            { label: "Best route today", value: bestRoute.name, hint: `${formatCurrencyWithCode(bestRoute.recipientAmount, toCurrency)} received` },
+            {
+              label: "Lowest cost route",
+              value: lowestCostRoute?.name ?? "N/A",
+              hint: lowestCostRoute ? formatCurrencyWithCode(lowestCostRoute.totalCostInSendCurrency, fromCurrency) : undefined,
+            },
+            {
+              label: "Fastest payout",
+              value: fastestRoute?.name ?? "N/A",
+              hint: fastestRoute ? formatDeliveryLabel(fastestRoute.deliveryHours) : undefined,
+            },
+            {
+              label: "Family-budget impact",
+              value: formatCurrencyWithCode(monthlyBoost, toCurrency),
+              hint: `${safeTransfersPerMonth} transfer${safeTransfersPerMonth === 1 ? "" : "s"} per month versus the weakest route`,
+            },
+          ]}
+        />
+      ) : null}
+
+      <div className="mini-panel">
+        <div className="panel-head">
+          <h3>Route assumptions</h3>
+          <span className="supporting-text">Edit fee, spread, speed, and payout type for each route.</span>
+        </div>
+        <div className="plain-list">
+          {providers.map((provider) => (
+            <div key={provider.id} className="mini-panel" style={{ marginBottom: 12 }}>
+              <div className="field-grid">
+                <label className="field">
+                  <span>Route name</span>
+                  <input type="text" value={provider.name} onChange={(event) => updateProvider(provider.id, { name: event.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Fixed fee ({fromCurrency})</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={provider.fixedFee}
+                    onChange={(event) => updateProvider(provider.id, { fixedFee: Math.max(0, safeNumberValue(event.target.value)) })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Percent fee (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={provider.percentFee}
+                    onChange={(event) => updateProvider(provider.id, { percentFee: Math.max(0, safeNumberValue(event.target.value)) })}
+                  />
+                </label>
+                <label className="field">
+                  <span>FX spread (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={provider.fxSpreadPercent}
+                    onChange={(event) => updateProvider(provider.id, { fxSpreadPercent: Math.max(0, safeNumberValue(event.target.value)) })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Delivery time (hours)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.25}
+                    value={provider.deliveryHours}
+                    onChange={(event) => updateProvider(provider.id, { deliveryHours: Math.max(0, safeNumberValue(event.target.value)) })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Payout type</span>
+                  <select
+                    value={provider.payoutType}
+                    onChange={(event) =>
+                      updateProvider(provider.id, {
+                        payoutType: event.target.value as RemittanceProviderInput["payoutType"],
+                      })
+                    }
+                  >
+                    <option value="bank">Bank deposit</option>
+                    <option value="mobile-wallet">Mobile wallet</option>
+                    <option value="cash-pickup">Cash pickup</option>
+                    <option value="card">Card payout</option>
+                  </select>
+                </label>
+              </div>
+              <label className="field">
+                <span>Scenario note</span>
+                <input type="text" value={provider.note} onChange={(event) => updateProvider(provider.id, { note: event.target.value })} />
+              </label>
+              <div className="button-row">
+                <button className="action-button secondary" type="button" onClick={() => removeProvider(provider.id)} disabled={providers.length <= 2}>
+                  <Trash2 size={15} />
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {comparison.rows.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Best route today</h3>
+            <span className="supporting-text">
+              {bestRoute ? `${bestRoute.name} sends the highest recipient amount on these assumptions.` : "No comparison yet."}
+            </span>
+          </div>
+          {bestRoute ? (
+            <p className="supporting-text">
+              Recipient gets {formatCurrencyWithCode(bestRoute.recipientAmount, toCurrency)} with {formatDeliveryLabel(bestRoute.deliveryHours)} delivery and
+              total send-side cost of {formatCurrencyWithCode(bestRoute.totalCostInSendCurrency, fromCurrency)}.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {comparison.rows.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Comparison table</h3>
+            <span className="supporting-text">Fee vs speed vs payout tradeoff chart</span>
+          </div>
+          <ul className="plain-list">
+            {comparison.rows.map((row) => (
+              <li key={row.id}>
+                <div className="history-line">
+                  <strong>{row.name}</strong>
+                  <span className={`status-badge ${bestRoute?.id === row.id ? "ok" : row === lowestCostRoute ? "info" : "warn"}`}>
+                    Score {formatNumericValue(row.overallScore)}
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  Recipient: {formatCurrencyWithCode(row.recipientAmount, toCurrency)} | Cost: {formatCurrencyWithCode(row.totalCostInSendCurrency, fromCurrency)} | Delivery: {formatDeliveryLabel(row.deliveryHours)} | Payout: {row.payoutType}
+                </small>
+                <div className="field-grid">
+                  <div>
+                    <small className="supporting-text">Recipient amount</small>
+                    <div className="limit-meter">
+                      <div className="limit-meter-fill" style={{ width: `${(row.recipientAmount / maxRecipient) * 100}%` }} />
+                    </div>
+                  </div>
+                  <div>
+                    <small className="supporting-text">Total cost</small>
+                    <div className="limit-meter">
+                      <div className="limit-meter-fill" style={{ width: `${(row.totalCostInSendCurrency / maxCost) * 100}%` }} />
+                    </div>
+                  </div>
+                  <div>
+                    <small className="supporting-text">Delivery time</small>
+                    <div className="limit-meter">
+                      <div className="limit-meter-fill" style={{ width: `${(row.deliveryHours / maxHours) * 100}%` }} />
+                    </div>
+                  </div>
+                </div>
+                <small className="supporting-text">
+                  Fee: {formatCurrencyWithCode(row.feeAmount, fromCurrency)} | FX spread cost: {formatCurrencyWithCode(row.spreadCostInSendCurrency, fromCurrency)} | Applied rate: {formatNumericValue(row.appliedRate)}
+                </small>
+                {row.note ? <small className="supporting-text">{row.note}</small> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" disabled={!comparison.rows.length} onClick={() => downloadTextFile("remittance-comparison.json", JSON.stringify({
+          sendCountry,
+          receiveCountry,
+          fromCurrency,
+          toCurrency,
+          sendAmount: safeSendAmount,
+          transfersPerMonth: safeTransfersPerMonth,
+          rateMode,
+          effectiveRate,
+          rateSource,
+          rateDate,
+          providers,
+          comparison,
+        }, null, 2), "application/json;charset=utf-8;")}>
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!exportRows.length}
+          onClick={() =>
+            downloadCsv(
+              "remittance-comparison.csv",
+              ["Route", "Payout", "Hours", "Fixed Fee", "Percent Fee", "Fee Amount", "FX Spread %", "Applied Rate", "Recipient Amount", "Total Cost", "Score", "Note"],
+              exportRows,
+            )
+          }
+        >
+          <Download size={15} />
+          CSV
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!comparison.rows.length}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(summaryText);
+            setStatus(ok ? "Comparison summary copied." : "Could not copy summary.");
+          }}
+        >
+          <Copy size={15} />
+          Copy summary
+        </button>
+      </div>
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -45034,6 +46310,10 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <DocumentTranslatorTool />;
     case "pii-redaction-studio":
       return <PiiRedactionStudioTool />;
+    case "receipt-invoice-extractor":
+      return <ReceiptInvoiceExtractorTool />;
+    case "remittance-fx-comparator":
+      return <RemittanceFxComparatorTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":

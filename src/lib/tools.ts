@@ -1372,6 +1372,42 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("PII Redaction Studio"),
   },
   {
+    slug: "receipt-invoice-extractor",
+    category: "productivity-tools",
+    title: "Receipt & Invoice Extractor",
+    summary: "Extract merchant, totals, taxes, dates, payment method, and line items from receipts or invoices.",
+    description:
+      "Upload receipt photos, PDFs, scans, or invoice files to extract structured bookkeeping fields, detect currency, suggest expense categories, and export JSON or CSV-ready rows.",
+    keywords: [
+      "receipt extractor",
+      "invoice data extraction",
+      "receipt to csv",
+      "invoice parser",
+      "expense receipt scanner",
+      "bookkeeping receipt tool",
+    ],
+    engine: { kind: "productivity-tool", id: "receipt-invoice-extractor" },
+    faq: baseFaq("Receipt & Invoice Extractor"),
+  },
+  {
+    slug: "remittance-fx-comparator",
+    category: "productivity-tools",
+    title: "Remittance Fee & FX Comparator",
+    summary: "Compare transfer routes by fees, FX spread, payout type, speed, and recipient amount.",
+    description:
+      "Model cross-border transfers with live reference rates, editable provider scenarios, corridor presets, payout-type comparison, and monthly savings impact for repeat remittances.",
+    keywords: [
+      "remittance comparison tool",
+      "money transfer fee calculator",
+      "fx spread comparator",
+      "best remittance route",
+      "cross border transfer calculator",
+      "recipient amount comparison",
+    ],
+    engine: { kind: "productivity-tool", id: "remittance-fx-comparator" },
+    faq: baseFaq("Remittance Fee & FX Comparator"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",
