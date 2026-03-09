@@ -1096,6 +1096,24 @@ const imageTools: ToolDefinition[] = [
 
 const developerTools: ToolDefinition[] = [
   {
+    slug: "accessibility-auditor-fix-planner",
+    category: "developer-tools",
+    title: "Accessibility Auditor & Fix Planner",
+    summary: "Audit live pages or pasted HTML for accessibility issues, prioritize fixes, and export a developer-ready remediation report.",
+    description:
+      "Run a structured accessibility audit across headings, landmarks, images, forms, buttons, links, dialogs, tables, media, and duplicate IDs, then generate prioritized fixes and reusable remediation notes.",
+    keywords: [
+      "accessibility audit",
+      "wcag checker",
+      "web accessibility tester",
+      "a11y audit tool",
+      "accessibility fix planner",
+      "screen reader audit",
+    ],
+    engine: { kind: "developer-tool", id: "accessibility-auditor" },
+    faq: baseFaq("Accessibility Auditor & Fix Planner"),
+  },
+  {
     slug: "uuid-generator",
     category: "developer-tools",
     title: "UUID Generator",

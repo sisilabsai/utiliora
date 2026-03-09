@@ -50,6 +50,12 @@ import { trackEvent } from "@/lib/analytics";
 import { emitShareSignal } from "@/lib/social-share";
 import { convertNumber, convertUnitValue, getUnitsForQuantity } from "@/lib/converters";
 import {
+  analyzeAccessibilityMarkup,
+  buildAccessibilityAuditMarkdown,
+  type AccessibilityAuditIssue,
+  type AccessibilityAuditResult,
+} from "@/lib/accessibility-audit";
+import {
   buildDocumentTranslationWordMarkup,
   DOCUMENT_TRANSLATOR_HISTORY_LIMIT,
   DOCUMENT_TRANSLATOR_MAX_TEXT_LENGTH,
@@ -15757,6 +15763,448 @@ function TextTool({ id }: { id: TextToolId }) {
   }
 }
 
+type AccessibilityAuditSourceMode = "url" | "markup";
+
+interface AccessibilityAuditHistoryEntry {
+  id: string;
+  sourceLabel: string;
+  title: string;
+  score: number;
+  grade: string;
+  issueCount: number;
+  criticalCount: number;
+  auditedAt: string;
+}
+
+const ACCESSIBILITY_AUDIT_HISTORY_KEY = "utiliora-accessibility-audit-history-v1";
+const ACCESSIBILITY_AUDIT_HISTORY_LIMIT = 12;
+const ACCESSIBILITY_SAMPLE_MARKUP = `<!DOCTYPE html>
+<html>
+  <head>
+    <title>Home</title>
+  </head>
+  <body>
+    <header>
+      <a href="/pricing">Click here</a>
+    </header>
+    <div>
+      <h1>Welcome</h1>
+      <h3></h3>
+      <img src="/hero.png" />
+      <form>
+        <input type="email" name="email" />
+        <button type="button"><svg aria-hidden="true"></svg></button>
+      </form>
+      <iframe src="https://example.com/embed"></iframe>
+      <table>
+        <tr><td>Value</td></tr>
+      </table>
+    </div>
+  </body>
+</html>`;
+
+function getAccessibilitySeverityBadgeClass(severity: AccessibilityAuditIssue["severity"]): string {
+  if (severity === "critical") return "bad";
+  if (severity === "important") return "warn";
+  return "ok";
+}
+
+function AccessibilityAuditorTool() {
+  const [sourceMode, setSourceMode] = useState<AccessibilityAuditSourceMode>("url");
+  const [pageUrl, setPageUrl] = useState("https://www.utiliora.cloud");
+  const [markupInput, setMarkupInput] = useState("");
+  const [status, setStatus] = useState("");
+  const [processing, setProcessing] = useState(false);
+  const [result, setResult] = useState<AccessibilityAuditResult | null>(null);
+  const [history, setHistory] = useState<AccessibilityAuditHistoryEntry[]>([]);
+  const [sourceLabel, setSourceLabel] = useState("");
+  const [finalUrl, setFinalUrl] = useState("");
+  const [httpStatus, setHttpStatus] = useState<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ACCESSIBILITY_AUDIT_HISTORY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setHistory(
+        parsed.filter((entry): entry is AccessibilityAuditHistoryEntry => {
+          return typeof entry?.id === "string" && typeof entry?.score === "number" && typeof entry?.auditedAt === "string";
+        }),
+      );
+    } catch {
+      // Ignore storage hydration failures.
+    }
+  }, []);
+
+  const persistHistory = useCallback((entry: AccessibilityAuditHistoryEntry) => {
+    setHistory((current) => {
+      const next = [entry, ...current.filter((item) => item.id !== entry.id)].slice(0, ACCESSIBILITY_AUDIT_HISTORY_LIMIT);
+      try {
+        window.localStorage.setItem(ACCESSIBILITY_AUDIT_HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage write failures.
+      }
+      return next;
+    });
+  }, []);
+
+  const completeAudit = useCallback(
+    (markup: string, nextSourceLabel: string, nextFinalUrl = "", nextStatus: number | null = null) => {
+      const nextResult = analyzeAccessibilityMarkup(markup);
+      const now = new Date().toISOString();
+      const historyEntry: AccessibilityAuditHistoryEntry = {
+        id: `${nextSourceLabel}-${now}`,
+        sourceLabel: nextSourceLabel,
+        title: nextResult.pageTitle,
+        score: nextResult.score,
+        grade: nextResult.grade,
+        issueCount: nextResult.issues.length,
+        criticalCount: nextResult.issues.filter((issue) => issue.severity === "critical").length,
+        auditedAt: now,
+      };
+
+      setResult(nextResult);
+      setSourceLabel(nextSourceLabel);
+      setFinalUrl(nextFinalUrl);
+      setHttpStatus(nextStatus);
+      persistHistory(historyEntry);
+      setStatus(
+        nextResult.issues.length === 0
+          ? "Audit completed. No major structural accessibility issues were detected."
+          : `Audit completed with ${nextResult.issues.length} issue${nextResult.issues.length === 1 ? "" : "s"}.`,
+      );
+      trackEvent("tool_accessibility_audit_run", {
+        sourceMode,
+        score: nextResult.score,
+        issues: nextResult.issues.length,
+        criticalIssues: historyEntry.criticalCount,
+      });
+      emitShareSignal({ action: "success", context: "accessibility-auditor" });
+    },
+    [persistHistory, sourceMode],
+  );
+
+  const runMarkupAudit = useCallback(() => {
+    const trimmed = markupInput.trim();
+    if (!trimmed) {
+      setStatus("Paste HTML markup to run the accessibility audit.");
+      return;
+    }
+    completeAudit(trimmed, "Pasted HTML");
+  }, [completeAudit, markupInput]);
+
+  const runUrlAudit = useCallback(async () => {
+    const trimmed = pageUrl.trim();
+    if (!trimmed) {
+      setStatus("Enter a public page URL to audit.");
+      return;
+    }
+
+    setProcessing(true);
+    setStatus("Fetching page and running accessibility audit...");
+    try {
+      const response = await fetch("/api/accessibility-audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmed }),
+      });
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        finalUrl?: string;
+        requestedUrl?: string;
+        status?: number;
+        markup?: string;
+      };
+
+      if (!response.ok || !payload.ok || !payload.markup) {
+        setStatus(payload.error || "Unable to fetch that page for auditing.");
+        return;
+      }
+
+      setMarkupInput(payload.markup);
+      completeAudit(payload.markup, payload.finalUrl || payload.requestedUrl || trimmed, payload.finalUrl || "", payload.status ?? null);
+    } catch {
+      setStatus("Unable to fetch the page for auditing right now.");
+    } finally {
+      setProcessing(false);
+    }
+  }, [completeAudit, pageUrl]);
+
+  const latestPreviousAudit = useMemo(() => {
+    if (!result) return history[0] ?? null;
+    const currentKey = `${sourceLabel}-${result.score}-${result.issues.length}`;
+    const match = history.find((entry) => `${entry.sourceLabel}-${entry.score}-${entry.issueCount}` === currentKey);
+    if (!match) return history[0] ?? null;
+    const currentIndex = history.findIndex((entry) => entry.id === match.id);
+    return history[currentIndex + 1] ?? null;
+  }, [history, result, sourceLabel]);
+
+  const scoreDelta = useMemo(() => {
+    if (!result || !latestPreviousAudit) return null;
+    return result.score - latestPreviousAudit.score;
+  }, [latestPreviousAudit, result]);
+
+  const reportMarkdown = useMemo(() => {
+    if (!result) return "";
+    return buildAccessibilityAuditMarkdown(result, {
+      sourceLabel: sourceLabel || "Accessibility audit",
+      auditedAt: new Date().toLocaleString("en-US"),
+      finalUrl: finalUrl || undefined,
+      httpStatus: typeof httpStatus === "number" ? httpStatus : undefined,
+    });
+  }, [finalUrl, httpStatus, result, sourceLabel]);
+
+  const reportJson = useMemo(() => {
+    if (!result) return "";
+    return JSON.stringify(
+      {
+        sourceLabel,
+        finalUrl,
+        httpStatus,
+        auditedAt: new Date().toISOString(),
+        result,
+      },
+      null,
+      2,
+    );
+  }, [finalUrl, httpStatus, result, sourceLabel]);
+
+  const summaryRows = useMemo(() => {
+    if (!result) return [];
+    return [
+      { label: "Accessibility score", value: `${result.score}/100 (${result.grade})` },
+      { label: "Issues found", value: formatNumericValue(result.issues.length) },
+      { label: "Critical issues", value: formatNumericValue(result.issues.filter((issue) => issue.severity === "critical").length) },
+      { label: "Passed checks", value: formatNumericValue(result.passedChecks.length) },
+      {
+        label: "Audit trend",
+        value:
+          scoreDelta === null
+            ? "No previous audit"
+            : `${scoreDelta >= 0 ? "+" : ""}${scoreDelta} vs previous`,
+      },
+      {
+        label: "Form + media blockers",
+        value: `${result.metrics.unlabeledFormControls + result.metrics.mediaWithoutCaptions}`,
+        hint: "Unlabeled fields plus media without captions",
+      },
+    ];
+  }, [result, scoreDelta]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={Search}
+        title="Accessibility auditor & fix planner"
+        subtitle="Audit live pages or pasted HTML, score issues by severity, and export a developer-ready remediation plan."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Audit source</span>
+          <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as AccessibilityAuditSourceMode)}>
+            <option value="url">Live page URL</option>
+            <option value="markup">Pasted HTML markup</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Audit depth</span>
+          <input type="text" value="Structural accessibility + fix planning" readOnly />
+          <small className="supporting-text">This version focuses on document structure, labels, landmarks, media, and navigation semantics.</small>
+        </label>
+      </div>
+
+      {sourceMode === "url" ? (
+        <label className="field">
+          <span>Page URL</span>
+          <input
+            type="url"
+            value={pageUrl}
+            onChange={(event) => setPageUrl(event.target.value)}
+            placeholder="https://example.com/page"
+          />
+          <small className="supporting-text">The tool fetches the public HTML server-side so you can audit live pages without browser CORS issues.</small>
+        </label>
+      ) : (
+        <label className="field">
+          <span>HTML markup</span>
+          <textarea
+            value={markupInput}
+            onChange={(event) => setMarkupInput(event.target.value)}
+            rows={14}
+            placeholder="<html lang=&quot;en&quot;>...</html>"
+          />
+          <small className="supporting-text">Paste a full page, component output, CMS snippet, or template markup to audit before publishing.</small>
+        </label>
+      )}
+
+      <div className="button-row">
+        <button
+          className="action-button"
+          type="button"
+          onClick={() => void (sourceMode === "url" ? runUrlAudit() : runMarkupAudit())}
+          disabled={processing}
+        >
+          {processing ? "Auditing..." : sourceMode === "url" ? "Audit live page" : "Audit pasted HTML"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          onClick={() => {
+            setSourceMode("markup");
+            setMarkupInput(ACCESSIBILITY_SAMPLE_MARKUP);
+            setStatus("Loaded a sample page with deliberate accessibility issues.");
+          }}
+        >
+          <RefreshCw size={15} />
+          Load sample issues
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(reportMarkdown);
+            setStatus(ok ? "Markdown accessibility report copied." : "Nothing to copy yet.");
+          }}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={() => downloadTextFile("accessibility-audit-report.md", reportMarkdown)}
+        >
+          <Download size={15} />
+          Markdown
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportJson}
+          onClick={() => downloadTextFile("accessibility-audit-report.json", reportJson, "application/json;charset=utf-8;")}
+        >
+          <FileText size={15} />
+          JSON
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      {result ? <ResultList rows={summaryRows} /> : null}
+
+      {result ? (
+        <div className="mini-panel">
+          <h3>Remediation sprint</h3>
+          <ul className="plain-list">
+            {result.issues.slice(0, 4).map((issue) => (
+              <li key={issue.id}>
+                <div className="history-line">
+                  <strong>{issue.title}</strong>
+                  <span className={`status-badge ${getAccessibilitySeverityBadgeClass(issue.severity)}`}>
+                    {issue.severity}
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  {issue.summary} Effort: {issue.effort}. Affects {issue.impacts.join(", ")}.
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {result?.passedChecks.length ? (
+        <div className="mini-panel">
+          <h3>What already looks good</h3>
+          <ul className="plain-list">
+            {result.passedChecks.map((check) => (
+              <li key={check}>{check}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {result ? (
+        <div className="mini-panel">
+          <h3>Coverage snapshot</h3>
+          <ul className="plain-list">
+            <li>Headings inspected: {formatNumericValue(result.metrics.headings)}</li>
+            <li>Landmarks detected: {formatNumericValue(result.metrics.landmarks)}</li>
+            <li>Images inspected: {formatNumericValue(result.metrics.images)}</li>
+            <li>Missing alt text: {formatNumericValue(result.metrics.missingAltImages)}</li>
+            <li>Unlabeled fields: {formatNumericValue(result.metrics.unlabeledFormControls)}</li>
+            <li>Unlabeled buttons: {formatNumericValue(result.metrics.unlabeledButtons)}</li>
+            <li>Generic links: {formatNumericValue(result.metrics.genericLinks)}</li>
+            <li>Duplicate ID groups: {formatNumericValue(result.metrics.duplicateIdGroups)}</li>
+          </ul>
+        </div>
+      ) : null}
+
+      {result?.issues.length ? (
+        <div className="faq" aria-label="Accessibility findings">
+          <h2>Findings</h2>
+          {result.issues.map((issue) => (
+            <details key={issue.id}>
+              <summary>
+                {issue.title}{" "}
+                <span className={`status-badge ${getAccessibilitySeverityBadgeClass(issue.severity)}`}>{issue.severity}</span>
+              </summary>
+              <p>{issue.summary}</p>
+              <p className="supporting-text">{issue.whyItMatters}</p>
+              <p className="supporting-text">Affected users: {issue.impacts.join(", ")}. Estimated effort: {issue.effort}.</p>
+              {issue.evidence.length ? (
+                <ul className="plain-list">
+                  {issue.evidence.map((entry) => (
+                    <li key={entry}>{entry}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <label className="field">
+                <span>Fix snippet</span>
+                <textarea value={issue.fixSnippet} rows={Math.max(4, issue.fixSnippet.split("\n").length)} readOnly />
+              </label>
+            </details>
+          ))}
+        </div>
+      ) : null}
+
+      {reportMarkdown ? (
+        <label className="field">
+          <span>Developer handoff report</span>
+          <textarea value={reportMarkdown} rows={16} readOnly />
+        </label>
+      ) : null}
+
+      {history.length ? (
+        <div className="mini-panel">
+          <h3>Recent audit history</h3>
+          <ul className="plain-list">
+            {history.map((entry) => (
+              <li key={entry.id}>
+                <div className="history-line">
+                  <strong>{entry.sourceLabel}</strong>
+                  <span className={`status-badge ${entry.score >= 85 ? "ok" : entry.score >= 65 ? "warn" : "bad"}`}>
+                    {entry.score}/100
+                  </span>
+                </div>
+                <small className="supporting-text">
+                  {entry.title} | {entry.issueCount} issue(s), {entry.criticalCount} critical |{" "}
+                  {new Date(entry.auditedAt).toLocaleString("en-US")}
+                </small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function UuidGeneratorTool() {
   const [count, setCount] = useState("5");
   const [uppercase, setUppercase] = useState(false);
@@ -19877,6 +20325,8 @@ function InternetSpeedTestTool() {
 
 function DeveloperTool({ id }: { id: DeveloperToolId }) {
   switch (id) {
+    case "accessibility-auditor":
+      return <AccessibilityAuditorTool />;
     case "uuid-generator":
       return <UuidGeneratorTool />;
     case "url-encoder-decoder":

@@ -110,6 +110,7 @@ export type TextToolId =
   | "lorem-ipsum-generator";
 
 export type DeveloperToolId =
+  | "accessibility-auditor"
   | "uuid-generator"
   | "url-encoder-decoder"
   | "timestamp-converter"
