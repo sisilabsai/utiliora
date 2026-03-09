@@ -1,8 +1,9 @@
 import type { MetadataRoute } from "next";
+import { absoluteUrl } from "@/lib/site";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    id: "https://utiliora.cloud/",
+    id: absoluteUrl("/"),
     name: "Utiliora - Utility Tools Platform",
     short_name: "Utiliora",
     description:

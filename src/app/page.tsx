@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { HomePageContent } from "@/components/pages/HomePageContent";
 import { getCategories } from "@/lib/categories";
+import { absoluteUrl, SITE_NAME, SITE_ORIGIN } from "@/lib/site";
 import { getAllTools } from "@/lib/tools";
 
 export const metadata: Metadata = {
@@ -19,16 +20,16 @@ export const metadata: Metadata = {
     canonical: "/",
   },
   openGraph: {
-    title: "Utiliora | Online Utility Tools",
+    title: `${SITE_NAME} | Online Utility Tools`,
     description:
       "Use fast free online tools for calculators, converters, SEO, images, developer workflows, and productivity.",
-    url: "https://utiliora.cloud/",
+    url: absoluteUrl("/"),
     type: "website",
-    siteName: "Utiliora",
+    siteName: SITE_NAME,
   },
   twitter: {
     card: "summary_large_image",
-    title: "Utiliora | Online Utility Tools",
+    title: `${SITE_NAME} | Online Utility Tools`,
     description:
       "Use fast free online tools for calculators, converters, SEO, images, developer workflows, and productivity.",
   },
@@ -41,16 +42,16 @@ export default function Home() {
   const websiteSchema = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "Utiliora",
-    url: "https://utiliora.cloud",
+    name: SITE_NAME,
+    url: SITE_ORIGIN,
     description:
       "Global utility platform with calculators, converters, SEO tools, image tools, developer tools, and productivity tools.",
   };
   const organizationSchema = {
     "@context": "https://schema.org",
     "@type": "Organization",
-    name: "Utiliora",
-    url: "https://utiliora.cloud",
+    name: SITE_NAME,
+    url: SITE_ORIGIN,
   };
 
   return (

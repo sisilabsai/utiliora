@@ -1,51 +1,51 @@
 import type { MetadataRoute } from "next";
 import { orderedCategorySlugs } from "@/lib/categories";
+import { absoluteUrl } from "@/lib/site";
 import { getAllTools } from "@/lib/tools";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = "https://utiliora.cloud";
   const now = new Date();
   const tools = getAllTools();
 
   const corePages: MetadataRoute.Sitemap = [
     {
-      url: `${baseUrl}/`,
+      url: absoluteUrl("/"),
       lastModified: now,
       changeFrequency: "daily",
       priority: 1,
     },
     {
-      url: `${baseUrl}/tools`,
+      url: absoluteUrl("/tools"),
       lastModified: now,
       changeFrequency: "daily",
       priority: 0.9,
     },
     {
-      url: `${baseUrl}/about`,
+      url: absoluteUrl("/about"),
       lastModified: now,
       changeFrequency: "monthly",
       priority: 0.6,
     },
     {
-      url: `${baseUrl}/contact`,
+      url: absoluteUrl("/contact"),
       lastModified: now,
       changeFrequency: "monthly",
       priority: 0.6,
     },
     {
-      url: `${baseUrl}/privacy`,
+      url: absoluteUrl("/privacy"),
       lastModified: now,
       changeFrequency: "yearly",
       priority: 0.5,
     },
     {
-      url: `${baseUrl}/terms`,
+      url: absoluteUrl("/terms"),
       lastModified: now,
       changeFrequency: "yearly",
       priority: 0.5,
     },
     ...orderedCategorySlugs().map((category) => ({
-      url: `${baseUrl}/${category}`,
+      url: absoluteUrl(`/${category}`),
       lastModified: now,
       changeFrequency: "daily" as const,
       priority: 0.8,
@@ -53,7 +53,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   ];
 
   const toolPages: MetadataRoute.Sitemap = tools.map((tool) => ({
-    url: `${baseUrl}/${tool.category}/${tool.slug}`,
+    url: absoluteUrl(`/${tool.category}/${tool.slug}`),
     lastModified: now,
     changeFrequency: "weekly",
     priority: 0.7,

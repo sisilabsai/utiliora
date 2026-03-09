@@ -2,6 +2,7 @@
 
 import { SpreadWordPanel } from "@/components/SpreadWordPanel";
 import { useLocale } from "@/components/LocaleProvider";
+import { absoluteUrl } from "@/lib/site";
 
 export function AboutPageContent() {
   const { t } = useLocale();
@@ -65,7 +66,7 @@ export function AboutPageContent() {
 
       <SpreadWordPanel
         eventContext="about-page"
-        shareUrl="https://utiliora.cloud/about"
+        shareUrl={absoluteUrl("/about")}
         shareText={t("about.share_text", undefined, "I use Utiliora for fast online tools without login friction.")}
       />
     </div>

@@ -9,6 +9,7 @@ import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DEFAULT_LOCALE, LOCALE_COOKIE_KEY, LOCALE_STORAGE_KEY } from "@/lib/i18n";
+import { SITE_NAME, SITE_ORIGIN } from "@/lib/site";
 
 const GA_MEASUREMENT_ID = "G-1KYZN51H12";
 
@@ -91,12 +92,12 @@ const localeBootScript = `
 `;
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://utiliora.cloud"),
-  applicationName: "Utiliora",
+  metadataBase: new URL(SITE_ORIGIN),
+  applicationName: SITE_NAME,
   manifest: "/manifest.webmanifest",
   title: {
-    default: "Utiliora | Simple Tools. Instant Results.",
-    template: "%s | Utiliora",
+    default: `${SITE_NAME} | Simple Tools. Instant Results.`,
+    template: `%s | ${SITE_NAME}`,
   },
   description:
     "Global utility platform for calculators, converters, SEO tools, image tools, developer utilities, and productivity workflows.",
@@ -108,9 +109,6 @@ export const metadata: Metadata = {
     "developer tools",
     "image tools",
   ],
-  alternates: {
-    canonical: "/",
-  },
   icons: {
     icon: [
       { url: "/icons/favicon-16x16.png", sizes: "16x16", type: "image/png" },
@@ -122,7 +120,7 @@ export const metadata: Metadata = {
   },
   appleWebApp: {
     capable: true,
-    title: "Utiliora",
+    title: SITE_NAME,
     statusBarStyle: "default",
   },
   robots: {
@@ -138,10 +136,10 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
-    title: "Utiliora",
+    title: SITE_NAME,
     description: "Simple tools. Instant results.",
-    url: "https://utiliora.cloud",
-    siteName: "Utiliora",
+    url: SITE_ORIGIN,
+    siteName: SITE_NAME,
     images: [
       {
         url: "/icons/icon-512.png",
@@ -153,7 +151,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Utiliora",
+    title: SITE_NAME,
     description: "Simple tools. Instant results.",
   },
 };

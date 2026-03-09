@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ContactPageContent } from "@/components/pages/ContactPageContent";
+import { absoluteUrl, SITE_NAME } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Contact Utiliora",
@@ -9,12 +10,12 @@ export const metadata: Metadata = {
     canonical: "/contact",
   },
   openGraph: {
-    title: "Contact Utiliora",
+    title: `Contact ${SITE_NAME}`,
     description:
       "Contact Utiliora through email or social channels. Reach us for support, product feedback, and partnership conversations.",
-    url: "https://utiliora.cloud/contact",
+    url: absoluteUrl("/contact"),
     type: "website",
-    siteName: "Utiliora",
+    siteName: SITE_NAME,
   },
 };
 
@@ -22,11 +23,11 @@ export default function ContactPage() {
   const contactSchema = {
     "@context": "https://schema.org",
     "@type": "ContactPage",
-    name: "Utiliora Contact",
-    url: "https://utiliora.cloud/contact",
+    name: `${SITE_NAME} Contact`,
+    url: absoluteUrl("/contact"),
     mainEntity: {
       "@type": "Organization",
-      name: "Utiliora",
+      name: SITE_NAME,
       email: "hello@utiliora.cloud",
     },
   };

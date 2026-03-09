@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AboutPageContent } from "@/components/pages/AboutPageContent";
+import { absoluteUrl, SITE_NAME, SITE_ORIGIN } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "About Utiliora",
@@ -9,12 +10,12 @@ export const metadata: Metadata = {
     canonical: "/about",
   },
   openGraph: {
-    title: "About Utiliora",
+    title: `About ${SITE_NAME}`,
     description:
       "Learn about Utiliora, our mission, privacy-first principles, and how we build fast utility tools for everyone.",
-    url: "https://utiliora.cloud/about",
+    url: absoluteUrl("/about"),
     type: "website",
-    siteName: "Utiliora",
+    siteName: SITE_NAME,
   },
 };
 
@@ -22,8 +23,8 @@ export default function AboutPage() {
   const organizationSchema = {
     "@context": "https://schema.org",
     "@type": "Organization",
-    name: "Utiliora",
-    url: "https://utiliora.cloud",
+    name: SITE_NAME,
+    url: SITE_ORIGIN,
     email: "hello@utiliora.cloud",
     sameAs: [
       "https://x.com/utilioracloud",

@@ -1,15 +1,22 @@
 import { cookies } from "next/headers";
 import type { Metadata } from "next";
 import { ADMIN_SESSION_COOKIE_NAME, verifyAdminSessionToken } from "@/lib/admin-session";
+import { absoluteUrl } from "@/lib/site";
 import { AdminDashboard } from "@/components/admin/AdminDashboard";
 import { AdminLoginForm } from "@/components/admin/AdminLoginForm";
 
 export const metadata: Metadata = {
   title: "Admin",
   description: "Utiliora admin dashboard for marketing and platform operations.",
+  alternates: {
+    canonical: "/admin",
+  },
   robots: {
     index: false,
     follow: false,
+  },
+  openGraph: {
+    url: absoluteUrl("/admin"),
   },
 };
 

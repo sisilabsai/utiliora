@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ToolPageContent } from "@/components/pages/ToolPageContent";
 import { getAffiliateOfferForTool } from "@/lib/affiliates";
 import { getCategory } from "@/lib/categories";
+import { absoluteUrl, SITE_NAME } from "@/lib/site";
 import { getAllTools, getRelatedTools, getToolByCategoryAndSlug } from "@/lib/tools";
 
 interface ToolPageProps {
@@ -32,12 +33,12 @@ export function generateMetadata({ params }: ToolPageProps): Metadata {
     openGraph: {
       title: tool.title,
       description: tool.description,
-      url: `https://utiliora.cloud/${tool.category}/${tool.slug}`,
+      url: absoluteUrl(`/${tool.category}/${tool.slug}`),
       type: "article",
     },
     twitter: {
       card: "summary_large_image",
-      title: `${tool.title} | Utiliora`,
+      title: `${tool.title} | ${SITE_NAME}`,
       description: tool.description,
     },
     robots: {
@@ -55,7 +56,7 @@ function buildJsonLd(
   toolSlug: string,
   faq: Array<{ question: string; answer: string }>,
 ) {
-  const url = `https://utiliora.cloud/${categorySlug}/${toolSlug}`;
+  const url = absoluteUrl(`/${categorySlug}/${toolSlug}`);
   const softwareApplication = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -79,13 +80,13 @@ function buildJsonLd(
         "@type": "ListItem",
         position: 1,
         name: "Home",
-        item: "https://utiliora.cloud/",
+        item: absoluteUrl("/"),
       },
       {
         "@type": "ListItem",
         position: 2,
         name: categoryTitle,
-        item: `https://utiliora.cloud/${categorySlug}`,
+        item: absoluteUrl(`/${categorySlug}`),
       },
       {
         "@type": "ListItem",

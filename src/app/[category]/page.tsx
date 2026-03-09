@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { CategoryPageContent } from "@/components/pages/CategoryPageContent";
 import { getAffiliateOfferForCategory } from "@/lib/affiliates";
 import { getCategory, orderedCategorySlugs } from "@/lib/categories";
+import { absoluteUrl, SITE_NAME, SITE_ORIGIN } from "@/lib/site";
 import { getToolsByCategory } from "@/lib/tools";
 
 interface CategoryPageProps {
@@ -35,14 +36,14 @@ export function generateMetadata({ params }: CategoryPageProps): Metadata {
       canonical: `/${category.slug}`,
     },
     openGraph: {
-      title: `${category.title} | Utiliora`,
+      title: `${category.title} | ${SITE_NAME}`,
       description: category.description,
-      url: `https://utiliora.cloud/${category.slug}`,
+      url: absoluteUrl(`/${category.slug}`),
       type: "website",
     },
     twitter: {
       card: "summary_large_image",
-      title: `${category.title} | Utiliora`,
+      title: `${category.title} | ${SITE_NAME}`,
       description: category.description,
     },
   };
@@ -57,13 +58,13 @@ export default function CategoryPage({ params }: CategoryPageProps) {
   const categorySchema = {
     "@context": "https://schema.org",
     "@type": "CollectionPage",
-    name: `${category.title} | Utiliora`,
+    name: `${category.title} | ${SITE_NAME}`,
     description: category.description,
-    url: `https://utiliora.cloud/${category.slug}`,
+    url: absoluteUrl(`/${category.slug}`),
     isPartOf: {
       "@type": "WebSite",
-      name: "Utiliora",
-      url: "https://utiliora.cloud",
+      name: SITE_NAME,
+      url: SITE_ORIGIN,
     },
     mainEntity: {
       "@type": "ItemList",
@@ -71,7 +72,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         "@type": "ListItem",
         position: index + 1,
         name: tool.title,
-        url: `https://utiliora.cloud/${tool.category}/${tool.slug}`,
+        url: absoluteUrl(`/${tool.category}/${tool.slug}`),
       })),
     },
   };
@@ -83,13 +84,13 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         "@type": "ListItem",
         position: 1,
         name: "Home",
-        item: "https://utiliora.cloud/",
+        item: absoluteUrl("/"),
       },
       {
         "@type": "ListItem",
         position: 2,
         name: category.title,
-        item: `https://utiliora.cloud/${category.slug}`,
+        item: absoluteUrl(`/${category.slug}`),
       },
     ],
   };
