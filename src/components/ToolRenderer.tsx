@@ -69,6 +69,11 @@ import {
 } from "@/lib/accessibility-audit";
 import { analyzeBankStatement, type BankStatementAnalysis } from "@/lib/bank-statement";
 import {
+  buildDocumentCompareMarkdown,
+  compareDocumentTexts,
+  type DocumentCompareResult,
+} from "@/lib/document-compare";
+import {
   analyzeMessageForScamRisk,
   analyzeQrPayloadForScamRisk,
   analyzeUrlForScamRisk,
@@ -42673,6 +42678,258 @@ function BankStatementNormalizerExpenseIntelligenceTool() {
   );
 }
 
+function DocumentCompareRedlineTool() {
+  const [beforeText, setBeforeText] = useState("");
+  const [afterText, setAfterText] = useState("");
+  const [beforeLabel, setBeforeLabel] = useState("");
+  const [afterLabel, setAfterLabel] = useState("");
+  const [result, setResult] = useState<DocumentCompareResult | null>(null);
+  const [status, setStatus] = useState("Import two documents or paste text to compare changes and review risk-heavy edits.");
+  const [processing, setProcessing] = useState(false);
+  const [maxPdfPages, setMaxPdfPages] = useState(8);
+
+  const importSide = useCallback(
+    async (file: File | null, side: "before" | "after") => {
+      if (!file) return;
+      setProcessing(true);
+      try {
+        const extension = getFileExtension(file.name);
+        let extractedText = "";
+        let label = file.name;
+
+        if (file.type === "application/pdf" || extension === "pdf") {
+          const extracted = await extractTextFromPdfDocument(file, {
+            maxPages: maxPdfPages,
+            includePageMarkers: false,
+          });
+          extractedText = extracted.text;
+          label = `${file.name} (${extracted.selectedPages.length} page${extracted.selectedPages.length === 1 ? "" : "s"})`;
+        } else if (["txt", "md", "csv", "tsv", "html", "htm", "xml", "json"].includes(extension)) {
+          extractedText = await readTextFileWithLimit(file, 8 * 1024 * 1024);
+        } else {
+          const extracted = await extractTextFromDocumentFile(file, { convertHtmlToText: true });
+          extractedText = extracted.text;
+          label = `${file.name} (${extracted.source})`;
+        }
+
+        const normalized = normalizeUploadedText(extractedText);
+        if (side === "before") {
+          setBeforeText(normalized);
+          setBeforeLabel(label);
+        } else {
+          setAfterText(normalized);
+          setAfterLabel(label);
+        }
+        setStatus(`Loaded ${label} into the ${side === "before" ? "original" : "revised"} side.`);
+      } catch (error) {
+        const message = error instanceof Error && error.message ? error.message : "Could not import this document.";
+        setStatus(message);
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [maxPdfPages],
+  );
+
+  const runCompare = useCallback(() => {
+    const left = normalizeUploadedText(beforeText).trim();
+    const right = normalizeUploadedText(afterText).trim();
+    if (!left || !right) {
+      setStatus("Both original and revised text are required.");
+      setResult(null);
+      return;
+    }
+    const nextResult = compareDocumentTexts(left, right);
+    setResult(nextResult);
+    setStatus(
+      `Comparison finished: ${nextResult.counts.modified} modified, ${nextResult.counts.added} added, ${nextResult.counts.removed} removed block${nextResult.changes.length === 1 ? "" : "s"}.`,
+    );
+    trackEvent("tool_document_compare_redline_run", {
+      modified: nextResult.counts.modified,
+      added: nextResult.counts.added,
+      removed: nextResult.counts.removed,
+      riskFlags: nextResult.riskFlags.length,
+    });
+    emitShareSignal({ action: "success", context: "document-compare-redline" });
+  }, [afterText, beforeText]);
+
+  const reportMarkdown = useMemo(() => (result ? buildDocumentCompareMarkdown(result) : ""), [result]);
+  const importantChanges = useMemo(
+    () => (result ? result.changes.filter((change) => change.kind !== "unchanged").slice(0, 20) : []),
+    [result],
+  );
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="Document compare & redline"
+        subtitle="Compare two texts or files, summarize changes, and flag risky edits to payment, deadlines, cancellation, and obligation language."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Original file</span>
+          <input
+            type="file"
+            accept=".txt,.md,.pdf,.doc,.docx,.rtf,.odt,.html,.htm,.xml,.json"
+            onChange={(event) => void importSide(event.target.files?.[0] ?? null, "before")}
+          />
+        </label>
+        <label className="field">
+          <span>Revised file</span>
+          <input
+            type="file"
+            accept=".txt,.md,.pdf,.doc,.docx,.rtf,.odt,.html,.htm,.xml,.json"
+            onChange={(event) => void importSide(event.target.files?.[0] ?? null, "after")}
+          />
+        </label>
+        <label className="field">
+          <span>Max PDF pages ({maxPdfPages})</span>
+          <input
+            type="range"
+            min={1}
+            max={20}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(20, Number(event.target.value))))}
+          />
+        </label>
+      </div>
+
+      <div className="split-panel">
+        <label className="field">
+          <span>Original text {beforeLabel ? `(${beforeLabel})` : ""}</span>
+          <textarea
+            rows={16}
+            value={beforeText}
+            onChange={(event) => setBeforeText(event.target.value)}
+            placeholder="Paste the original contract, proposal, policy, or document text here."
+          />
+        </label>
+        <label className="field">
+          <span>Revised text {afterLabel ? `(${afterLabel})` : ""}</span>
+          <textarea
+            rows={16}
+            value={afterText}
+            onChange={(event) => setAfterText(event.target.value)}
+            placeholder="Paste the revised version here."
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" onClick={runCompare} disabled={processing || !beforeText.trim() || !afterText.trim()}>
+          {processing ? "Loading..." : "Compare documents"}
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={() => downloadTextFile("document-compare-report.md", reportMarkdown)}
+        >
+          <Download size={15} />
+          Markdown report
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!result}
+          onClick={() => downloadTextFile("document-compare-report.json", JSON.stringify(result, null, 2), "application/json;charset=utf-8;")}
+        >
+          <Download size={15} />
+          JSON
+        </button>
+        <button
+          className="action-button secondary"
+          type="button"
+          disabled={!reportMarkdown}
+          onClick={async () => {
+            const ok = await copyTextToClipboard(reportMarkdown);
+            setStatus(ok ? "Comparison report copied." : "Nothing to copy.");
+          }}
+        >
+          <Copy size={15} />
+          Copy report
+        </button>
+      </div>
+
+      {status ? <p className="supporting-text">{status}</p> : null}
+
+      <ResultList
+        rows={[
+          { label: "Modified blocks", value: formatNumericValue(result?.counts.modified ?? 0) },
+          { label: "Added blocks", value: formatNumericValue(result?.counts.added ?? 0) },
+          { label: "Removed blocks", value: formatNumericValue(result?.counts.removed ?? 0) },
+          { label: "Risk flags", value: formatNumericValue(result?.riskFlags.length ?? 0) },
+          { label: "Original blocks", value: formatNumericValue(result?.beforeBlocks.length ?? 0) },
+          { label: "Revised blocks", value: formatNumericValue(result?.afterBlocks.length ?? 0) },
+        ]}
+      />
+
+      {result?.summary.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Human summary</h3>
+            <span className="supporting-text">What changed and where to review first.</span>
+          </div>
+          <ul className="plain-list">
+            {result.summary.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {result?.riskFlags.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Risk flags</h3>
+            <span className="supporting-text">Payment, deadline, cancellation, renewal, and obligation changes to review first.</span>
+          </div>
+          <ul className="plain-list">
+            {result.riskFlags.map((flag, index) => (
+              <li key={`${flag.label}-${index}`}>
+                <div className="history-line">
+                  <strong>{flag.label}</strong>
+                  <span className={`status-badge ${flag.severity === "high" ? "bad" : flag.severity === "medium" ? "warn" : "info"}`}>
+                    {flag.severity}
+                  </span>
+                </div>
+                <small className="supporting-text">{flag.explanation}</small>
+                <small className="supporting-text">{flag.afterText}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {importantChanges.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Redline review</h3>
+            <span className="supporting-text">Block-level additions, removals, and modifications.</span>
+          </div>
+          <ul className="plain-list">
+            {importantChanges.map((change) => (
+              <li key={change.id}>
+                <div className="history-line">
+                  <strong>{change.kind.toUpperCase()}</strong>
+                  <span className={`status-badge ${change.kind === "added" ? "ok" : change.kind === "removed" ? "bad" : "warn"}`}>
+                    {formatNumericValue(Math.round(change.similarity * 100))}%
+                  </span>
+                </div>
+                {change.beforeText ? <small className="supporting-text">Before: {change.beforeText}</small> : null}
+                {change.afterText ? <small className="supporting-text">After: {change.afterText}</small> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -47475,6 +47732,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <CsvCleanupMappingStudioTool />;
     case "bank-statement-normalizer-expense-intelligence":
       return <BankStatementNormalizerExpenseIntelligenceTool />;
+    case "document-compare-redline":
+      return <DocumentCompareRedlineTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":

@@ -159,6 +159,7 @@ export type ProductivityToolId =
   | "transcript-subtitle-studio"
   | "csv-cleanup-mapping-studio"
   | "bank-statement-normalizer-expense-intelligence"
+  | "document-compare-redline"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

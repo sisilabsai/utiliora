@@ -1462,6 +1462,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Bank Statement Normalizer & Expense Intelligence"),
   },
   {
+    slug: "document-compare-redline",
+    category: "productivity-tools",
+    title: "Document Compare & Redline",
+    summary: "Compare two texts or files, highlight additions/removals/modifications, and flag risky clause changes.",
+    description:
+      "Import two documents or paste text, run block-level comparison, review human-readable change summaries, and surface payment, deadline, cancellation, and obligation changes before final approval.",
+    keywords: [
+      "document compare tool",
+      "contract redline viewer",
+      "text diff summary",
+      "agreement comparison",
+      "document change summary",
+      "redline contract tool",
+    ],
+    engine: { kind: "productivity-tool", id: "document-compare-redline" },
+    faq: baseFaq("Document Compare & Redline"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",
