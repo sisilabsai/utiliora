@@ -1,0 +1,59 @@
+name: IndexNow Release Submit
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indexnow-release-submit
+  cancel-in-progress: false
+
+jobs:
+  submit-indexnow:
+    runs-on: ubuntu-latest
+    env:
+      SITE_ORIGIN: https://www.utiliora.cloud
+      INDEXNOW_KEY_FILE: c215761ac4f94e389f94f1eed83100dd.txt
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wait for production deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY_URL="${SITE_ORIGIN}/${INDEXNOW_KEY_FILE}"
+          SITEMAP_URL="${SITE_ORIGIN}/sitemap.xml"
+
+          echo "Waiting for production to expose:"
+          echo "- ${KEY_URL}"
+          echo "- ${SITEMAP_URL}"
+
+          for attempt in $(seq 1 40); do
+            key_status="$(curl -o /dev/null -s -w "%{http_code}" "${KEY_URL}" || true)"
+            sitemap_status="$(curl -o /dev/null -s -w "%{http_code}" "${SITEMAP_URL}" || true)"
+
+            if [ "${key_status}" = "200" ] && [ "${sitemap_status}" = "200" ]; then
+              echo "Production is ready on attempt ${attempt}."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/40: key=${key_status} sitemap=${sitemap_status}. Waiting 15s..."
+            sleep 15
+          done
+
+          echo "Production did not become ready in time."
+          exit 1
+
+      - name: Submit sitemap to IndexNow
+        run: node scripts/indexnow-submit.mjs --host "${SITE_ORIGIN}" --sitemap "${SITE_ORIGIN}/sitemap.xml"
