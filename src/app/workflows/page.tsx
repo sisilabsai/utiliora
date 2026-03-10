@@ -4,16 +4,16 @@ import { absoluteUrl, SITE_NAME } from "@/lib/site";
 import { getWorkflowBundles } from "@/lib/growth";
 
 export const metadata: Metadata = {
-  title: "Workflow Bundles",
+  title: "Workflows",
   description:
-    "Browse guided multi-tool workflows for website launches, creator assets, freelancer ops, money clarity, and job applications.",
+    "Browse guided workflows for website launches, creator assets, freelancer ops, money clarity, and job applications.",
   alternates: {
     canonical: "/workflows",
   },
   openGraph: {
-    title: `Workflow Bundles | ${SITE_NAME}`,
+    title: `Workflows | ${SITE_NAME}`,
     description:
-      "Browse guided multi-tool workflows for website launches, creator assets, freelancer ops, money clarity, and job applications.",
+      "Browse guided workflows for website launches, creator assets, freelancer ops, money clarity, and job applications.",
     url: absoluteUrl("/workflows"),
     type: "website",
   },
@@ -25,11 +25,11 @@ export default function WorkflowsPage() {
   return (
     <div className="site-container page-stack">
       <section className="hero">
-        <p className="eyebrow">Workflow bundles</p>
-        <h1>Start with a complete job, not a random tool</h1>
+        <p className="eyebrow">Guided workflows</p>
+        <h1>Finish common jobs with the right tools in the right order</h1>
         <p>
-          These bundle pages group tools into practical outcomes so visitors can move from one task to the next without
-          guessing where to go.
+          These pages group related tools into practical workflows so you can move from one step to the next without
+          guessing what to use next.
         </p>
       </section>
 

@@ -64,14 +64,14 @@ export function HomePageContent({
 
       <section className="content-block info-card">
         <div className="section-head">
-          <h2>{t("home.featured_workflows", undefined, "Start with the highest-leverage workflows")}</h2>
-          <a href="/workflows">{t("home.view_all_workflows", undefined, "View all workflow bundles")}</a>
+          <h2>{t("home.featured_workflows", undefined, "Start with ready-made workflows")}</h2>
+          <a href="/workflows">{t("home.view_all_workflows", undefined, "View all workflows")}</a>
         </div>
         <p>
           {t(
             "home.featured_workflows_desc",
             undefined,
-            "Utiliora grows when users finish a job, not when they browse a giant list. These bundles route new visitors into the strongest multi-step outcomes first.",
+            "Choose a guided workflow when you want to finish a complete task faster. Each one groups the right tools for a clear outcome.",
           )}
         </p>
         <div className="workflow-grid">
@@ -84,7 +84,7 @@ export function HomePageContent({
       <section>
         <div className="section-head">
           <h2>{t("home.hero_tools", undefined, "Featured hero tools")}</h2>
-          <a href="/start-here">{t("home.view_best_tools", undefined, "Open the curated shortlist")}</a>
+          <a href="/start-here">{t("home.view_best_tools", undefined, "See recommended tools")}</a>
         </div>
         <div className="tool-grid">
           {featuredTools.map((tool) => (
@@ -114,7 +114,7 @@ export function HomePageContent({
 
       <section>
         <div className="section-head">
-          <h2>{t("home.popular", undefined, "Recently launched workflows")}</h2>
+          <h2>{t("home.popular", undefined, "Recently added tools")}</h2>
           <a href="/tools">{t("home.view_full_directory", undefined, "View full directory")}</a>
         </div>
         <div className="tool-grid">
@@ -125,19 +125,19 @@ export function HomePageContent({
       </section>
 
       <section className="content-block info-card">
-        <h2>{t("home.why_utiliora", undefined, "Why the site now routes around workflows")}</h2>
+        <h2>{t("home.why_utiliora", undefined, "Find the fastest way to get the job done")}</h2>
         <p>
           {t(
             "home.why_utiliora_desc",
             undefined,
-            "Breadth still matters, but breakout growth will come from a smaller set of tools and bundles that repeatedly solve visible tasks. This homepage points people toward those paths first.",
+            "Start with a recommended tool or workflow if you already know the job you want to finish. You can still browse the full directory any time.",
           )}
         </p>
         <div className="chip-row">
-          <a className="chip-link" href="/seo-tools/meta-tag-generator">SEO launch workflows</a>
-          <a className="chip-link" href="/image-tools/background-remover">Creator asset workflows</a>
-          <a className="chip-link" href="/productivity-tools/bank-statement-normalizer-expense-intelligence">Money clarity workflows</a>
-          <a className="chip-link" href="/productivity-tools/job-application-kit-builder">Career workflows</a>
+          <a className="chip-link" href="/seo-tools/meta-tag-generator">SEO launch tasks</a>
+          <a className="chip-link" href="/image-tools/background-remover">Creator asset tasks</a>
+          <a className="chip-link" href="/productivity-tools/bank-statement-normalizer-expense-intelligence">Money clarity tasks</a>
+          <a className="chip-link" href="/productivity-tools/job-application-kit-builder">Career prep tasks</a>
         </div>
       </section>
 

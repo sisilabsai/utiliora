@@ -7,14 +7,14 @@ import { getHeroTools, getWorkflowBundles } from "@/lib/growth";
 export const metadata: Metadata = {
   title: "Start Here",
   description:
-    "Start with Utiliora's curated hero tools and workflow bundles instead of browsing the full directory.",
+    "Start with Utiliora's recommended tools and guided workflows instead of guessing where to begin.",
   alternates: {
     canonical: "/start-here",
   },
   openGraph: {
     title: `Start Here | ${SITE_NAME}`,
     description:
-      "Start with Utiliora's curated hero tools and workflow bundles instead of browsing the full directory.",
+      "Start with Utiliora's recommended tools and guided workflows instead of guessing where to begin.",
     url: absoluteUrl("/start-here"),
     type: "website",
   },
@@ -22,7 +22,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: `Start Here | ${SITE_NAME}`,
     description:
-      "Start with Utiliora's curated hero tools and workflow bundles instead of browsing the full directory.",
+      "Start with Utiliora's recommended tools and guided workflows instead of guessing where to begin.",
   },
 };
 
@@ -33,15 +33,15 @@ export default function StartHerePage() {
   return (
     <div className="site-container page-stack">
       <section className="hero">
-        <p className="eyebrow">Curated shortlist</p>
-        <h1>Start with the tools most likely to grow the platform</h1>
+        <p className="eyebrow">Recommended starting points</p>
+        <h1>Start with the tools and workflows most people need first</h1>
         <p>
-          This page is the focused entry point for new visitors. Instead of scanning the entire directory, start with the
-          strongest hero tools and the clearest multi-step workflows.
+          If you are not sure where to begin, start here. This page highlights the tools and guided workflows that solve
+          the most common jobs fastest.
         </p>
         <div className="hero-cta">
           <a className="action-link" href="/workflows">
-            Browse workflow bundles
+            Browse workflows
           </a>
           <a className="action-link" href="/tools">
             Open full directory
@@ -51,11 +51,11 @@ export default function StartHerePage() {
 
       <section className="content-block info-card">
         <div className="section-head">
-          <h2>Workflow bundles first</h2>
+          <h2>Guided workflows</h2>
         </div>
         <p>
-          These bundles represent the strongest cross-tool journeys. They are the clearest growth surfaces for SEO,
-          onboarding, internal linking, and social distribution.
+          Use a workflow when your task needs more than one tool. Each one gives you a simple sequence to follow so you
+          can finish the job with less trial and error.
         </p>
         <div className="workflow-grid">
           {workflowBundles.map((bundle) => (
