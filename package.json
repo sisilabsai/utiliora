@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "admin:seed": "node scripts/seed-admin.mjs"
+    "admin:seed": "node scripts/seed-admin.mjs",
+    "indexnow:submit": "node scripts/indexnow-submit.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",
