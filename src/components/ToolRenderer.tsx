@@ -25721,6 +25721,9 @@ interface PdfJsPageViewport {
 interface PdfJsTextItem {
   str?: string;
   hasEOL?: boolean;
+  transform?: number[];
+  width?: number;
+  height?: number;
 }
 
 interface PdfJsTextContent {
@@ -42930,6 +42933,1083 @@ function DocumentCompareRedlineTool() {
   );
 }
 
+type PdfFormFieldKind = "text" | "date" | "initials" | "checkbox" | "signature";
+type PdfSignatureMode = "typed" | "drawn" | "image";
+
+interface PdfFormPreviewPage {
+  id: string;
+  pageNumber: number;
+  width: number;
+  height: number;
+  previewDataUrl: string;
+}
+
+interface PdfFormOverlayField {
+  id: string;
+  pageNumber: number;
+  kind: PdfFormFieldKind;
+  label: string;
+  value: string;
+  checked: boolean;
+  xPct: number;
+  yPct: number;
+  widthPct: number;
+  heightPct: number;
+}
+
+interface PdfFormAttachmentItem {
+  id: string;
+  file: File;
+  label: string;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function createDefaultPdfFormField(pageNumber: number, kind: PdfFormFieldKind): PdfFormOverlayField {
+  return {
+    id: crypto.randomUUID(),
+    pageNumber,
+    kind,
+    label:
+      kind === "signature"
+        ? "Signature"
+        : kind === "date"
+          ? "Date"
+          : kind === "initials"
+            ? "Initials"
+            : kind === "checkbox"
+              ? "Checkbox"
+              : "Text field",
+    value: kind === "date" ? new Date().toISOString().slice(0, 10) : "",
+    checked: kind === "checkbox",
+    xPct: 0.58,
+    yPct: 0.78,
+    widthPct: kind === "signature" ? 0.26 : kind === "checkbox" ? 0.06 : 0.22,
+    heightPct: kind === "signature" ? 0.07 : 0.035,
+  };
+}
+
+function detectSuggestedPdfFields(items: PdfJsTextItem[], viewport: PdfJsPageViewport, pageNumber: number): PdfFormOverlayField[] {
+  const suggestions: PdfFormOverlayField[] = [];
+  const seenKinds = new Set<string>();
+
+  items.forEach((item) => {
+    const text = item.str?.trim();
+    const transform = item.transform;
+    if (!text || !transform || transform.length < 6) return;
+    const lower = text.toLowerCase();
+    let kind: PdfFormFieldKind | null = null;
+    if (/signature|sign here|signed/.test(lower)) kind = "signature";
+    else if (/date|dated/.test(lower)) kind = "date";
+    else if (/initial/.test(lower)) kind = "initials";
+    else if (/print name|full name|name/.test(lower)) kind = "text";
+    else if (/\b(check|tick|agree|accept|yes|no)\b/.test(lower)) kind = "checkbox";
+    if (!kind) return;
+
+    const dedupeKey = `${pageNumber}-${kind}`;
+    if (seenKinds.has(dedupeKey) && kind !== "checkbox") return;
+    seenKinds.add(dedupeKey);
+
+    const x = Number(transform[4] ?? 0);
+    const yFromBottom = Number(transform[5] ?? 0);
+    const width = Math.max(24, Number(item.width ?? 0));
+    const topY = Math.max(0, viewport.height - yFromBottom - Math.max(12, Number(item.height ?? 12)));
+
+    suggestions.push({
+      ...createDefaultPdfFormField(pageNumber, kind),
+      label: text,
+      xPct: clampPercent((x + width + 16) / Math.max(1, viewport.width)),
+      yPct: clampPercent((topY - 4) / Math.max(1, viewport.height)),
+    });
+  });
+
+  return suggestions.slice(0, 12);
+}
+
+function buildTypedSignatureDataUrl(value: string): string {
+  const content = value.trim();
+  if (!content) return "";
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 220;
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#122033";
+  context.font = 'italic 700 88px "Times New Roman", Georgia, serif';
+  context.textBaseline = "middle";
+  context.fillText(content, 26, canvas.height / 2, canvas.width - 52);
+  return canvas.toDataURL("image/png");
+}
+
+async function appendPdfAttachmentToOutput(
+  output: JsPdfType,
+  file: File,
+  renderScale: number,
+  jpegQuality: number,
+): Promise<number> {
+  let loadingTask: PdfJsLoadingTask | null = null;
+  let pdfDocument: PdfJsDocument | null = null;
+  try {
+    const pdfjs = await loadPdfJsModule();
+    const bytes = await readPdfFileBytes(file);
+    const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+    loadingTask = opened.loadingTask;
+    pdfDocument = opened.pdfDocument;
+    let appended = 0;
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: renderScale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas unavailable for PDF attachment.");
+      await page.render({ canvasContext: context, viewport }).promise;
+      const pageSizeMm = resolvePdfPageSizeMm("fit-image", canvas.width, canvas.height, 150);
+      output.addPage(pageSizeMm);
+      const pageWidth = output.internal.pageSize.getWidth();
+      const pageHeight = output.internal.pageSize.getHeight();
+      output.addImage(canvas.toDataURL("image/jpeg", jpegQuality), "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+      appended += 1;
+    }
+    return appended;
+  } finally {
+    await closePdfDocumentResources(loadingTask, pdfDocument);
+  }
+}
+
+async function appendImageAttachmentToOutput(output: JsPdfType, file: File): Promise<number> {
+  const dataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageFromDataUrl(dataUrl);
+  const pageSizeMm = resolvePdfPageSizeMm("fit-image", image.naturalWidth || image.width, image.naturalHeight || image.height, 150);
+  output.addPage(pageSizeMm);
+  const pageWidth = output.internal.pageSize.getWidth();
+  const pageHeight = output.internal.pageSize.getHeight();
+  const format = file.type.includes("jpeg") || file.type.includes("jpg") ? "JPEG" : "PNG";
+  output.addImage(dataUrl, format, 0, 0, pageWidth, pageHeight, undefined, "FAST");
+  return 1;
+}
+
+const PDF_FORM_MAX_SOURCE_PAGES = 16;
+
+function PdfFormFillerSignaturePackTool() {
+  const [file, setFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState("");
+  const [sourceBytes, setSourceBytes] = useState(0);
+  const [sourcePageCount, setSourcePageCount] = useState(0);
+  const [pages, setPages] = useState<PdfFormPreviewPage[]>([]);
+  const [fields, setFields] = useState<PdfFormOverlayField[]>([]);
+  const [selectedFieldId, setSelectedFieldId] = useState("");
+  const [activePageNumber, setActivePageNumber] = useState(1);
+  const [status, setStatus] = useState("Upload a PDF to detect likely fill areas and place form fields.");
+  const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [maxPdfPages, setMaxPdfPages] = useState(6);
+  const [loadedPageLimit, setLoadedPageLimit] = useState<number | null>(null);
+  const [signatureMode, setSignatureMode] = useState<PdfSignatureMode>("typed");
+  const [typedSignatureName, setTypedSignatureName] = useState("");
+  const [signatureDrawDataUrl, setSignatureDrawDataUrl] = useState("");
+  const [signatureUploadDataUrl, setSignatureUploadDataUrl] = useState("");
+  const [attachments, setAttachments] = useState<PdfFormAttachmentItem[]>([]);
+  const [lastOutputBytes, setLastOutputBytes] = useState(0);
+  const [lastOutputPages, setLastOutputPages] = useState(0);
+  const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const signatureDrawingRef = useRef(false);
+  const signatureHasInkRef = useRef(false);
+  const signatureLastPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  const previewBytes = useMemo(
+    () => pages.reduce((sum, page) => sum + estimateBytesFromDataUrl(page.previewDataUrl), 0),
+    [pages],
+  );
+  const selectedField = useMemo(
+    () => fields.find((field) => field.id === selectedFieldId) ?? null,
+    [fields, selectedFieldId],
+  );
+  const fieldKindsSummary = useMemo(() => {
+    return fields.reduce<Record<PdfFormFieldKind, number>>(
+      (summary, field) => {
+        summary[field.kind] += 1;
+        return summary;
+      },
+      { text: 0, date: 0, initials: 0, checkbox: 0, signature: 0 },
+    );
+  }, [fields]);
+  const fieldsByPage = useMemo(() => {
+    const next = new Map<number, PdfFormOverlayField[]>();
+    fields.forEach((field) => {
+      const bucket = next.get(field.pageNumber);
+      if (bucket) {
+        bucket.push(field);
+      } else {
+        next.set(field.pageNumber, [field]);
+      }
+    });
+    return next;
+  }, [fields]);
+  const signaturePreviewDataUrl = useMemo(() => {
+    if (signatureMode === "typed") return buildTypedSignatureDataUrl(typedSignatureName);
+    if (signatureMode === "drawn") return signatureDrawDataUrl;
+    return signatureUploadDataUrl;
+  }, [signatureDrawDataUrl, signatureMode, signatureUploadDataUrl, typedSignatureName]);
+
+  const resetWorkspace = useCallback(() => {
+    setFile(null);
+    setPdfName("");
+    setSourceBytes(0);
+    setSourcePageCount(0);
+    setPages([]);
+    setFields([]);
+    setSelectedFieldId("");
+    setActivePageNumber(1);
+    setProgress(0);
+    setLoadedPageLimit(null);
+    setAttachments([]);
+    setLastOutputBytes(0);
+    setLastOutputPages(0);
+    setStatus("Upload a PDF to detect likely fill areas and place form fields.");
+  }, []);
+
+  const updateField = useCallback((fieldId: string, updater: (field: PdfFormOverlayField) => PdfFormOverlayField) => {
+    setFields((current) => current.map((field) => (field.id === fieldId ? updater(field) : field)));
+  }, []);
+
+  const loadPdfWorkspace = useCallback(async (candidate: File) => {
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    setProcessing(true);
+    try {
+      setStatus("Opening PDF...");
+      setProgress(4);
+      const pdfjs = await loadPdfJsModule();
+      const bytes = await readPdfFileBytes(candidate);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
+
+      const totalPages = pdfDocument.numPages;
+      const maxPages = Math.max(1, Math.min(PDF_FORM_MAX_SOURCE_PAGES, maxPdfPages, totalPages));
+      const nextPages: PdfFormPreviewPage[] = [];
+      const nextFields: PdfFormOverlayField[] = [];
+
+      for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+        setStatus(`Rendering page ${pageNumber}/${maxPages}...`);
+        const page = await pdfDocument.getPage(pageNumber);
+        const fullViewport = page.getViewport({ scale: 1 });
+        const maxDimension = Math.max(1, fullViewport.width, fullViewport.height);
+        const previewScale = Math.max(0.18, Math.min(0.42, 320 / maxDimension));
+        const previewViewport = page.getViewport({ scale: previewScale });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(previewViewport.width));
+        canvas.height = Math.max(1, Math.floor(previewViewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas unavailable for PDF preview.");
+        }
+        await page.render({ canvasContext: context, viewport: previewViewport }).promise;
+        const previewDataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        nextPages.push({
+          id: crypto.randomUUID(),
+          pageNumber,
+          width: Math.max(1, Math.floor(fullViewport.width)),
+          height: Math.max(1, Math.floor(fullViewport.height)),
+          previewDataUrl,
+        });
+
+        const textContent = page.getTextContent ? await page.getTextContent() : null;
+        if (textContent?.items?.length) {
+          nextFields.push(...detectSuggestedPdfFields(textContent.items, fullViewport, pageNumber));
+        }
+
+        setProgress(Math.round(8 + (pageNumber / Math.max(1, maxPages)) * 88));
+      }
+
+      setSourcePageCount(totalPages);
+      setPages(nextPages);
+      setFields(nextFields);
+      setSelectedFieldId(nextFields[0]?.id ?? "");
+      setActivePageNumber(nextPages[0]?.pageNumber ?? 1);
+      setLoadedPageLimit(totalPages > maxPages ? maxPages : null);
+      setProgress(100);
+      setStatus(
+        nextFields.length
+          ? `Loaded ${nextPages.length} page(s) and suggested ${nextFields.length} likely field placement${nextFields.length === 1 ? "" : "s"}.`
+          : `Loaded ${nextPages.length} page(s). Add fields manually by selecting a field type, then clicking the preview.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not open this PDF.";
+      setSourcePageCount(0);
+      setPages([]);
+      setFields([]);
+      setSelectedFieldId("");
+      setActivePageNumber(1);
+      setLoadedPageLimit(null);
+      setStatus(message);
+    } finally {
+      setProcessing(false);
+      await closePdfDocumentResources(loadingTask, pdfDocument);
+    }
+  }, [maxPdfPages]);
+
+  const handlePdfSelection = useCallback(
+    (candidate: File | null) => {
+      if (!candidate) {
+        resetWorkspace();
+        return;
+      }
+      if (candidate.type !== "application/pdf" && !candidate.name.toLowerCase().endsWith(".pdf")) {
+        setStatus("Please choose a valid PDF file.");
+        return;
+      }
+      setFile(candidate);
+      setPdfName(stripFileExtension(candidate.name));
+      setSourceBytes(candidate.size);
+      setAttachments([]);
+      setLastOutputBytes(0);
+      setLastOutputPages(0);
+      setProgress(0);
+      void loadPdfWorkspace(candidate);
+      trackEvent("tool_pdf_form_filler_upload", { size: candidate.size });
+    },
+    [loadPdfWorkspace, resetWorkspace],
+  );
+
+  const addField = useCallback(
+    (kind: PdfFormFieldKind) => {
+      if (!pages.length) {
+        setStatus("Upload a PDF first.");
+        return;
+      }
+      const targetPageNumber = activePageNumber || pages[0]?.pageNumber || 1;
+      const nextField = createDefaultPdfFormField(targetPageNumber, kind);
+      if (kind === "initials" && typedSignatureName.trim()) {
+        nextField.value = typedSignatureName
+          .trim()
+          .split(/\s+/)
+          .map((word) => word[0] ?? "")
+          .join("")
+          .slice(0, 4)
+          .toUpperCase();
+      }
+      setFields((current) => [...current, nextField]);
+      setSelectedFieldId(nextField.id);
+      setStatus(`Added a ${kind} field. Click a page preview to position it.`);
+    },
+    [activePageNumber, pages, typedSignatureName],
+  );
+
+  const removeField = useCallback((fieldId: string) => {
+    setFields((current) => current.filter((field) => field.id !== fieldId));
+    setSelectedFieldId((current) => (current === fieldId ? "" : current));
+    setStatus("Removed field.");
+  }, []);
+
+  const placeFieldOnPage = useCallback(
+    (pageNumber: number, clientX: number, clientY: number, bounds: DOMRect) => {
+      setActivePageNumber(pageNumber);
+      if (!selectedField) {
+        setStatus("Select or add a field, then click the preview to place it.");
+        return;
+      }
+      const relativeX = (clientX - bounds.left) / Math.max(1, bounds.width);
+      const relativeY = (clientY - bounds.top) / Math.max(1, bounds.height);
+      updateField(selectedField.id, (field) => ({
+        ...field,
+        pageNumber,
+        xPct: clampPercent(relativeX - field.widthPct / 2),
+        yPct: clampPercent(relativeY - field.heightPct / 2),
+      }));
+      setStatus(`Placed "${selectedField.label}" on page ${pageNumber}.`);
+    },
+    [selectedField, updateField],
+  );
+
+  const uploadSignatureImage = useCallback(async (candidate: File | null) => {
+    if (!candidate) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(candidate);
+      setSignatureUploadDataUrl(dataUrl);
+      setSignatureMode("image");
+      setStatus(`Loaded signature image ${candidate.name}.`);
+    } catch {
+      setStatus("Could not load the signature image.");
+    }
+  }, []);
+
+  const uploadAttachments = useCallback((fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    const nextItems = Array.from(fileList)
+      .filter((item) => item.type.startsWith("image/") || item.type === "application/pdf" || item.name.toLowerCase().endsWith(".pdf"))
+      .map((item) => ({
+        id: crypto.randomUUID(),
+        file: item,
+        label: item.name,
+      }));
+    if (!nextItems.length) {
+      setStatus("Only PDF and image attachments are supported.");
+      return;
+    }
+    setAttachments((current) => [...current, ...nextItems]);
+    setStatus(`Added ${nextItems.length} attachment file${nextItems.length === 1 ? "" : "s"} to the export pack.`);
+  }, []);
+
+  const getSignatureCanvasPoint = useCallback((canvas: HTMLCanvasElement, clientX: number, clientY: number) => {
+    const bounds = canvas.getBoundingClientRect();
+    return {
+      x: ((clientX - bounds.left) / Math.max(1, bounds.width)) * canvas.width,
+      y: ((clientY - bounds.top) / Math.max(1, bounds.height)) * canvas.height,
+    };
+  }, []);
+
+  const finishSignatureDraw = useCallback(() => {
+    signatureDrawingRef.current = false;
+    signatureLastPointRef.current = null;
+    if (signatureHasInkRef.current && signatureCanvasRef.current) {
+      setSignatureDrawDataUrl(signatureCanvasRef.current.toDataURL("image/png"));
+    }
+  }, []);
+
+  const startSignatureDraw = useCallback(
+    (canvas: HTMLCanvasElement, clientX: number, clientY: number) => {
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      const point = getSignatureCanvasPoint(canvas, clientX, clientY);
+      signatureDrawingRef.current = true;
+      signatureHasInkRef.current = true;
+      signatureLastPointRef.current = point;
+      context.fillStyle = "#122033";
+      context.beginPath();
+      context.arc(point.x, point.y, 1.6, 0, Math.PI * 2);
+      context.fill();
+    },
+    [getSignatureCanvasPoint],
+  );
+
+  const continueSignatureDraw = useCallback(
+    (canvas: HTMLCanvasElement, clientX: number, clientY: number) => {
+      if (!signatureDrawingRef.current) return;
+      const context = canvas.getContext("2d");
+      const previousPoint = signatureLastPointRef.current;
+      if (!context || !previousPoint) return;
+      const point = getSignatureCanvasPoint(canvas, clientX, clientY);
+      context.strokeStyle = "#122033";
+      context.lineWidth = 2.8;
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      context.beginPath();
+      context.moveTo(previousPoint.x, previousPoint.y);
+      context.lineTo(point.x, point.y);
+      context.stroke();
+      signatureLastPointRef.current = point;
+    },
+    [getSignatureCanvasPoint],
+  );
+
+  const clearSignaturePad = useCallback(() => {
+    const canvas = signatureCanvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (canvas && context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    signatureDrawingRef.current = false;
+    signatureHasInkRef.current = false;
+    signatureLastPointRef.current = null;
+    setSignatureDrawDataUrl("");
+    setStatus("Cleared the drawn signature pad.");
+  }, []);
+
+  const exportSignedPdf = useCallback(async () => {
+    if (!file || !pages.length) {
+      setStatus("Upload a PDF before exporting.");
+      return;
+    }
+    let loadingTask: PdfJsLoadingTask | null = null;
+    let pdfDocument: PdfJsDocument | null = null;
+    setProcessing(true);
+    try {
+      setStatus("Preparing signed PDF...");
+      setProgress(4);
+      const { jsPDF } = await import("jspdf");
+      const pdfjs = await loadPdfJsModule();
+      const bytes = await readPdfFileBytes(file);
+      const opened = await openPdfDocumentWithFallback(pdfjs, bytes);
+      loadingTask = opened.loadingTask;
+      pdfDocument = opened.pdfDocument;
+      const signatureImage = signaturePreviewDataUrl ? await loadImageFromDataUrl(signaturePreviewDataUrl) : null;
+      const totalWorkItems = pages.length + attachments.length;
+      let output: JsPdfType | null = null;
+      let exportedPages = 0;
+
+      for (let index = 0; index < pages.length; index += 1) {
+        const pagePreview = pages[index];
+        const page = await pdfDocument.getPage(pagePreview.pageNumber);
+        const viewport = page.getViewport({ scale: 1.6 });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Canvas unavailable for PDF export.");
+        }
+
+        setStatus(`Flattening page ${index + 1}/${pages.length}...`);
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        const pageFields = fieldsByPage.get(pagePreview.pageNumber) ?? [];
+        pageFields.forEach((field) => {
+          const x = Math.max(0, Math.floor(field.xPct * canvas.width));
+          const y = Math.max(0, Math.floor(field.yPct * canvas.height));
+          const width = Math.max(16, Math.floor(field.widthPct * canvas.width));
+          const height = Math.max(16, Math.floor(field.heightPct * canvas.height));
+
+          if (field.kind === "checkbox") {
+            context.strokeStyle = "#122033";
+            context.lineWidth = Math.max(2, height * 0.08);
+            context.strokeRect(x, y, height, height);
+            if (field.checked) {
+              context.beginPath();
+              context.moveTo(x + height * 0.18, y + height * 0.56);
+              context.lineTo(x + height * 0.42, y + height * 0.8);
+              context.lineTo(x + height * 0.84, y + height * 0.24);
+              context.stroke();
+            }
+            return;
+          }
+
+          if (field.kind === "signature") {
+            if (signatureImage) {
+              context.drawImage(signatureImage, x, y, width, height);
+            }
+            return;
+          }
+
+          const value = field.value.trim();
+          if (!value) return;
+          context.save();
+          context.fillStyle = "#122033";
+          context.textBaseline = "top";
+          context.font =
+            field.kind === "initials"
+              ? `700 ${Math.max(12, Math.floor(height * 0.92))}px Arial`
+              : `${Math.max(12, Math.floor(height * 0.82))}px Arial`;
+          context.fillText(value, x, y, width);
+          context.restore();
+        });
+
+        const pageSizeMm = resolvePdfPageSizeMm("fit-image", canvas.width, canvas.height, 150);
+        const orientation = canvas.width >= canvas.height ? "landscape" : "portrait";
+        if (!output) {
+          output = new jsPDF({ orientation, unit: "mm", format: pageSizeMm, compress: true });
+        } else {
+          output.addPage(pageSizeMm, orientation);
+        }
+        const pageWidth = output.internal.pageSize.getWidth();
+        const pageHeight = output.internal.pageSize.getHeight();
+        output.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, pageWidth, pageHeight, undefined, "FAST");
+        exportedPages += 1;
+        setProgress(Math.round(((index + 1) / Math.max(1, totalWorkItems)) * 88));
+      }
+
+      if (!output) {
+        setStatus("No pages were available to export.");
+        return;
+      }
+
+      let appendedAttachmentPages = 0;
+      for (let attachmentIndex = 0; attachmentIndex < attachments.length; attachmentIndex += 1) {
+        const attachment = attachments[attachmentIndex];
+        setStatus(`Appending attachment ${attachmentIndex + 1}/${attachments.length}...`);
+        if (attachment.file.type === "application/pdf" || attachment.file.name.toLowerCase().endsWith(".pdf")) {
+          appendedAttachmentPages += await appendPdfAttachmentToOutput(output, attachment.file, 1.4, 0.84);
+        } else {
+          appendedAttachmentPages += await appendImageAttachmentToOutput(output, attachment.file);
+        }
+        setProgress(Math.round(((pages.length + attachmentIndex + 1) / Math.max(1, totalWorkItems)) * 96));
+      }
+
+      const blob = output.output("blob");
+      const filename = `${stripFileExtension(pdfName.trim()) || "signed-pdf-pack"}.pdf`;
+      downloadBlobFile(filename, blob);
+      setLastOutputBytes(blob.size);
+      setLastOutputPages(exportedPages + appendedAttachmentPages);
+      setProgress(100);
+      setStatus(
+        `Exported ${exportedPages} signed page(s)${appendedAttachmentPages ? ` and ${appendedAttachmentPages} attachment page(s)` : ""} to ${filename}.`,
+      );
+      trackEvent("tool_pdf_form_filler_export", {
+        pages: exportedPages,
+        fields: fields.length,
+        attachments: attachments.length,
+        signatureMode,
+      });
+      emitShareSignal({ action: "success", context: "pdf-form-filler-signature-pack" });
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "Could not export the signed PDF.";
+      setStatus(message);
+    } finally {
+      setProcessing(false);
+      await closePdfDocumentResources(loadingTask, pdfDocument);
+    }
+  }, [attachments, fields.length, fieldsByPage, file, pages, pdfName, signatureMode, signaturePreviewDataUrl]);
+
+  return (
+    <section className="tool-surface">
+      <ToolHeading
+        icon={FileText}
+        title="PDF form filler & signature pack"
+        subtitle="Detect likely fill points, place text and signatures, then export a flattened signed PDF with optional attachments."
+      />
+
+      <div className="field-grid">
+        <label className="field">
+          <span>Source PDF</span>
+          <input type="file" accept="application/pdf" onChange={(event) => handlePdfSelection(event.target.files?.[0] ?? null)} />
+        </label>
+        <label className="field">
+          <span>Output filename</span>
+          <input type="text" value={pdfName} onChange={(event) => setPdfName(event.target.value)} placeholder="signed-pdf-pack" />
+        </label>
+        <label className="field">
+          <span>Max PDF pages ({maxPdfPages})</span>
+          <input
+            type="range"
+            min={1}
+            max={PDF_FORM_MAX_SOURCE_PAGES}
+            step={1}
+            value={maxPdfPages}
+            onChange={(event) => setMaxPdfPages(Math.max(1, Math.min(PDF_FORM_MAX_SOURCE_PAGES, Number(event.target.value))))}
+          />
+        </label>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button secondary" type="button" disabled={!file || processing} onClick={() => (file ? void loadPdfWorkspace(file) : undefined)}>
+          <RefreshCw size={15} />
+          Refresh suggestions
+        </button>
+        <button className="action-button secondary" type="button" disabled={!pages.length || processing} onClick={() => addField("text")}>
+          <Plus size={15} />
+          Text
+        </button>
+        <button className="action-button secondary" type="button" disabled={!pages.length || processing} onClick={() => addField("date")}>
+          <Plus size={15} />
+          Date
+        </button>
+        <button className="action-button secondary" type="button" disabled={!pages.length || processing} onClick={() => addField("initials")}>
+          <Plus size={15} />
+          Initials
+        </button>
+        <button className="action-button secondary" type="button" disabled={!pages.length || processing} onClick={() => addField("checkbox")}>
+          <Plus size={15} />
+          Checkbox
+        </button>
+        <button className="action-button secondary" type="button" disabled={!pages.length || processing} onClick={() => addField("signature")}>
+          <Plus size={15} />
+          Signature
+        </button>
+      </div>
+
+      <div className="progress-panel" aria-live="polite">
+        <p className="supporting-text">{status}</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+          <div className="progress-fill" style={{ width: `${progress}%` }} />
+        </div>
+        <small className="supporting-text">{progress}% complete</small>
+      </div>
+
+      <ResultList
+        rows={[
+          { label: "Source pages", value: sourcePageCount ? formatNumericValue(sourcePageCount) : "-" },
+          { label: "Loaded pages", value: pages.length ? formatNumericValue(pages.length) : "-" },
+          { label: "Fields", value: formatNumericValue(fields.length) },
+          { label: "Signatures", value: formatNumericValue(fieldKindsSummary.signature) },
+          { label: "Attachments", value: formatNumericValue(attachments.length) },
+          { label: "Source size", value: sourceBytes ? formatBytes(sourceBytes) : "-" },
+          { label: "Preview cache", value: previewBytes ? formatBytes(previewBytes) : "-" },
+          { label: "Last export", value: lastOutputBytes ? `${formatBytes(lastOutputBytes)} (${formatNumericValue(lastOutputPages)} pages)` : "-" },
+        ]}
+      />
+
+      {loadedPageLimit ? (
+        <p className="supporting-text">
+          Only the first {loadedPageLimit} page(s) are loaded for editing and export to keep the tool responsive.
+        </p>
+      ) : null}
+
+      <div className="split-panel">
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Signature source</h3>
+            <span className="supporting-text">Use one signature style for every signature field in the pack.</span>
+          </div>
+          <label className="field">
+            <span>Mode</span>
+            <select value={signatureMode} onChange={(event) => setSignatureMode(event.target.value as PdfSignatureMode)}>
+              <option value="typed">Typed signature</option>
+              <option value="drawn">Drawn signature</option>
+              <option value="image">Uploaded image</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Typed signer name</span>
+            <input type="text" value={typedSignatureName} onChange={(event) => setTypedSignatureName(event.target.value)} placeholder="Jane Doe" />
+          </label>
+          <label className="field">
+            <span>Upload signature image</span>
+            <input type="file" accept="image/*" onChange={(event) => void uploadSignatureImage(event.target.files?.[0] ?? null)} />
+          </label>
+          <div className="field">
+            <span>Draw signature</span>
+            <canvas
+              ref={signatureCanvasRef}
+              width={520}
+              height={160}
+              onPointerDown={(event) => {
+                setSignatureMode("drawn");
+                startSignatureDraw(event.currentTarget, event.clientX, event.clientY);
+              }}
+              onPointerMove={(event) => continueSignatureDraw(event.currentTarget, event.clientX, event.clientY)}
+              onPointerUp={() => finishSignatureDraw()}
+              onPointerLeave={() => finishSignatureDraw()}
+              style={{
+                width: "100%",
+                border: "1px dashed var(--border-color, #c9d3e0)",
+                borderRadius: 14,
+                background: "linear-gradient(180deg, #ffffff 0%, #f7fafc 100%)",
+                touchAction: "none",
+              }}
+            />
+          </div>
+          <div className="button-row">
+            <button className="action-button secondary" type="button" onClick={clearSignaturePad}>
+              <Trash2 size={15} />
+              Clear signature
+            </button>
+          </div>
+          {signaturePreviewDataUrl ? (
+            <div className="preview-box">
+              <NextImage
+                src={signaturePreviewDataUrl}
+                alt="Signature preview"
+                width={600}
+                height={180}
+                unoptimized
+                style={{ maxWidth: "100%", maxHeight: 140, width: "100%", height: "auto", objectFit: "contain" }}
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Attachments</h3>
+            <span className="supporting-text">Append supporting PDFs or images after the signed document.</span>
+          </div>
+          <label className="field">
+            <span>Attachment files</span>
+            <input type="file" accept="application/pdf,image/*" multiple onChange={(event) => uploadAttachments(event.target.files)} />
+          </label>
+          <ul className="plain-list">
+            {attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <div className="history-line">
+                  <strong>{attachment.label}</strong>
+                  <button className="icon-button" type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <small className="supporting-text">{formatBytes(attachment.file.size)}</small>
+              </li>
+            ))}
+            {!attachments.length ? <li className="supporting-text">No attachments added yet.</li> : null}
+          </ul>
+        </div>
+      </div>
+
+      <div className="split-panel">
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Fields</h3>
+            <span className="supporting-text">Select a field, edit its content, then click a preview page to move it.</span>
+          </div>
+          <ul className="plain-list">
+            {fields.map((field) => (
+              <li key={field.id}>
+                <div className="history-line">
+                  <button
+                    className="action-button secondary"
+                    type="button"
+                    onClick={() => {
+                      setSelectedFieldId(field.id);
+                      setActivePageNumber(field.pageNumber);
+                    }}
+                    style={{
+                      justifyContent: "space-between",
+                      borderColor: selectedFieldId === field.id ? "#122033" : undefined,
+                      background: selectedFieldId === field.id ? "#eef4ff" : undefined,
+                    }}
+                  >
+                    <span>{field.label}</span>
+                    <span className="supporting-text">
+                      {field.kind} | page {field.pageNumber}
+                    </span>
+                  </button>
+                  <button className="icon-button" type="button" onClick={() => removeField(field.id)}>
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </li>
+            ))}
+            {!fields.length ? <li className="supporting-text">No fields yet. Add one from the field buttons above.</li> : null}
+          </ul>
+        </div>
+
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Selected field</h3>
+            <span className="supporting-text">Fine-tune position, size, and content before export.</span>
+          </div>
+          {selectedField ? (
+            <>
+              <div className="field-grid">
+                <label className="field">
+                  <span>Label</span>
+                  <input type="text" value={selectedField.label} onChange={(event) => updateField(selectedField.id, (field) => ({ ...field, label: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>Page</span>
+                  <select
+                    value={selectedField.pageNumber}
+                    onChange={(event) => {
+                      const nextPage = Math.max(1, Number(event.target.value));
+                      setActivePageNumber(nextPage);
+                      updateField(selectedField.id, (field) => ({ ...field, pageNumber: nextPage }));
+                    }}
+                  >
+                    {pages.map((page) => (
+                      <option key={page.id} value={page.pageNumber}>
+                        Page {page.pageNumber}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {selectedField.kind === "checkbox" ? (
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={selectedField.checked}
+                    onChange={(event) => updateField(selectedField.id, (field) => ({ ...field, checked: event.target.checked }))}
+                  />
+                  Checked
+                </label>
+              ) : selectedField.kind === "signature" ? (
+                <p className="supporting-text">Signature fields use the signature source configured on the left.</p>
+              ) : (
+                <label className="field">
+                  <span>Value</span>
+                  <input
+                    type="text"
+                    value={selectedField.value}
+                    onChange={(event) => updateField(selectedField.id, (field) => ({ ...field, value: event.target.value }))}
+                    placeholder={selectedField.kind === "date" ? "2026-03-10" : ""}
+                  />
+                </label>
+              )}
+              <div className="field-grid">
+                <label className="field">
+                  <span>X %</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={(selectedField.xPct * 100).toFixed(1)}
+                    onChange={(event) =>
+                      updateField(selectedField.id, (field) => ({
+                        ...field,
+                        xPct: clampPercent(safeNumberValue(event.target.value) / 100),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Y %</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    value={(selectedField.yPct * 100).toFixed(1)}
+                    onChange={(event) =>
+                      updateField(selectedField.id, (field) => ({
+                        ...field,
+                        yPct: clampPercent(safeNumberValue(event.target.value) / 100),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Width %</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={90}
+                    step={0.5}
+                    value={(selectedField.widthPct * 100).toFixed(1)}
+                    onChange={(event) =>
+                      updateField(selectedField.id, (field) => ({
+                        ...field,
+                        widthPct: clampPercent(Math.max(0.02, safeNumberValue(event.target.value) / 100)),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Height %</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={40}
+                    step={0.5}
+                    value={(selectedField.heightPct * 100).toFixed(1)}
+                    onChange={(event) =>
+                      updateField(selectedField.id, (field) => ({
+                        ...field,
+                        heightPct: clampPercent(Math.max(0.02, safeNumberValue(event.target.value) / 100)),
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            </>
+          ) : (
+            <p className="supporting-text">Select a field from the list to edit it.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="button-row">
+        <button className="action-button" type="button" disabled={!pages.length || processing} onClick={() => void exportSignedPdf()}>
+          <Download size={15} />
+          {processing ? "Exporting..." : "Export signed PDF"}
+        </button>
+        <button className="action-button secondary" type="button" disabled={processing} onClick={resetWorkspace}>
+          <Trash2 size={15} />
+          Reset
+        </button>
+      </div>
+
+      {pages.length ? (
+        <div className="mini-panel">
+          <div className="panel-head">
+            <h3>Placement preview</h3>
+            <span className="supporting-text">Click a page to move the selected field to that spot.</span>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 18,
+            }}
+          >
+            {pages.map((page) => {
+              const pageFields = fieldsByPage.get(page.pageNumber) ?? [];
+              return (
+                <div key={page.id} className="preview-box">
+                  <div className="history-line">
+                    <strong>Page {page.pageNumber}</strong>
+                    <small className="supporting-text">
+                      {pageFields.length} field{pageFields.length === 1 ? "" : "s"}
+                    </small>
+                  </div>
+                  <div
+                    onClick={(event) => placeFieldOnPage(page.pageNumber, event.clientX, event.clientY, event.currentTarget.getBoundingClientRect())}
+                    style={{
+                      position: "relative",
+                      cursor: selectedField ? "crosshair" : "default",
+                      borderRadius: 14,
+                      overflow: "hidden",
+                      background: "#e8edf5",
+                    }}
+                  >
+                    <NextImage
+                      src={page.previewDataUrl}
+                      alt={`PDF preview page ${page.pageNumber}`}
+                      width={page.width}
+                      height={page.height}
+                      unoptimized
+                      style={{ display: "block", width: "100%", height: "auto" }}
+                    />
+                    {pageFields.map((field) => {
+                      const overlayStyle: CSSProperties = {
+                        position: "absolute",
+                        left: `${field.xPct * 100}%`,
+                        top: `${field.yPct * 100}%`,
+                        width: `${field.widthPct * 100}%`,
+                        height: `${field.heightPct * 100}%`,
+                        border: `2px solid ${selectedFieldId === field.id ? "#122033" : field.kind === "signature" ? "#2d6a4f" : "#2563eb"}`,
+                        background:
+                          field.kind === "signature"
+                            ? "rgba(45, 106, 79, 0.12)"
+                            : field.kind === "checkbox"
+                              ? "rgba(251, 191, 36, 0.15)"
+                              : "rgba(37, 99, 235, 0.14)",
+                        borderRadius: field.kind === "checkbox" ? 6 : 10,
+                        boxSizing: "border-box",
+                        padding: 6,
+                        overflow: "hidden",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: field.kind === "checkbox" ? "center" : "flex-start",
+                        color: "#122033",
+                        fontSize: field.kind === "signature" ? 11 : 12,
+                        fontWeight: 600,
+                      };
+                      return (
+                        <button
+                          key={field.id}
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedFieldId(field.id);
+                            setActivePageNumber(field.pageNumber);
+                          }}
+                          style={overlayStyle}
+                        >
+                          {field.kind === "checkbox" ? (
+                            <span>{field.checked ? "✓" : ""}</span>
+                          ) : field.kind === "signature" && signaturePreviewDataUrl ? (
+                            <NextImage
+                              src={signaturePreviewDataUrl}
+                              alt=""
+                              width={480}
+                              height={140}
+                              unoptimized
+                              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                            />
+                          ) : (
+                            <span style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
+                              {field.value || field.label}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PiiStudioSourceMode = "text" | "file";
 
 interface PiiVisualLineEntry {
@@ -47734,6 +48814,8 @@ function ProductivityTool({ id }: { id: ProductivityToolId }) {
       return <BankStatementNormalizerExpenseIntelligenceTool />;
     case "document-compare-redline":
       return <DocumentCompareRedlineTool />;
+    case "pdf-form-filler-signature-pack":
+      return <PdfFormFillerSignaturePackTool />;
     case "resume-builder":
       return <ResumeBuilderTool />;
     case "job-application-kit-builder":

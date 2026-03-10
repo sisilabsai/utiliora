@@ -160,6 +160,7 @@ export type ProductivityToolId =
   | "csv-cleanup-mapping-studio"
   | "bank-statement-normalizer-expense-intelligence"
   | "document-compare-redline"
+  | "pdf-form-filler-signature-pack"
   | "text-translator"
   | "document-translator"
   | "resume-builder"

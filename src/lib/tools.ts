@@ -1480,6 +1480,24 @@ const productivityTools: ToolDefinition[] = [
     faq: baseFaq("Document Compare & Redline"),
   },
   {
+    slug: "pdf-form-filler-signature-pack",
+    category: "productivity-tools",
+    title: "PDF Form Filler & Signature Pack",
+    summary: "Fill PDF forms, place typed or drawn signatures, and export a flattened signed PDF with optional attachments.",
+    description:
+      "Upload a PDF, detect likely fill points, place text, dates, initials, checkboxes, or signatures on each page, preview the result, and export a clean flattened PDF pack with optional appended attachments.",
+    keywords: [
+      "pdf form filler",
+      "sign pdf online",
+      "pdf signature tool",
+      "fill pdf form",
+      "flatten signed pdf",
+      "pdf attachment pack",
+    ],
+    engine: { kind: "productivity-tool", id: "pdf-form-filler-signature-pack" },
+    faq: baseFaq("PDF Form Filler & Signature Pack"),
+  },
+  {
     slug: "text-translator",
     category: "productivity-tools",
     title: "Text Translator",
