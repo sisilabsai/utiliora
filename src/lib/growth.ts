@@ -26,18 +26,18 @@ const HERO_TOOL_KEYS: readonly ToolKey[] = [
   { category: "calculators", slug: "water-intake-calculator" },
   { category: "seo-tools", slug: "meta-tag-generator" },
   { category: "seo-tools", slug: "adsense-readiness-auditor" },
-  { category: "developer-tools", slug: "accessibility-auditor" },
+  { category: "developer-tools", slug: "accessibility-auditor-fix-planner" },
   { category: "image-tools", slug: "background-remover" },
-  { category: "branding-tools", slug: "business-cards-designer" },
+  { category: "branding-tools", slug: "business-cards-design" },
   { category: "productivity-tools", slug: "bank-statement-normalizer-expense-intelligence" },
 ] as const;
 
 const TOOL_NEXT_STEP_MAP: Readonly<Record<string, ToolKey>> = {
   "seo-tools/meta-tag-generator": { category: "seo-tools", slug: "adsense-readiness-auditor" },
-  "seo-tools/adsense-readiness-auditor": { category: "developer-tools", slug: "accessibility-auditor" },
-  "developer-tools/accessibility-auditor": { category: "seo-tools", slug: "meta-tag-generator" },
-  "image-tools/background-remover": { category: "branding-tools", slug: "business-cards-designer" },
-  "branding-tools/business-cards-designer": { category: "image-tools", slug: "barcode-generator" },
+  "seo-tools/adsense-readiness-auditor": { category: "developer-tools", slug: "accessibility-auditor-fix-planner" },
+  "developer-tools/accessibility-auditor-fix-planner": { category: "seo-tools", slug: "meta-tag-generator" },
+  "image-tools/background-remover": { category: "branding-tools", slug: "business-cards-design" },
+  "branding-tools/business-cards-design": { category: "image-tools", slug: "barcode-generator" },
   "productivity-tools/bank-statement-normalizer-expense-intelligence": {
     category: "productivity-tools",
     slug: "csv-cleanup-mapping-studio",
@@ -69,7 +69,7 @@ const WORKFLOW_BUNDLE_DEFINITIONS: readonly WorkflowBundleDefinition[] = [
     toolKeys: [
       { category: "seo-tools", slug: "meta-tag-generator" },
       { category: "seo-tools", slug: "adsense-readiness-auditor" },
-      { category: "developer-tools", slug: "accessibility-auditor" },
+      { category: "developer-tools", slug: "accessibility-auditor-fix-planner" },
       { category: "seo-tools", slug: "xml-sitemap-generator" },
       { category: "seo-tools", slug: "robots-txt-generator" },
     ],
@@ -84,7 +84,7 @@ const WORKFLOW_BUNDLE_DEFINITIONS: readonly WorkflowBundleDefinition[] = [
       { category: "image-tools", slug: "background-remover" },
       { category: "image-tools", slug: "image-resizer" },
       { category: "image-tools", slug: "image-compressor" },
-      { category: "branding-tools", slug: "business-cards-designer" },
+      { category: "branding-tools", slug: "business-cards-design" },
       { category: "image-tools", slug: "barcode-generator" },
     ],
   },
