@@ -1,9 +1,11 @@
-﻿"use client";
+"use client";
 
 import { CategoryIcon } from "@/components/CategoryIcon";
 import { ToolCard } from "@/components/ToolCard";
 import { ToolSearch } from "@/components/ToolSearch";
+import { WorkflowBundleCard } from "@/components/WorkflowBundleCard";
 import { useLocale } from "@/components/LocaleProvider";
+import type { ResolvedWorkflowBundle } from "@/lib/growth";
 import { getToolsByCategory } from "@/lib/tools";
 import type { ToolCategory, ToolDefinition } from "@/lib/types";
 
@@ -11,32 +13,85 @@ interface HomePageContentProps {
   categories: ToolCategory[];
   allTools: ToolDefinition[];
   featuredTools: ToolDefinition[];
+  heroTools: ToolDefinition[];
+  workflowBundles: ResolvedWorkflowBundle[];
+  latestTools: ToolDefinition[];
 }
 
-export function HomePageContent({ categories, allTools, featuredTools }: HomePageContentProps) {
+export function HomePageContent({
+  categories,
+  allTools,
+  featuredTools,
+  heroTools,
+  workflowBundles,
+  latestTools,
+}: HomePageContentProps) {
   const { t } = useLocale();
 
   return (
     <div className="site-container page-stack">
       <section className="hero">
-        <p className="eyebrow">{t("home.eyebrow", undefined, "Global utility platform")}</p>
-        <h1>{t("home.title", undefined, "Simple tools. Instant results.")}</h1>
+        <p className="eyebrow">{t("home.eyebrow", undefined, "Daily digital work, without friction")}</p>
+        <h1>{t("home.title", undefined, "Do real digital work in seconds")}</h1>
         <p>
           {t(
             "home.description",
             undefined,
-            "Utiliora delivers fast browser-based calculators, converters, SEO tools, image utilities, and developer workflows without login friction.",
+            "Fast browser-based tools for SEO, creators, developers, business ops, and everyday calculations. No forced signup. No clutter. Just fast outcomes.",
           )}
         </p>
         <div className="hero-cta">
+          <a className="action-link" href="/start-here">
+            {t("home.cta_start_here", undefined, "Start here")}
+          </a>
+          <a className="action-link" href="/workflows">
+            {t("home.cta_workflows", undefined, "Browse workflow bundles")}
+          </a>
           <a className="action-link" href="/tools">
             {t("home.cta_explore", undefined, "Explore all tools")}
           </a>
           <span>{`${allTools.length}+ ${t("home.tools_live_suffix", undefined, "tools live and growing weekly.")}`}</span>
         </div>
+        <div className="chip-row">
+          <span className="chip-link">{heroTools.length} curated hero tools</span>
+          <span className="chip-link">{workflowBundles.length} workflow bundles</span>
+          <span className="chip-link">Browser-first execution</span>
+          <span className="chip-link">No-login core utility</span>
+        </div>
       </section>
 
       <ToolSearch tools={allTools} />
+
+      <section className="content-block info-card">
+        <div className="section-head">
+          <h2>{t("home.featured_workflows", undefined, "Start with the highest-leverage workflows")}</h2>
+          <a href="/workflows">{t("home.view_all_workflows", undefined, "View all workflow bundles")}</a>
+        </div>
+        <p>
+          {t(
+            "home.featured_workflows_desc",
+            undefined,
+            "Utiliora grows when users finish a job, not when they browse a giant list. These bundles route new visitors into the strongest multi-step outcomes first.",
+          )}
+        </p>
+        <div className="workflow-grid">
+          {workflowBundles.slice(0, 4).map((bundle) => (
+            <WorkflowBundleCard key={bundle.slug} bundle={bundle} />
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <div className="section-head">
+          <h2>{t("home.hero_tools", undefined, "Featured hero tools")}</h2>
+          <a href="/start-here">{t("home.view_best_tools", undefined, "Open the curated shortlist")}</a>
+        </div>
+        <div className="tool-grid">
+          {featuredTools.map((tool) => (
+            <ToolCard key={`${tool.category}-${tool.slug}`} tool={tool} />
+          ))}
+        </div>
+      </section>
 
       <section className="category-overview" aria-label={t("home.categories_aria", undefined, "Tool categories")}>
         {categories.map((category) => {
@@ -59,13 +114,30 @@ export function HomePageContent({ categories, allTools, featuredTools }: HomePag
 
       <section>
         <div className="section-head">
-          <h2>{t("home.popular", undefined, "Popular right now")}</h2>
+          <h2>{t("home.popular", undefined, "Recently launched workflows")}</h2>
           <a href="/tools">{t("home.view_full_directory", undefined, "View full directory")}</a>
         </div>
         <div className="tool-grid">
-          {featuredTools.map((tool) => (
+          {latestTools.map((tool) => (
             <ToolCard key={`${tool.category}-${tool.slug}`} tool={tool} />
           ))}
+        </div>
+      </section>
+
+      <section className="content-block info-card">
+        <h2>{t("home.why_utiliora", undefined, "Why the site now routes around workflows")}</h2>
+        <p>
+          {t(
+            "home.why_utiliora_desc",
+            undefined,
+            "Breadth still matters, but breakout growth will come from a smaller set of tools and bundles that repeatedly solve visible tasks. This homepage points people toward those paths first.",
+          )}
+        </p>
+        <div className="chip-row">
+          <a className="chip-link" href="/seo-tools/meta-tag-generator">SEO launch workflows</a>
+          <a className="chip-link" href="/image-tools/background-remover">Creator asset workflows</a>
+          <a className="chip-link" href="/productivity-tools/bank-statement-normalizer-expense-intelligence">Money clarity workflows</a>
+          <a className="chip-link" href="/productivity-tools/job-application-kit-builder">Career workflows</a>
         </div>
       </section>
 

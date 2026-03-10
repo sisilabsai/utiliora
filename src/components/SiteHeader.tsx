@@ -226,6 +226,14 @@ export function SiteHeader() {
           <div className="desktop-nav">
             <div className="main-nav-wrap">
               <nav aria-label="Primary navigation" className="main-nav" ref={desktopNavScrollRef}>
+                <a href="/start-here">
+                  <Sparkles size={14} />
+                  <span>{t("nav.start_here", undefined, "Start Here")}</span>
+                </a>
+                <a href="/workflows">
+                  <SquareKanban size={14} />
+                  <span>{t("nav.workflows", undefined, "Workflows")}</span>
+                </a>
                 <a href="/tools">
                   <Grid2x2 size={14} />
                   <span>{t("nav.all_tools", undefined, "All Tools")}</span>

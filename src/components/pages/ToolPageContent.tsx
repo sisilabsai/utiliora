@@ -1,11 +1,14 @@
-﻿"use client";
+"use client";
 
+import { useEffect } from "react";
 import { AdSlot } from "@/components/AdSlot";
 import { AffiliateCard } from "@/components/AffiliateCard";
 import { RelatedTools } from "@/components/RelatedTools";
 import { SocialSharePrompt } from "@/components/SocialSharePrompt";
 import { ToolRenderer } from "@/components/ToolRenderer";
 import { useLocale } from "@/components/LocaleProvider";
+import { trackEvent } from "@/lib/analytics";
+import { getToolPrimaryNextStep, getWorkflowBundlesForTool, isHeroTool } from "@/lib/growth";
 import type { AffiliateOffer, ToolDefinition } from "@/lib/types";
 
 interface ToolPageContentProps {
@@ -23,6 +26,17 @@ export function ToolPageContent({ tool, categoryTitle, relatedTools, affiliateOf
     undefined,
     t("tool_card.tool", undefined, "Tool"),
   );
+  const heroTool = isHeroTool(tool);
+  const nextStepTool = getToolPrimaryNextStep(tool);
+  const workflowBundles = getWorkflowBundlesForTool(tool);
+
+  useEffect(() => {
+    trackEvent("tool_page_view", {
+      category: tool.category,
+      slug: tool.slug,
+      isHeroTool: heroTool,
+    });
+  }, [heroTool, tool.category, tool.slug]);
 
   return (
     <div className="site-container page-stack">
@@ -38,6 +52,11 @@ export function ToolPageContent({ tool, categoryTitle, relatedTools, affiliateOf
         <p className="eyebrow">{translatedCategoryShort}</p>
         <h1>{tool.title}</h1>
         <p>{tool.summary}</p>
+        <div className="chip-row">
+          {heroTool ? <span className="chip-link">Hero growth tool</span> : null}
+          <span className="chip-link">No signup for core utility</span>
+          <span className="chip-link">Browser-based where possible</span>
+        </div>
       </section>
 
       <ToolRenderer tool={tool} />
@@ -74,7 +93,65 @@ export function ToolPageContent({ tool, categoryTitle, relatedTools, affiliateOf
             </p>
           </>
         ) : null}
+        <p className="supporting-text">
+          Utiliora keeps core tool access friction-light and favors browser-side processing where possible so users can
+          reach value quickly.
+        </p>
       </section>
+
+      {nextStepTool ? (
+        <section className="content-block info-card">
+          <h2>Use next</h2>
+          <p>
+            The strongest next step after <strong>{tool.title}</strong> is <strong>{nextStepTool.title}</strong>. This
+            keeps the visitor inside one practical workflow instead of sending them back to the directory.
+          </p>
+          <div className="button-row">
+            <a
+              className="action-button"
+              href={`/${nextStepTool.category}/${nextStepTool.slug}`}
+              onClick={() =>
+                trackEvent("tool_next_step_click", {
+                  fromCategory: tool.category,
+                  fromSlug: tool.slug,
+                  toCategory: nextStepTool.category,
+                  toSlug: nextStepTool.slug,
+                })
+              }
+            >
+              Open {nextStepTool.title}
+            </a>
+            <a className="action-button secondary" href="/start-here">
+              View curated shortlist
+            </a>
+          </div>
+        </section>
+      ) : null}
+
+      {workflowBundles.length ? (
+        <section className="content-block info-card">
+          <h2>Included in workflow bundles</h2>
+          <p>This tool is part of one or more curated paths that turn isolated utility into a complete outcome.</p>
+          <div className="chip-row">
+            {workflowBundles.map((bundle) => (
+              <a
+                key={bundle.slug}
+                className="chip-link"
+                href={`/workflows/${bundle.slug}`}
+                onClick={() =>
+                  trackEvent("workflow_bundle_click", {
+                    sourceCategory: tool.category,
+                    sourceSlug: tool.slug,
+                    bundleSlug: bundle.slug,
+                  })
+                }
+              >
+                {bundle.title}
+              </a>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="faq" aria-label="Frequently asked questions">
         <h2>{t("tool.faq_title", undefined, "FAQ")}</h2>

@@ -1623,6 +1623,10 @@ export function getAllTools(): ToolDefinition[] {
   return [...TOOLS].sort((a, b) => a.title.localeCompare(b.title));
 }
 
+export function getLatestTools(limit = 8): ToolDefinition[] {
+  return [...TOOLS].slice(Math.max(0, TOOLS.length - limit)).reverse();
+}
+
 export function getToolsByCategory(category: string): ToolDefinition[] {
   return [...(byCategory.get(category as ToolCategorySlug) ?? [])];
 }

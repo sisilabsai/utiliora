@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { orderedCategorySlugs } from "@/lib/categories";
+import { getWorkflowBundles } from "@/lib/growth";
 import { absoluteUrl } from "@/lib/site";
 import { getAllTools } from "@/lib/tools";
 
@@ -19,6 +20,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       lastModified: now,
       changeFrequency: "daily",
       priority: 0.9,
+    },
+    {
+      url: absoluteUrl("/start-here"),
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.9,
+    },
+    {
+      url: absoluteUrl("/workflows"),
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.85,
     },
     {
       url: absoluteUrl("/about"),
@@ -59,5 +72,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...corePages, ...toolPages];
+  const workflowPages: MetadataRoute.Sitemap = getWorkflowBundles().map((bundle) => ({
+    url: absoluteUrl(`/workflows/${bundle.slug}`),
+    lastModified: now,
+    changeFrequency: "weekly",
+    priority: 0.75,
+  }));
+
+  return [...corePages, ...workflowPages, ...toolPages];
 }
